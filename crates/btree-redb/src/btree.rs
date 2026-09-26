@@ -308,4 +308,82 @@ mod test {
             assert!(results.is_empty());
         });
     }
+
+    #[test]
+    fn vec_keys_and_values_are_ordered_and_ranged() {
+        block_on(async {
+            let tree = create_tree::<String, Vec<u8>>("ctx_vec_bytes");
+            let mut tx = tree.transaction().await.expect("transaction failed");
+            for (key, value) in [
+                ("a", vec![0]),
+                ("b", vec![0, 1]),
+                ("c", vec![1]),
+                ("d", vec![2]),
+            ] {
+                tx.insert(key.to_string(), value)
+                    .await
+                    .expect("insert failed");
+            }
+            tx.commit().await.expect("commit failed");
+
+            let results = tree
+                .range("b".to_string()..="c".to_string())
+                .collect::<Vec<_>>()
+                .await;
+            let results = results
+                .into_iter()
+                .map(|result| result.expect("range failed"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results,
+                vec![("b".to_string(), vec![0, 1]), ("c".to_string(), vec![1])]
+            );
+        });
+    }
+
+    #[test]
+    fn transaction_reads_its_writes_and_rollback_discards_them() {
+        block_on(async {
+            let tree = create_tree::<String, Vec<u8>>("ctx_read_your_writes");
+            let mut tx = tree.transaction().await.expect("transaction failed");
+            let key = "key".to_string();
+            let value = vec![3, 4];
+            tx.insert(key.clone(), value.clone())
+                .await
+                .expect("insert failed");
+
+            assert_eq!(
+                tx.get(&key).await.expect("transaction get failed"),
+                Some(value)
+            );
+            tx.rollback().await.expect("rollback failed");
+            assert_eq!(tree.get(&key).await.expect("tree get failed"), None);
+        });
+    }
+
+    #[test]
+    fn named_table_survives_database_reopen() {
+        block_on(async {
+            let path = tmp_path();
+            let db = Arc::new(Database::create(&path).expect("database create failed"));
+            let tree = RedbBTree::<String, Vec<u8>>::new(db.clone(), "persistent_bytes");
+            let mut tx = tree.transaction().await.expect("transaction failed");
+            tx.insert("key".to_string(), vec![9, 10])
+                .await
+                .expect("insert failed");
+            tx.commit().await.expect("commit failed");
+
+            drop(tree);
+            drop(db);
+
+            let db = Arc::new(Database::open(&path).expect("database reopen failed"));
+            let tree = RedbBTree::<String, Vec<u8>>::new(db, "persistent_bytes");
+            assert_eq!(
+                tree.get(&"key".to_string()).await.expect("get failed"),
+                Some(vec![9, 10])
+            );
+            drop(tree);
+            std::fs::remove_file(path).expect("failed to remove database file");
+        });
+    }
 }

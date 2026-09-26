@@ -1,4 +1,5 @@
 mod btree;
+mod byte_btree;
 mod bytes;
 mod database;
 mod key;
@@ -7,6 +8,7 @@ mod transaction;
 mod value;
 
 pub use btree::RedbBTree;
+pub use byte_btree::{RedbByteBTree, RedbByteBTreeTransaction};
 pub use bytes::Bytes;
 pub use database::{RedbDatabase, RedbDatabaseTransaction};
 pub use key::Key;

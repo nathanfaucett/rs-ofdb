@@ -205,7 +205,13 @@ impl Database {
     }
 }
 
-#[cfg(all(test, feature = "automerge", feature = "in-memory", feature = "redb"))]
+#[cfg(all(
+    test,
+    feature = "automerge",
+    feature = "in-memory",
+    feature = "redb",
+    feature = "sql"
+))]
 mod tests {
     use super::*;
     use futures::executor::block_on;

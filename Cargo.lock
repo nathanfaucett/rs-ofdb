@@ -827,6 +827,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "automerge 0.9.0",
+ "btree",
+ "btree-automerge",
+ "btree-redb",
+ "futures",
+ "redb",
+ "uuid",
+]
+
+[[package]]
 name = "leb128"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

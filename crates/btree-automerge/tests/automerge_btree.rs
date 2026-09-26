@@ -1,7 +1,7 @@
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use btree::{BTree, BTreeRead, BTreeTransaction, InMemoryBTree};
 use btree_automerge::{
-    AutomergeBTree, AutomergeChangeStore, DocumentChangeKey, DocumentId, DocumentType,
+    AutomergeBTree, AutomergeChangeStore, DocumentChangeKey, DocumentId, DocumentType, hash_heads,
 };
 use futures::{StreamExt, executor::block_on, pin_mut};
 
@@ -100,6 +100,142 @@ fn change_store_range_honors_included_and_excluded_bounds() {
         pin_mut!(entries);
         assert_eq!(entries.next().await.unwrap().unwrap().0.id(), &ids[1]);
         assert!(entries.next().await.is_none());
+    });
+}
+
+#[test]
+fn multiple_sequential_updates_reconstruct_after_reopening() {
+    block_on(async {
+        let inner = inner_tree();
+        let tree = AutomergeBTree::new(inner.clone());
+        let id = DocumentId::from([1]);
+
+        let mut tx = tree.transaction().await.unwrap();
+        tx.insert(id.clone(), AutoCommit::new()).await.unwrap();
+        tx.commit().await.unwrap();
+
+        for value in ["first", "second", "third"] {
+            let mut tx = tree.transaction().await.unwrap();
+            tx.update(id.clone(), |document| {
+                document.put(ROOT, "value", value).unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        let reopened = AutomergeBTree::new(inner);
+        let document = reopened.get(&id).await.unwrap().unwrap();
+        let (value, _) = document.get(ROOT, "value").unwrap().unwrap();
+        assert_eq!(value.to_string(), "\"third\"");
+    });
+}
+
+#[test]
+fn concurrent_incrementals_reconstruct_both_changes() {
+    block_on(async {
+        let inner = inner_tree();
+        let id = DocumentId::from([7]);
+        let mut base = AutoCommit::new();
+        base.put(ROOT, "base", true).unwrap();
+        let snapshot = base.save();
+        let mut left = AutoCommit::load(&snapshot)
+            .unwrap()
+            .with_actor(ActorId::from(vec![1]));
+        let mut right = AutoCommit::load(&snapshot)
+            .unwrap()
+            .with_actor(ActorId::from(vec![2]));
+        left.put(ROOT, "left", true).unwrap();
+        right.put(ROOT, "right", true).unwrap();
+        let left_heads = hash_heads(left.get_heads());
+        let right_heads = hash_heads(right.get_heads());
+        let mut tx = inner.transaction().await.unwrap();
+        tx.insert(
+            DocumentChangeKey::new_snapshot(id.clone(), hash_heads(base.get_heads())),
+            snapshot,
+        )
+        .await
+        .unwrap();
+        tx.insert(
+            DocumentChangeKey::new_incremental(id.clone(), left_heads),
+            left.save_incremental(),
+        )
+        .await
+        .unwrap();
+        tx.insert(
+            DocumentChangeKey::new_incremental(id.clone(), right_heads),
+            right.save_incremental(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let document = AutomergeBTree::new(inner).get(&id).await.unwrap().unwrap();
+        assert!(document.get(ROOT, "base").unwrap().is_some());
+        assert!(document.get(ROOT, "left").unwrap().is_some());
+        assert!(document.get(ROOT, "right").unwrap().is_some());
+    });
+}
+
+#[test]
+fn compaction_keeps_document_readable_and_replaces_history_with_snapshot() {
+    block_on(async {
+        let inner = inner_tree();
+        let tree = AutomergeBTree::new(inner.clone());
+        let id = DocumentId::from([1]);
+
+        let mut tx = tree.transaction().await.unwrap();
+        tx.insert(id.clone(), AutoCommit::new()).await.unwrap();
+        tx.commit().await.unwrap();
+        let mut tx = tree.transaction().await.unwrap();
+        tx.update(id.clone(), |document| {
+            document.put(ROOT, "value", "compacted").unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut document = tree.get(&id).await.unwrap().unwrap();
+        let mut tx = inner.transaction().await.unwrap();
+        btree_automerge::run_compaction(&mut tx, &id, &mut document)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let document = tree.get(&id).await.unwrap().unwrap();
+        let (value, _) = document.get(ROOT, "value").unwrap().unwrap();
+        assert_eq!(value.to_string(), "\"compacted\"");
+
+        let entries = inner.range(DocumentChangeKey::range_for(&id));
+        pin_mut!(entries);
+        let mut types = Vec::new();
+        while let Some(entry) = entries.next().await {
+            types.push(entry.unwrap().0.r#type());
+        }
+        assert_eq!(types, [DocumentType::Snapshot]);
+    });
+}
+
+#[test]
+fn bounded_document_range_respects_excluded_and_included_ids() {
+    block_on(async {
+        let tree = AutomergeBTree::new(inner_tree());
+        for id in [vec![1], vec![2], vec![3]] {
+            let mut tx = tree.transaction().await.unwrap();
+            tx.insert(id, AutoCommit::new()).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        let documents = tree.range((
+            std::ops::Bound::Excluded(DocumentId::from([1])),
+            std::ops::Bound::Included(DocumentId::from([3])),
+        ));
+        pin_mut!(documents);
+        assert_eq!(documents.next().await.unwrap().unwrap().0, [2]);
+        assert_eq!(documents.next().await.unwrap().unwrap().0, [3]);
+        assert!(documents.next().await.is_none());
     });
 }
 
