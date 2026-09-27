@@ -180,7 +180,7 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
         let row = Uuid::from_u128(1);
         let keys = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, &table, row))
+                Box::pin(codec.change_inventory(transaction, table, row))
             })
             .await
             .unwrap();
@@ -188,7 +188,7 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
         let key = keys[0].clone();
         let first_payload = source
             .read_transaction(move |codec, transaction| {
-                Box::pin(async move { codec.export_change(transaction, &table, row, &key).await })
+                Box::pin(async move { codec.export_change(transaction, table, row, &key).await })
             })
             .await
             .unwrap()
@@ -247,7 +247,7 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         assert!(
             source
                 .read_transaction(|codec, transaction| {
-                    Box::pin(codec.change_inventory(transaction, &table, row))
+                    Box::pin(codec.change_inventory(transaction, table, row))
                 })
                 .await
                 .unwrap()
@@ -257,7 +257,7 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         update(&source, "city", Value::from("Paris")).await;
         let inventory = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, &table, row))
+                Box::pin(codec.change_inventory(transaction, table, row))
             })
             .await
             .unwrap();
@@ -268,7 +268,7 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
             .read_transaction(move |codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .export_change(transaction, &table, row, &export_key)
+                        .export_change(transaction, table, row, &export_key)
                         .await
                 })
             })
@@ -320,13 +320,13 @@ fn logical_rows_persist_in_one_kernel_transaction() {
         let row_id = Uuid::now_v7();
         let mut transaction = kernel.transaction().await.unwrap();
         reconciler
-            .ensure_table(&mut transaction, &table)
+            .ensure_table(&mut transaction, table)
             .await
             .unwrap();
         reconciler
             .put_row(
                 &mut transaction,
-                &table,
+                table,
                 row_id,
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
@@ -337,7 +337,7 @@ fn logical_rows_persist_in_one_kernel_transaction() {
         let transaction = kernel.transaction().await.unwrap();
         assert_eq!(
             reconciler
-                .get_row(&transaction, &table, &row_id)
+                .get_row(&transaction, table, &row_id)
                 .await
                 .unwrap(),
             Some(Row::new(vec![uuid_value(1), Value::from("Ada")]))
@@ -358,11 +358,11 @@ fn redb_kernel_pairs_with_a_non_automerge_reconciler() {
         let row = Row::new(vec![uuid_value(1), Value::from("Ada")]);
         let mut transaction = kernel.transaction().await.unwrap();
         reconciler
-            .ensure_table(&mut transaction, &table)
+            .ensure_table(&mut transaction, table)
             .await
             .unwrap();
         reconciler
-            .put_row(&mut transaction, &table, row_id, row.clone())
+            .put_row(&mut transaction, table, row_id, row.clone())
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -370,7 +370,7 @@ fn redb_kernel_pairs_with_a_non_automerge_reconciler() {
         let transaction = kernel.transaction().await.unwrap();
         assert_eq!(
             reconciler
-                .get_row(&transaction, &table, &row_id)
+                .get_row(&transaction, table, &row_id)
                 .await
                 .unwrap(),
             Some(row)
@@ -390,13 +390,13 @@ fn removing_a_logical_row_writes_a_tombstone() {
         let row_id = Uuid::now_v7();
         let mut transaction = kernel.transaction().await.unwrap();
         reconciler
-            .ensure_table(&mut transaction, &table)
+            .ensure_table(&mut transaction, table)
             .await
             .unwrap();
         reconciler
             .put_row(
                 &mut transaction,
-                &table,
+                table,
                 row_id,
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
@@ -404,7 +404,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
             .unwrap();
         assert!(
             reconciler
-                .remove_row(&mut transaction, &table, &row_id)
+                .remove_row(&mut transaction, table, &row_id)
                 .await
                 .unwrap()
                 .is_some()
@@ -413,7 +413,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
             reconciler
                 .put_row(
                     &mut transaction,
-                    &table,
+                    table,
                     row_id,
                     Row::new(vec![uuid_value(2), Value::from("Grace")]),
                 )
@@ -425,7 +425,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
         let transaction = kernel.transaction().await.unwrap();
         assert!(
             reconciler
-                .get_row(&transaction, &table, &row_id)
+                .get_row(&transaction, table, &row_id)
                 .await
                 .unwrap()
                 .is_none()
@@ -433,7 +433,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
         let metadata_key =
             DocumentChangeKey::new_metadata(row_id.as_bytes().to_vec()).encode_ordered();
         let metadata = transaction
-            .get_bytes(&table, &metadata_key)
+            .get_bytes(table, &metadata_key)
             .await
             .unwrap()
             .map(|bytes| postcard::from_bytes::<RowMetadata>(&bytes).unwrap())
@@ -577,7 +577,7 @@ fn rollback_discards_catalog_and_logical_row_changes() {
             .await
             .unwrap();
         reconciler
-            .ensure_table(&mut transaction, &table)
+            .ensure_table(&mut transaction, table)
             .await
             .unwrap();
         transaction
@@ -591,7 +591,7 @@ fn rollback_discards_catalog_and_logical_row_changes() {
         reconciler
             .put_row(
                 &mut transaction,
-                &table,
+                table,
                 row_id,
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
