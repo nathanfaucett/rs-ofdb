@@ -1,10 +1,11 @@
 use automerge::AutoCommit;
 use btree::{BTreeError, BTreeResult};
 use btree_automerge::{DocumentChangeKey, DocumentType, hash_heads};
+use serde::{Deserialize, Serialize};
 
 use crate::decode_document_id;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvSnapshot {
     pub key: DocumentChangeKey,
     pub payload: Vec<u8>,

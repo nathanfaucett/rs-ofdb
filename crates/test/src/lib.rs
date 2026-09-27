@@ -6,6 +6,9 @@ pub mod runner;
 pub mod runtime;
 pub mod transport;
 
+#[cfg(test)]
+mod tests;
+
 pub use case::{Expectation, ExpectedError, NodeId, Step, TestCase, TestCaseBuilder, TestSuite};
 pub use chaos::{ChaosNetwork, ChaosScenario, ChaosStep, run_chaos};
 pub use cluster::{

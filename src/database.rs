@@ -205,18 +205,34 @@ impl Database {
     }
 }
 
-#[cfg(all(
-    test,
-    feature = "automerge",
-    feature = "in-memory",
-    feature = "redb",
-    feature = "sql"
-))]
+#[cfg(all(test, feature = "automerge", feature = "redb", feature = "sql"))]
 mod tests {
     use super::*;
     use futures::executor::block_on;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn open_uri_uses_enabled_backends_and_reports_invalid_schemes() {
+        #[cfg(feature = "in-memory")]
+        drop(Database::open_uri(":in_memory:").unwrap());
+        #[cfg(not(feature = "in-memory"))]
+        assert!(Database::open_uri(":in_memory:").is_err());
+        assert!(Database::open_uri("sqlite://database").is_err());
+        assert!(Database::open_uri("ofdb://").is_err());
+
+        let path = std::env::temp_dir().join(format!(
+            "ofdb-open-uri-{}-{}.redb",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        drop(Database::open_uri(&format!("ofdb://{}", path.display())).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(feature = "in-memory")]
     #[test]
     fn in_memory_database_uses_the_engine_api() {
         block_on(async {

@@ -155,6 +155,24 @@ where
         Ok(())
     }
 
+    pub async fn export_snapshots(&self) -> BTreeResult<Vec<KvSnapshot>> {
+        let documents = self.inner.range(..);
+        pin_mut!(documents);
+        let mut latest = BTreeMap::<String, (Vec<u8>, AutoCommit)>::new();
+        while let Some(item) = documents.next().await {
+            let (id, document) = item?;
+            let (key, _) = decode_document_id(&id)?;
+            latest.insert(key, (id, document));
+        }
+        latest
+            .into_values()
+            .map(|(id, document)| {
+                read_document(&document)?;
+                Ok(KvSnapshot::from_document(id, document))
+            })
+            .collect()
+    }
+
     pub async fn export_snapshot(&self, key: &str) -> BTreeResult<Option<KvSnapshot>> {
         self.latest(key)
             .await?

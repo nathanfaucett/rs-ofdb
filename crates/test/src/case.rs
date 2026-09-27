@@ -24,51 +24,63 @@ pub enum ExpectedError {
 
 impl ExpectedError {
     pub fn matches(&self, error: &engine::EngineError) -> bool {
-        let msg = error.to_string().to_lowercase();
+        let message = error.to_string().to_lowercase();
         match self {
             Self::SyntaxError => {
                 matches!(
                     error,
                     engine::EngineError::TranslateError(_) | engine::EngineError::Unsupported(_)
-                ) || msg.contains("syntax")
-                    || msg.contains("expected")
-                    || msg.contains("translate error")
-                    || msg.contains("unsupported")
-                    || msg.contains("invalid query: unsupported")
+                ) || contains_any(
+                    &message,
+                    &["syntax", "expected", "translate error", "unsupported"],
+                )
             }
-            Self::ConstraintViolation => {
-                msg.contains("unique")
-                    || msg.contains("already exists")
-                    || msg.contains("duplicate")
-                    || msg.contains("tombstoned")
-                    || msg.contains("constraint")
-                    || msg.contains("primary key was deleted")
-                    || msg.contains("cannot update the primary key")
-                    || msg.contains("cannot resolve the primary key")
-            }
+            Self::ConstraintViolation => contains_any(
+                &message,
+                &[
+                    "unique",
+                    "already exists",
+                    "duplicate",
+                    "tombstoned",
+                    "constraint",
+                    "primary key was deleted",
+                    "cannot update the primary key",
+                    "cannot resolve the primary key",
+                ],
+            ),
             Self::TableNotFound => {
-                msg.contains("table not found") || msg.contains("unknown column table")
+                contains_any(&message, &["table not found", "unknown column table"])
             }
-            Self::ColumnNotFound => {
-                msg.contains("column not found")
-                    || msg.contains("unknown insert column")
-                    || msg.contains("unknown returning column")
-                    || msg.contains("unknown resolution column")
-                    || msg.contains("unknown projection column")
-                    || msg.contains("index column not found")
-            }
-            Self::TypeMismatch => {
-                msg.contains("must be a uuid")
-                    || msg.contains("type mismatch")
-                    || msg.contains("wrong column count")
-                    || msg.contains("column/value count mismatch")
-                    || msg.contains("invalid type")
-                    || msg.contains("invalid uuid")
-                    || msg.contains("cannot cast")
-                    || msg.contains("too many columns")
-            }
+            Self::ColumnNotFound => contains_any(
+                &message,
+                &[
+                    "column not found",
+                    "unknown insert column",
+                    "unknown returning column",
+                    "unknown resolution column",
+                    "unknown projection column",
+                    "index column not found",
+                ],
+            ),
+            Self::TypeMismatch => contains_any(
+                &message,
+                &[
+                    "must be a uuid",
+                    "type mismatch",
+                    "wrong column count",
+                    "column/value count mismatch",
+                    "invalid type",
+                    "invalid uuid",
+                    "cannot cast",
+                    "too many columns",
+                ],
+            ),
         }
     }
+}
+
+fn contains_any(message: &str, fragments: &[&str]) -> bool {
+    fragments.iter().any(|fragment| message.contains(fragment))
 }
 
 /// A pure data representation of a mutation or step.

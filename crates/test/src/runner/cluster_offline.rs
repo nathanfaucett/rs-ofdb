@@ -1,9 +1,9 @@
 use sync::SessionConfig;
 
 use crate::{
-    case::{NodeId, TestCase},
+    case::TestCase,
     cluster::automerge_redb_cluster,
-    runner::{RunnerError, TestRunner, VerificationPolicy},
+    runner::{RunnerError, TestRunner, VerificationPolicy, verify::verify_case},
 };
 
 /// Orchestrates multi-node cluster integration tests in offline partition mode:
@@ -100,60 +100,7 @@ impl TestRunner for ClusterOfflineRunner {
             .await
             .map_err(|e| RunnerError::Sync(e.to_string()))?;
 
-        // Convergence verification across all nodes
-        if self.policy.convergence {
-            for exp in &case.expectations {
-                if exp.target_node.is_none() {
-                    let first_rows = cluster
-                        .try_exec(0, exp.query.as_ref())
-                        .await
-                        .map_err(RunnerError::Engine)?;
-                    for node in 1..n {
-                        let node_rows = cluster
-                            .try_exec(node, exp.query.as_ref())
-                            .await
-                            .map_err(RunnerError::Engine)?;
-                        if node_rows != first_rows {
-                            return Err(RunnerError::ConvergenceFailure {
-                                query: exp.query.clone(),
-                                diverged_node: node,
-                                rows_node_0: first_rows,
-                                rows_other: node_rows,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // State consistency verification
-        if self.policy.state_consistency {
-            cluster.assert_state_converged().await;
-        }
-
-        // IO correctness verification
-        if self.policy.io_correctness {
-            for exp in &case.expectations {
-                let target_nodes: Vec<usize> = match exp.target_node {
-                    Some(node) => vec![node.0],
-                    None => (0..n).collect(),
-                };
-                for node in target_nodes {
-                    let actual_rows = cluster
-                        .try_exec(node, exp.query.as_ref())
-                        .await
-                        .map_err(RunnerError::Engine)?;
-                    if actual_rows != exp.expected_rows {
-                        return Err(RunnerError::ExpectationFailed {
-                            node: Some(NodeId(node)),
-                            query: exp.query.clone(),
-                            expected: exp.expected_rows.clone(),
-                            actual: actual_rows,
-                        });
-                    }
-                }
-            }
-        }
+        verify_case(&cluster, case, n, self.policy).await?;
 
         drop(cluster);
         drop(cleanup);

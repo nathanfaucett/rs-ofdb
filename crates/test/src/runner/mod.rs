@@ -103,6 +103,7 @@ pub mod chaos;
 pub mod cluster_offline;
 pub mod cluster_realtime;
 pub mod single;
+mod verify;
 
 pub use chaos::ChaosRunner;
 pub use cluster_offline::ClusterOfflineRunner;

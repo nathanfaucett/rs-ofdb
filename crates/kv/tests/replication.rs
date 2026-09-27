@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use btree::{BTreeRead, InMemoryBTree};
 use btree_automerge::{DocumentChangeKey, DocumentType, hash_heads};
 use futures::{StreamExt, executor::block_on};
-use kv::{KvSnapshot, KvStore, encode_document_id};
+use kv::{KvSnapshot, KvStore, decode_document_id, encode_document_id};
 use uuid::Uuid;
 
 fn uuid(timestamp: u128) -> Uuid {
@@ -67,6 +67,34 @@ fn converges_in_both_orders_and_prunes_old_generations() {
                 1
             );
         }
+    });
+}
+
+#[test]
+fn exports_latest_snapshot_for_live_and_tombstoned_keys() {
+    block_on(async {
+        let store = store();
+        let mut tx = store
+            .transaction_with_uuid_generator(|| uuid(1))
+            .await
+            .unwrap();
+        tx.set("live", vec![1], None).await.unwrap();
+        tx.set("deleted", vec![2], None).await.unwrap();
+        tx.delete("deleted").await.unwrap();
+
+        let snapshots = tx.export_snapshots().await.unwrap();
+        let keys: Vec<_> = snapshots
+            .iter()
+            .map(|snapshot| decode_document_id(&snapshot.key.id).unwrap().0)
+            .collect();
+        assert_eq!(keys, ["deleted", "live"]);
+        assert_eq!(tx.get("live", 0).await.unwrap(), Some(vec![1]));
+        assert_eq!(tx.get("deleted", 0).await.unwrap(), None);
+        assert_eq!(
+            tx.export_snapshot("deleted").await.unwrap(),
+            Some(snapshots[0].clone())
+        );
+        tx.rollback().await.unwrap();
     });
 }
 

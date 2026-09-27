@@ -15,6 +15,7 @@ btree-automerge = { path = "../btree-automerge", default-features = false, featu
 
 # External dependencies
 automerge = { version = "0.9", default-features = false, features = [] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
 
