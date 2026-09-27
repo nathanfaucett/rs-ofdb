@@ -79,7 +79,7 @@ pub(crate) async fn index_schema<T: KernelTransaction>(
         .collect::<EngineResult<Vec<_>>>()?;
     Ok(Some(IndexSchema {
         name: name.into(),
-        table_name: table.into(),
+        table_name: table,
         column_indices,
         unique,
     }))
@@ -94,12 +94,11 @@ async fn indexes_for_table<T: KernelTransaction>(
     let mut names: Vec<String> = Vec::new();
     while let Some(entry) = entries.next().await {
         let (key, value) = entry?;
-        if value.values.first().and_then(Value::as_text) == Some(table) {
-            if let Some(name) = key.values.first().and_then(Value::to_text) {
-                if !index_deleted(transaction, &name).await? {
-                    names.push(name.into());
-                }
-            }
+        if value.values.first().and_then(Value::as_text) == Some(table)
+            && let Some(name) = key.values.first().and_then(Value::to_text)
+            && !index_deleted(transaction, &name).await?
+        {
+            names.push(name);
         }
     }
     let mut result = Vec::new();

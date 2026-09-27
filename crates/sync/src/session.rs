@@ -187,8 +187,7 @@ where
                     .values
                     .first()
                     .and_then(value::Value::to_text)
-                    .ok_or(EngineError::custom("Invalid catalog key"))?
-                    .into(),
+                    .ok_or(EngineError::custom("Invalid catalog key"))?,
             },
             CatalogEntryKind::TableField => SyncKey::TableField {
                 table: entry
@@ -196,15 +195,13 @@ where
                     .values
                     .first()
                     .and_then(value::Value::to_text)
-                    .ok_or(EngineError::custom("Invalid catalog key"))?
-                    .into(),
+                    .ok_or(EngineError::custom("Invalid catalog key"))?,
                 column: entry
                     .key
                     .values
                     .get(1)
                     .and_then(value::Value::to_text)
-                    .ok_or(EngineError::custom("Invalid catalog key"))?
-                    .into(),
+                    .ok_or(EngineError::custom("Invalid catalog key"))?,
             },
             CatalogEntryKind::Index => SyncKey::Index {
                 name: entry
@@ -212,8 +209,7 @@ where
                     .values
                     .first()
                     .and_then(value::Value::to_text)
-                    .ok_or(EngineError::custom("Invalid catalog key"))?
-                    .into(),
+                    .ok_or(EngineError::custom("Invalid catalog key"))?,
             },
             CatalogEntryKind::IndexField => SyncKey::IndexField {
                 index: entry
@@ -221,8 +217,7 @@ where
                     .values
                     .first()
                     .and_then(value::Value::to_text)
-                    .ok_or(EngineError::custom("Invalid catalog key"))?
-                    .into(),
+                    .ok_or(EngineError::custom("Invalid catalog key"))?,
                 position: u32::try_from(
                     entry
                         .key
