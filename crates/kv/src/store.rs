@@ -1,14 +1,15 @@
-use std::{collections::BTreeMap, ops::Bound};
+use std::{collections::BTreeMap, ops::Bound, sync::Mutex};
 
 use automerge::AutoCommit;
 use btree::{BTree, BTreeError, BTreeRead, BTreeResult, BTreeTransaction};
-use btree_automerge::{AutomergeBTreeTransaction, AutomergeChangeStore};
+use btree_automerge::{
+    AutomergeBTreeTransaction, AutomergeChangeStore, DocumentChangeKey, hash_heads,
+};
 use futures::{StreamExt, pin_mut};
 use uuid::Uuid;
 
 use crate::{
     decode_document_id, encode_document_id,
-    replication::KvSnapshot,
     value_document::{new_document, read_document, write_live, write_tombstone},
 };
 
@@ -44,7 +45,7 @@ where
                 AutomergeChangeStore::new(inner),
                 Default::default(),
             ),
-            uuid_generator: Box::new(generator),
+            uuid_generator: Mutex::new(Box::new(generator)),
         })
     }
 }
@@ -54,7 +55,7 @@ where
     T: BTreeTransaction<Vec<u8>, Vec<u8>>,
 {
     inner: AutomergeBTreeTransaction<AutomergeChangeStore<T>>,
-    uuid_generator: Box<dyn FnMut() -> Uuid + Send>,
+    uuid_generator: Mutex<Box<dyn FnMut() -> Uuid + Send>>,
 }
 
 impl<T> KvTransaction<T>
@@ -103,6 +104,26 @@ where
             })
     }
 
+    pub async fn scan_all(&self, now: i64) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+        let documents = self.inner.range(..);
+        pin_mut!(documents);
+        let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
+        while let Some(item) = documents.next().await {
+            let (id, document) = item?;
+            let (key, generation) = decode_document_id(&id)?;
+            latest.insert(key, (generation, document));
+        }
+        latest
+            .into_iter()
+            .try_fold(Vec::new(), |mut visible, (key, (_, document))| {
+                let state = read_document(&document)?;
+                if !state.tombstone && !state.expires_at.is_some_and(|expiry| now >= expiry) {
+                    visible.push((key, state.value.ok_or(BTreeError::InvalidDocument)?));
+                }
+                Ok(visible)
+            })
+    }
+
     pub async fn set(
         &mut self,
         key: &str,
@@ -119,7 +140,10 @@ where
                         .await?;
                     return Ok(());
                 }
-                let next = (self.uuid_generator)();
+                let next = (self
+                    .uuid_generator
+                    .lock()
+                    .expect("UUID generator lock poisoned"))();
                 validate_generation(next)?;
                 let (_, previous) = decode_document_id(&id)?;
                 if next <= previous {
@@ -131,7 +155,10 @@ where
                 next
             }
             None => {
-                let next = (self.uuid_generator)();
+                let next = (self
+                    .uuid_generator
+                    .lock()
+                    .expect("UUID generator lock poisoned"))();
                 validate_generation(next)?;
                 next
             }
@@ -155,7 +182,7 @@ where
         Ok(())
     }
 
-    pub async fn export_snapshots(&self) -> BTreeResult<Vec<KvSnapshot>> {
+    pub async fn export_snapshots(&self) -> BTreeResult<Vec<(DocumentChangeKey, Vec<u8>)>> {
         let documents = self.inner.range(..);
         pin_mut!(documents);
         let mut latest = BTreeMap::<String, (Vec<u8>, AutoCommit)>::new();
@@ -168,25 +195,32 @@ where
             .into_values()
             .map(|(id, document)| {
                 read_document(&document)?;
-                Ok(KvSnapshot::from_document(id, document))
+                Ok(snapshot_parts(id, document))
             })
             .collect()
     }
 
-    pub async fn export_snapshot(&self, key: &str) -> BTreeResult<Option<KvSnapshot>> {
+    pub async fn export_snapshot(
+        &self,
+        key: &str,
+    ) -> BTreeResult<Option<(DocumentChangeKey, Vec<u8>)>> {
         self.latest(key)
             .await?
             .map(|(id, document)| {
                 read_document(&document)?;
-                Ok(KvSnapshot::from_document(id, document))
+                Ok(snapshot_parts(id, document))
             })
             .transpose()
     }
 
-    pub async fn import_snapshot(&mut self, snapshot: KvSnapshot) -> BTreeResult<()> {
-        let mut incoming = snapshot.validate()?;
-        let (key, generation) = decode_document_id(&snapshot.key.id)?;
-        if let Some((id, mut current)) = self.latest(&key).await? {
+    pub async fn import_snapshot(
+        &mut self,
+        snapshot: (DocumentChangeKey, Vec<u8>),
+    ) -> BTreeResult<()> {
+        let (key, payload) = snapshot;
+        let mut incoming = validate_snapshot(&key, &payload)?;
+        let (logical_key, generation) = decode_document_id(&key.id)?;
+        if let Some((id, mut current)) = self.latest(&logical_key).await? {
             let (_, current_generation) = decode_document_id(&id)?;
             if generation < current_generation {
                 return Ok(());
@@ -207,9 +241,9 @@ where
                     return Err(BTreeError::InvalidDocument);
                 }
             }
-            self.remove_key_generations(&key).await?;
+            self.remove_key_generations(&logical_key).await?;
         }
-        self.inner.insert(snapshot.key.id, incoming).await
+        self.inner.insert(key.id, incoming).await
     }
 
     pub async fn commit(self) -> BTreeResult<()> {
@@ -246,6 +280,24 @@ where
         }
         Ok(())
     }
+}
+
+fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, Vec<u8>) {
+    let key = DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads()));
+    (key, document.save())
+}
+
+fn validate_snapshot(key: &DocumentChangeKey, payload: &[u8]) -> BTreeResult<AutoCommit> {
+    decode_document_id(&key.id)?;
+    if key.r#type != btree_automerge::DocumentType::Snapshot {
+        return Err(BTreeError::InvalidDocument);
+    }
+    let mut document = AutoCommit::load(payload).map_err(BTreeError::custom)?;
+    if document.save() != payload || key.change_hash != hash_heads(document.get_heads()) {
+        return Err(BTreeError::InvalidDocument);
+    }
+    read_document(&document)?;
+    Ok(document)
 }
 
 fn validate_generation(generation: Uuid) -> BTreeResult<()> {
@@ -382,6 +434,14 @@ mod tests {
             assert_eq!(tx.get("a", 9).await.unwrap(), Some(vec![1]));
             assert_eq!(tx.get("ab", 9).await.unwrap(), Some(vec![2]));
             assert_eq!(tx.get("a", 10).await.unwrap(), None);
+            assert_eq!(
+                tx.scan_all(9).await.unwrap(),
+                vec![
+                    ("a".into(), vec![1]),
+                    ("ab".into(), vec![2]),
+                    ("b".into(), vec![3])
+                ]
+            );
             assert_eq!(
                 tx.scan("a".to_string().."b".to_string(), 9).await.unwrap(),
                 vec![("a".into(), vec![1]), ("ab".into(), vec![2])]

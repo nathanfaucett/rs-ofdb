@@ -837,6 +837,21 @@ dependencies = [
  "btree-redb",
  "futures",
  "redb",
+ "uuid",
+]
+
+[[package]]
+name = "kv-sync"
+version = "0.1.0"
+dependencies = [
+ "btree",
+ "btree-automerge",
+ "btree-redb",
+ "futures",
+ "futures-channel",
+ "kv",
+ "postcard",
+ "redb",
  "serde",
  "uuid",
 ]

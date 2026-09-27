@@ -1,0 +1,27 @@
+[package]
+name = "kv-sync"
+version.workspace = true
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+btree = { path = "../btree", default-features = false, features = ["in-memory", "std"] }
+btree-automerge = { path = "../btree-automerge", default-features = false, features = [] }
+
+kv = { path = "../kv", default-features = false, features = [] }
+
+# External dependencies
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+futures = { version = "0.3", default-features = false, features = ["executor", "async-await", "std"] }
+futures-channel = { version = "0.3", default-features = false, features = ["sink"] }
+btree-redb = { path = "../btree-redb", default-features = false, features = [] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }
+uuid = { version = "1.23", default-features = false, features = ["v7"] }

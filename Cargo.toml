@@ -55,6 +55,7 @@ members = [
   "crates/wasm",
   "crates/btree",
   "crates/kv",
+  "crates/kv-sync",
   "crates/value",
   "crates/query",
   "crates/macros",

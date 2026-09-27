@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use btree::{BTreeRead, InMemoryBTree};
 use btree_automerge::{DocumentChangeKey, DocumentType, hash_heads};
 use futures::{StreamExt, executor::block_on};
-use kv::{KvSnapshot, KvStore, decode_document_id, encode_document_id};
+use kv::{KvStore, decode_document_id, encode_document_id};
 use uuid::Uuid;
 
 fn uuid(timestamp: u128) -> Uuid {
@@ -85,7 +85,7 @@ fn exports_latest_snapshot_for_live_and_tombstoned_keys() {
         let snapshots = tx.export_snapshots().await.unwrap();
         let keys: Vec<_> = snapshots
             .iter()
-            .map(|snapshot| decode_document_id(&snapshot.key.id).unwrap().0)
+            .map(|snapshot| decode_document_id(&snapshot.0.id).unwrap().0)
             .collect();
         assert_eq!(keys, ["deleted", "live"]);
         assert_eq!(tx.get("live", 0).await.unwrap(), Some(vec![1]));
@@ -266,7 +266,7 @@ fn batch_import_rolls_back_if_a_later_snapshot_is_invalid() {
         let valid = tx.export_snapshot("first").await.unwrap().unwrap();
         tx.commit().await.unwrap();
         let mut invalid = valid.clone();
-        invalid.key.id = vec![0];
+        invalid.0.id = vec![0];
 
         let mut tx = destination.transaction().await.unwrap();
         tx.import_snapshot(valid).await.unwrap();
@@ -295,47 +295,47 @@ fn rejects_invalid_ids_types_hashes_payloads_and_incrementals_without_mutation()
         seed.commit().await.unwrap();
         let mut invalid = Vec::new();
         let mut bad = valid.clone();
-        bad.key.id = encode_document_id("k", uuid(2));
-        bad.payload = vec![1, 2, 3];
+        bad.0.id = encode_document_id("k", uuid(2));
+        bad.1 = vec![1, 2, 3];
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.key.id = vec![0];
+        bad.0.id = vec![0];
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.key.id = encode_document_id("k", Uuid::nil());
+        bad.0.id = encode_document_id("k", Uuid::nil());
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.key.r#type = DocumentType::Incremental;
+        bad.0.r#type = DocumentType::Incremental;
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.key.change_hash = [0; 32];
+        bad.0.change_hash = [0; 32];
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.payload = vec![1, 2, 3];
+        bad.1 = vec![1, 2, 3];
         invalid.push(bad);
         let mut bad = valid.clone();
-        bad.payload = Vec::new();
+        bad.1 = Vec::new();
         invalid.push(bad);
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "value", vec![1_u8]).unwrap();
         doc.put(ROOT, "tombstone", false).unwrap();
         let incremental = doc.save_incremental();
-        invalid.push(KvSnapshot {
-            key: DocumentChangeKey::new_snapshot(valid.key.id.clone(), hash_heads(doc.get_heads())),
-            payload: incremental,
-        });
+        invalid.push((
+            DocumentChangeKey::new_snapshot(valid.0.id.clone(), hash_heads(doc.get_heads())),
+            incremental,
+        ));
         doc.put(ROOT, "value", vec![2_u8]).unwrap();
-        invalid.push(KvSnapshot {
-            key: DocumentChangeKey::new_snapshot(valid.key.id.clone(), hash_heads(doc.get_heads())),
-            payload: doc.save_incremental(),
-        });
+        invalid.push((
+            DocumentChangeKey::new_snapshot(valid.0.id.clone(), hash_heads(doc.get_heads())),
+            doc.save_incremental(),
+        ));
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "tombstone", true).unwrap();
         doc.put(ROOT, "value", vec![1_u8]).unwrap();
-        invalid.push(KvSnapshot {
-            key: DocumentChangeKey::new_snapshot(valid.key.id.clone(), hash_heads(doc.get_heads())),
-            payload: doc.save(),
-        });
+        invalid.push((
+            DocumentChangeKey::new_snapshot(valid.0.id.clone(), hash_heads(doc.get_heads())),
+            doc.save(),
+        ));
         for snapshot in invalid {
             let mut tx = destination.transaction().await.unwrap();
             assert!(tx.import_snapshot(snapshot).await.is_err());
