@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     decode_document_id, encode_document_id,
+    replication::KvSnapshot,
     value_document::{new_document, read_document, write_live, write_tombstone},
 };
 
@@ -152,6 +153,45 @@ where
         }
         self.inner.update(id, write_tombstone).await?;
         Ok(())
+    }
+
+    pub async fn export_snapshot(&self, key: &str) -> BTreeResult<Option<KvSnapshot>> {
+        self.latest(key)
+            .await?
+            .map(|(id, document)| {
+                read_document(&document)?;
+                Ok(KvSnapshot::from_document(id, document))
+            })
+            .transpose()
+    }
+
+    pub async fn import_snapshot(&mut self, snapshot: KvSnapshot) -> BTreeResult<()> {
+        let mut incoming = snapshot.validate()?;
+        let (key, generation) = decode_document_id(&snapshot.key.id)?;
+        if let Some((id, mut current)) = self.latest(&key).await? {
+            let (_, current_generation) = decode_document_id(&id)?;
+            if generation < current_generation {
+                return Ok(());
+            }
+            if generation == current_generation {
+                let current_heads = current.get_heads();
+                let incoming_heads = incoming.get_heads();
+                if incoming_heads
+                    .iter()
+                    .all(|head| current.get_change_by_hash(head).is_some())
+                {
+                    return Ok(());
+                }
+                if !current_heads
+                    .iter()
+                    .all(|head| incoming.get_change_by_hash(head).is_some())
+                {
+                    return Err(BTreeError::InvalidDocument);
+                }
+            }
+            self.remove_key_generations(&key).await?;
+        }
+        self.inner.insert(snapshot.key.id, incoming).await
     }
 
     pub async fn commit(self) -> BTreeResult<()> {
