@@ -1,15 +1,14 @@
 # Goal
 
-Build a modular, async-first, local-first database engine with a transaction-first storage boundary.
+Provide a local-first SQL-like database engine and KV store with durable, transport-neutral synchronization.
 
-The engine must make it possible to:
+The engine must:
 
-- use backend-agnostic kernels and row reconcilers;
-- commit every catalog, row, index, tombstone, and replication change as one Engine Transaction;
-- store each Logical Row through a Row Reconciler, including an Automerge-backed reconciler;
-- identify tables by table name, columns by `(table name, column name)`, and indexes by index name; require one immutable UUID primary key per table and use `[table name, UUID]` as the Logical Row identity;
-- retain concurrent row and unique-index contenders and expose deterministic canonical visible state;
-- preserve row deletions as Tombstones and restore a deleted row only with a new UUID; and
-- exchange causally dependent Replication Envelopes and mergeable Checkpoints so independent replicas ofdb after offline work.
+- commit each SQL engine write atomically, including catalog/schema, row state, tombstones and derived indexes;
+- preserve immutable row and schema-generation identities and deterministic conflict visibility;
+- expose canonical state units for bootstrap/recovery and incremental row changes for normal updates;
+- synchronize SQL state through the versioned `SyncMessage` protocol over caller-supplied `SyncTransport`;
+- synchronize KV snapshots explicitly, retaining UUIDv7 generations, Automerge history and tombstones; and
+- reject divergent histories for the same KV generation instead of silently choosing a winner.
 
-Backends provide ordered transactional storage. The engine owns catalogs, schema identities, UUID issuance, reconciliation, derived indexes, and replication semantics. Transport, peer discovery, authorization, and scheduling remain outside the engine.
+`ofdb` owns engine state, persistence and sync semantics. Transport framing, endpoint identity, peer discovery, resource authorization and scheduling belong to callers. The sync engine does not implement checkpoint/envelope replication or store transport/frontier state.

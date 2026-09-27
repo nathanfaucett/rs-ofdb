@@ -13,6 +13,7 @@
 - Prefer explicit imports and minimal dependencies.
 - Avoid glob imports and hard-coded absolute paths.
 - No non-essential comments; prefer refactoring over comments.
+- Prefer expect("message") over unwrap(); always provide a clear message explaining the invariant.
 
 ## Module Organization
 

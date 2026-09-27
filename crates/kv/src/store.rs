@@ -415,6 +415,44 @@ mod tests {
     }
 
     #[test]
+    fn import_rejects_divergent_histories_for_the_same_generation() {
+        block_on(async {
+            let base = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let mut tx = base
+                .transaction_with_uuid_generator(|| uuid(1))
+                .await
+                .unwrap();
+            tx.set("key", vec![0], None).await.unwrap();
+            let initial = tx.export_snapshot("key").await.unwrap().unwrap();
+            tx.commit().await.unwrap();
+
+            let left = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let right = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            for store in [&left, &right] {
+                let mut tx = store.transaction().await.unwrap();
+                tx.import_snapshot(initial.clone()).await.unwrap();
+                tx.commit().await.unwrap();
+            }
+
+            let mut tx = left.transaction().await.unwrap();
+            tx.set("key", vec![1], None).await.unwrap();
+            let left_branch = tx.export_snapshot("key").await.unwrap().unwrap();
+            tx.commit().await.unwrap();
+
+            let mut tx = right.transaction().await.unwrap();
+            tx.set("key", vec![2], None).await.unwrap();
+            let right_branch = tx.export_snapshot("key").await.unwrap().unwrap();
+            tx.commit().await.unwrap();
+
+            let destination = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let mut tx = destination.transaction().await.unwrap();
+            tx.import_snapshot(left_branch).await.unwrap();
+            assert!(tx.import_snapshot(right_branch).await.is_err());
+            tx.rollback().await.unwrap();
+        });
+    }
+
+    #[test]
     fn expiry_is_exclusive_and_scan_respects_key_ranges() {
         block_on(async {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();

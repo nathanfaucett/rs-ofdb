@@ -9,7 +9,9 @@ use query::{QueryParams, QueryResult, Statement, Translator};
 use schema::{IndexSchema, TableSchema};
 #[cfg(feature = "sync")]
 use sync::{
-    SyncManifest, SyncStateUnit, apply_sync_state_for, export_sync_state_for, sync_manifest_for,
+    SessionConfig, SyncError, SyncManifest, SyncResult, SyncRole, SyncStateUnit, SyncTransport,
+    apply_sync_state_for, export_sync_state_for, sync_manifest_for,
+    synchronize as synchronize_engine,
 };
 use value::{FromRow, Row, Value};
 
@@ -172,6 +174,22 @@ impl Database {
 
     pub async fn execute(&self, statements: Vec<Statement>) -> EngineResult<Vec<QueryResult>> {
         database_call!(self, |engine| engine.execute(statements).await)
+    }
+
+    #[cfg(feature = "sync")]
+    pub async fn synchronize<T>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+    {
+        database_call!(self, |engine| {
+            synchronize_engine(engine, transport, config, role).await
+        })
     }
 
     #[cfg(feature = "sync")]
