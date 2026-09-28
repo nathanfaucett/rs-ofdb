@@ -1,9 +1,11 @@
 use sync::SessionConfig;
 
+use super::verify::verify_case;
+
 use crate::{
     case::TestCase,
     cluster::automerge_redb_cluster,
-    runner::{RunnerError, TestRunner, VerificationPolicy, verify::verify_case},
+    runner::{RunnerError, TestRunner, VerificationPolicy, verify_step_result},
 };
 
 /// Orchestrates multi-node cluster integration tests in realtime mesh replication mode:
@@ -68,7 +70,8 @@ impl TestRunner for ClusterRealtimeRunner {
         for step in &case.steps {
             let result = cluster.try_exec(step.node.0, step.sql.as_ref()).await;
             match (&step.expected_error, result) {
-                (None, Ok(_)) => {
+                (None, Ok(rows)) => {
+                    verify_step_result(step, rows)?;
                     for other in 0..n {
                         if other != step.node.0 {
                             cluster

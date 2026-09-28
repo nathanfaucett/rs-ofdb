@@ -13,7 +13,7 @@ use sql_translator::SqlTranslator;
 
 use crate::{
     case::TestCase,
-    runner::{RunnerError, TestRunner, VerificationPolicy},
+    runner::{RunnerError, TestRunner, VerificationPolicy, verify_step_result},
 };
 
 static DATABASE_ID: AtomicU64 = AtomicU64::new(0);
@@ -79,7 +79,12 @@ impl TestRunner for SingleNodeRunner {
                 .translate_and_execute(step.sql.as_ref(), &SqlTranslator)
                 .await;
             match (&step.expected_error, result) {
-                (None, Ok(_)) => {}
+                (None, Ok(mut results)) => {
+                    if step.expected_rows.is_some() {
+                        let rows = results.pop().map(|result| result.rows).unwrap_or_default();
+                        verify_step_result(step, rows)?;
+                    }
+                }
                 (None, Err(err)) => {
                     return Err(RunnerError::UnexpectedError {
                         node: step.node,

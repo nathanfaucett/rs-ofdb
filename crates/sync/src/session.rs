@@ -15,6 +15,10 @@ use crate::{
     SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStateUnit, SyncTransport,
 };
 
+/// Maximum serialized sync message size (1 MiB). Transports must also bound reads
+/// before buffering frames; the session checks received frames only afterward.
+pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncRole {
     Initiator,
@@ -57,6 +61,9 @@ pub enum SyncError<E> {
 
     #[error("protocol codec error: {0}")]
     Protocol(String),
+
+    #[error("sync message size {size} exceeds {max} bytes")]
+    MessageTooLarge { size: usize, max: usize },
 
     #[error("incompatible protocol version: {0}")]
     IncompatibleProtocol(u16),
@@ -863,6 +870,12 @@ where
 {
     let frame =
         postcard::to_allocvec(message).map_err(|error| SyncError::Protocol(error.to_string()))?;
+    if frame.len() > MAX_MESSAGE_BYTES {
+        return Err(SyncError::MessageTooLarge {
+            size: frame.len(),
+            max: MAX_MESSAGE_BYTES,
+        });
+    }
     transport.send(frame).await.map_err(SyncError::Transport)
 }
 
@@ -872,5 +885,95 @@ where
     T::Error: core::fmt::Display,
 {
     let frame = transport.receive().await.map_err(SyncError::Transport)?;
+    if frame.len() > MAX_MESSAGE_BYTES {
+        return Err(SyncError::MessageTooLarge {
+            size: frame.len(),
+            max: MAX_MESSAGE_BYTES,
+        });
+    }
     postcard::from_bytes(&frame).map_err(|error| SyncError::Protocol(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::String, vec, vec::Vec};
+
+    use futures::executor::block_on;
+
+    use super::{MAX_MESSAGE_BYTES, SyncError, receive_message, send_message};
+    use crate::{SyncMessage, SyncTransport};
+
+    #[derive(Default)]
+    struct Transport {
+        inbound: Option<Vec<u8>>,
+        outbound: Option<Vec<u8>>,
+    }
+
+    impl SyncTransport for Transport {
+        type Error = &'static str;
+
+        async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+            self.inbound.take().ok_or("no inbound frame")
+        }
+
+        async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+            self.outbound = Some(frame);
+            Ok(())
+        }
+    }
+
+    fn abort_with_encoded_size(size: usize) -> SyncMessage {
+        let empty = postcard::to_allocvec(&SyncMessage::Abort(String::new()))
+            .expect("empty abort serializes");
+        let mut payload_len = size - empty.len();
+        loop {
+            let message = SyncMessage::Abort("x".repeat(payload_len));
+            let encoded = postcard::to_allocvec(&message).expect("abort serializes");
+            if encoded.len() == size {
+                return message;
+            }
+            payload_len -= encoded.len() - size;
+        }
+    }
+
+    #[test]
+    fn outbound_message_over_limit_is_not_sent() {
+        let mut transport = Transport::default();
+        let error = block_on(send_message(
+            &mut transport,
+            &abort_with_encoded_size(MAX_MESSAGE_BYTES + 1),
+        ))
+        .expect_err("oversized outbound message must fail");
+        assert!(
+            matches!(error, SyncError::MessageTooLarge { size, max } if size == MAX_MESSAGE_BYTES + 1 && max == MAX_MESSAGE_BYTES)
+        );
+        assert!(transport.outbound.is_none());
+    }
+
+    #[test]
+    fn inbound_message_over_limit_is_rejected_before_decode() {
+        let mut transport = Transport {
+            inbound: Some(vec![0xff; MAX_MESSAGE_BYTES + 1]),
+            ..Transport::default()
+        };
+        let error = block_on(receive_message(&mut transport))
+            .expect_err("oversized inbound frame must fail before decoding");
+        assert!(
+            matches!(error, SyncError::MessageTooLarge { size, max } if size == MAX_MESSAGE_BYTES + 1 && max == MAX_MESSAGE_BYTES)
+        );
+    }
+
+    #[test]
+    fn message_at_limit_round_trips() {
+        let message = abort_with_encoded_size(MAX_MESSAGE_BYTES);
+        let mut transport = Transport::default();
+        block_on(send_message(&mut transport, &message)).expect("boundary message must send");
+        let frame = transport.outbound.take().expect("message was sent");
+        assert_eq!(frame.len(), MAX_MESSAGE_BYTES);
+        transport.inbound = Some(frame);
+        assert_eq!(
+            block_on(receive_message(&mut transport)).expect("boundary message must decode"),
+            message
+        );
+    }
 }

@@ -58,6 +58,12 @@ where
         table: &str,
         row: &Uuid,
     ) -> impl Future<Output = EngineResult<Vec<usize>>> + Send;
+    fn conflict_values(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: &Uuid,
+    ) -> impl Future<Output = EngineResult<Vec<(usize, Vec<value::Value>)>>> + Send;
     fn encode_resolution(
         &self,
         transaction: &T,

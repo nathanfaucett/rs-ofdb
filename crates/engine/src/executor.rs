@@ -1,10 +1,11 @@
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
 use futures::{StreamExt, pin_mut};
 use query::{
-    AlterTableOperation, DataDefinition, Query, QueryColumn, QueryDelete, QueryExpr,
-    QueryExprValue, QueryInsert, QueryInsertValue, QueryInsertValues, QueryResult,
-    QueryResultColumn, QuerySelect, QueryUpdate, QueryUpdateAssignment,
+    AlterTableOperation, DataDefinition, Query, QueryAggregate, QueryColumn, QueryCountTarget,
+    QueryDelete, QueryExpr, QueryExprValue, QueryHavingCountOperator, QueryInsert,
+    QueryInsertValue, QueryInsertValues, QueryJoinKind, QueryOrderBy, QueryResult,
+    QueryResultColumn, QuerySelect, QuerySortDirection, QueryUpdate, QueryUpdateAssignment,
 };
 use schema::{ColumnSchema, TableSchema};
 use uuid::Uuid;
@@ -36,47 +37,56 @@ where
     R: RowCodec<K::Transaction> + Send + Sync,
 {
     let mut transaction = engine.kernel.transaction().await?;
-    if let Err(error) = ensure_catalog(&mut transaction).await {
-        transaction.rollback().await?;
-        return Err(error);
-    }
     let mut changes = Vec::new();
+    match execute_in_transaction(engine, &mut transaction, statements, &mut changes).await {
+        Ok(results) => {
+            transaction.commit().await?;
+            Ok(results)
+        }
+        Err(error) => {
+            transaction.rollback().await?;
+            Err(error)
+        }
+    }
+}
 
+pub(crate) async fn execute_in_transaction<K, R>(
+    engine: &Engine<K, R>,
+    transaction: &mut K::Transaction,
+    statements: Vec<query::Statement>,
+    changes: &mut Vec<Change>,
+) -> EngineResult<Vec<QueryResult>>
+where
+    K: Kernel,
+    R: RowCodec<K::Transaction> + Send + Sync,
+{
+    ensure_catalog(transaction).await?;
     let mut results = Vec::with_capacity(statements.len());
-
     for statement in statements {
         let result = match statement {
             query::Statement::Query(query) => {
                 execute_query(
-                    &mut transaction,
+                    transaction,
                     engine.reconciler.as_ref(),
                     engine.timestamp_provider,
-                    &mut changes,
+                    changes,
                     query,
                 )
                 .await
             }
             query::Statement::DataDefinition(ddl) => {
                 execute_ddl(
-                    &mut transaction,
+                    transaction,
                     engine.reconciler.as_ref(),
                     engine.timestamp_provider,
-                    &mut changes,
+                    changes,
                     ddl,
                 )
                 .await
             }
-        };
-        match result {
-            Ok(result) => results.push(result),
-            Err(error) => {
-                transaction.rollback().await?;
-                return Err(error);
-            }
-        }
+        }?;
+        results.push(result);
     }
-
-    transaction.commit().await?;
     Ok(results)
 }
 
@@ -680,7 +690,24 @@ where
     R: RowCodec<T>,
 {
     let schema = table_schema(transaction, &insert.table).await?;
-    let mut values = vec![None; schema.columns.len()];
+    let primary_key = schema
+        .columns
+        .iter()
+        .position(|column| column.primary_key)
+        .ok_or(EngineError::InvalidQuery(
+            "Table requires exactly one UUID primary key",
+        ))?;
+    if let Some(target) = insert.on_conflict_do_nothing.as_ref().or_else(|| {
+        insert
+            .on_conflict_do_update
+            .as_ref()
+            .map(|(target, _)| target)
+    }) && target.as_slice() != [schema.columns[primary_key].name.as_str()]
+    {
+        return Err(EngineError::InvalidQuery(
+            "ON CONFLICT target must be the UUID primary key",
+        ));
+    }
     let columns = if insert.columns.is_empty() {
         schema
             .columns
@@ -690,54 +717,115 @@ where
     } else {
         insert.columns
     };
-    if columns.len() != insert.values.len() {
-        return Err(EngineError::InvalidQuery(
-            "INSERT column/value count mismatch",
-        ));
-    }
-    for (column, value) in columns.iter().zip(insert.values) {
-        let index = schema
-            .columns
-            .iter()
-            .position(|candidate| candidate.name == *column)
-            .ok_or(EngineError::InvalidQuery("Unknown INSERT column"))?;
-        if values[index].is_some() {
-            return Err(EngineError::InvalidQuery("Duplicate INSERT column"));
+    let mut result = QueryResult::default();
+    for row_values in insert.rows {
+        let mut values = vec![None; schema.columns.len()];
+        if columns.len() != row_values.len() {
+            return Err(EngineError::InvalidQuery(
+                "INSERT column/value count mismatch",
+            ));
         }
-        values[index] = Some(value);
-    }
-    let primary_key = schema
-        .columns
-        .iter()
-        .position(|column| column.primary_key)
-        .ok_or(EngineError::InvalidQuery(
-            "Table requires exactly one UUID primary key",
-        ))?;
-    let row = Row::new(
-        values
-            .into_iter()
-            .enumerate()
-            .map(|(index, value)| match value {
-                Some(QueryInsertValue::Value(value)) => Ok(value),
-                Some(QueryInsertValue::Default) | None if index == primary_key => {
-                    next_uuid(timestamp_provider).map(Value::Uuid)
+        for (column, value) in columns.iter().zip(row_values) {
+            let index = schema
+                .columns
+                .iter()
+                .position(|candidate| candidate.name == *column)
+                .ok_or(EngineError::InvalidQuery("Unknown INSERT column"))?;
+            if values[index].is_some() {
+                return Err(EngineError::InvalidQuery("Duplicate INSERT column"));
+            }
+            values[index] = Some(value);
+        }
+        let row = Row::new(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| match value {
+                    Some(QueryInsertValue::Value(value)) => Ok(value),
+                    Some(QueryInsertValue::Default) | None if index == primary_key => {
+                        next_uuid(timestamp_provider).map(Value::Uuid)
+                    }
+                    Some(QueryInsertValue::Default) | None => {
+                        Ok(schema.columns[index].default.clone())
+                    }
+                })
+                .collect::<EngineResult<Vec<_>>>()?,
+        );
+        if insert.on_conflict_do_nothing.is_some() || insert.on_conflict_do_update.is_some() {
+            let row_id = row_id(&schema, &row)?;
+            let table = lookup_table_name(transaction, &insert.table).await?;
+            if let Some(mut existing) = reconciler.get_row(transaction, &table, &row_id).await? {
+                let Some((_, assignments)) = &insert.on_conflict_do_update else {
+                    continue;
+                };
+                let original = existing.values.clone();
+                let mut changed_columns = Vec::with_capacity(assignments.len());
+                for assignment in assignments {
+                    let index = column_index(
+                        &schema,
+                        &insert.table,
+                        &assignment.column,
+                        "Unknown ON CONFLICT assignment column",
+                    )?;
+                    if schema.columns[index].primary_key || changed_columns.contains(&index) {
+                        return Err(EngineError::InvalidQuery(
+                            "Invalid ON CONFLICT assignment column",
+                        ));
+                    }
+                    existing.values[index] = match &assignment.value {
+                        QueryExprValue::Value(value) => value.clone(),
+                        QueryExprValue::ExcludedColumn(column) => {
+                            let source_index = schema
+                                .columns
+                                .iter()
+                                .position(|candidate| candidate.name == *column)
+                                .ok_or(EngineError::InvalidQuery("Unknown EXCLUDED column"))?;
+                            row.values[source_index].clone()
+                        }
+                        QueryExprValue::Column(_) => {
+                            return Err(EngineError::InvalidQuery(
+                                "ON CONFLICT assignment requires a value or EXCLUDED column",
+                            ));
+                        }
+                    };
+                    if existing.values[index] != original[index] {
+                        changed_columns.push(index);
+                    }
                 }
-                Some(QueryInsertValue::Default) | None => Ok(schema.columns[index].default.clone()),
-            })
-            .collect::<EngineResult<Vec<_>>>()?,
-    );
-    insert_row(
-        transaction,
-        reconciler,
-        timestamp_provider,
-        changes,
-        QueryInsert {
-            table: insert.table,
-            row,
-            returning: insert.returning,
-        },
-    )
-    .await
+                if changed_columns.is_empty() {
+                    continue;
+                }
+                let encoded = reconciler
+                    .encode_row(transaction, &table, &row_id, &existing, &changed_columns)
+                    .await?;
+                apply_local_change(
+                    transaction,
+                    reconciler,
+                    changes,
+                    Change::row(next_uuid(timestamp_provider)?, table, row_id, Some(encoded)),
+                )
+                .await?;
+                continue;
+            }
+        }
+        let row_result = insert_row(
+            transaction,
+            reconciler,
+            timestamp_provider,
+            changes,
+            QueryInsert {
+                table: insert.table.clone(),
+                row,
+                returning: insert.returning.clone(),
+            },
+        )
+        .await?;
+        if result.columns.is_empty() {
+            result.columns = row_result.columns;
+        }
+        result.rows.extend(row_result.rows);
+    }
+    Ok(result)
 }
 
 async fn update_rows<T, R>(
@@ -754,26 +842,44 @@ where
     if !update.from.joins.is_empty() {
         return Err(EngineError::Unsupported("UPDATE JOIN"));
     }
-    if update.returning.is_some() {
-        return Err(EngineError::Unsupported("UPDATE RETURNING"));
-    }
-
     let schema = table_schema(transaction, &update.from.table).await?;
+    let returning = update
+        .returning
+        .as_ref()
+        .map(|columns| projection(&schema, &update.from.table, columns))
+        .transpose()?;
+    let mut returned_rows = Vec::new();
     let assignments = assignments(&schema, &update.from.table, &update.assignments)?;
-    let predicate = predicate(&schema, &update.from.table, update.predicate.as_ref())?;
     let rows = matching_rows(
         transaction,
         reconciler,
         &update.from.table,
         &schema,
-        predicate,
+        update.predicate.as_ref(),
     )
     .await?;
 
     let table = lookup_table_name(transaction, &update.from.table).await?;
     for (id, mut row) in rows {
+        let original = row.values.clone();
         for (index, value) in &assignments {
-            row.values[*index] = value.clone();
+            row.values[*index] = match value {
+                QueryExprValue::Value(value) => value.clone(),
+                QueryExprValue::Column(column) => {
+                    let source_index = column_index(
+                        &schema,
+                        &update.from.table,
+                        column,
+                        "Unknown assignment column",
+                    )?;
+                    original[source_index].clone()
+                }
+                QueryExprValue::ExcludedColumn(_) => {
+                    return Err(EngineError::InvalidQuery(
+                        "EXCLUDED is only valid in ON CONFLICT assignments",
+                    ));
+                }
+            };
         }
         if row_id(&schema, &row)? != id {
             return Err(EngineError::InvalidQuery("Cannot update the primary key"));
@@ -794,9 +900,23 @@ where
             ),
         )
         .await?;
+        if let Some(returning) = &returning {
+            returned_rows.push(Row::new(
+                returning
+                    .iter()
+                    .map(|(index, _)| row.values[*index].clone())
+                    .collect(),
+            ));
+        }
     }
 
-    Ok(QueryResult::default())
+    match returning {
+        Some(columns) => Ok(QueryResult::new_with_columns(
+            returned_rows,
+            columns.into_iter().map(|(_, column)| column).collect(),
+        )),
+        None => Ok(QueryResult::default()),
+    }
 }
 
 async fn delete_rows<T, R>(
@@ -813,33 +933,48 @@ where
     if !delete.from.joins.is_empty() {
         return Err(EngineError::Unsupported("DELETE JOIN"));
     }
-    if delete.returning.is_some() {
-        return Err(EngineError::Unsupported("DELETE RETURNING"));
-    }
-
     let schema = table_schema(transaction, &delete.from.table).await?;
-    let predicate = predicate(&schema, &delete.from.table, delete.predicate.as_ref())?;
+    let returning = delete
+        .returning
+        .as_ref()
+        .map(|columns| projection(&schema, &delete.from.table, columns))
+        .transpose()?;
+    let mut returned_rows = Vec::new();
     let rows = matching_rows(
         transaction,
         reconciler,
         &delete.from.table,
         &schema,
-        predicate,
+        delete.predicate.as_ref(),
     )
     .await?;
 
     let table = lookup_table_name(transaction, &delete.from.table).await?;
-    for (row, _) in rows {
+    for (row_id, row) in rows {
         apply_local_change(
             transaction,
             reconciler,
             changes,
-            Change::row(next_uuid(timestamp_provider)?, table.clone(), row, None),
+            Change::row(next_uuid(timestamp_provider)?, table.clone(), row_id, None),
         )
         .await?;
+        if let Some(returning) = &returning {
+            returned_rows.push(Row::new(
+                returning
+                    .iter()
+                    .map(|(index, _)| row.values[*index].clone())
+                    .collect(),
+            ));
+        }
     }
 
-    Ok(QueryResult::default())
+    match returning {
+        Some(columns) => Ok(QueryResult::new_with_columns(
+            returned_rows,
+            columns.into_iter().map(|(_, column)| column).collect(),
+        )),
+        None => Ok(QueryResult::default()),
+    }
 }
 
 pub(crate) async fn row_conflicts<T, R>(
@@ -867,6 +1002,36 @@ where
                 .ok_or(EngineError::custom(
                     "Conflicted column is missing from schema",
                 ))
+        })
+        .collect()
+}
+
+pub(crate) async fn row_conflict_values<T, R>(
+    transaction: &T,
+    reconciler: &R,
+    table_name: &str,
+    key: &Row,
+) -> EngineResult<Vec<(String, Vec<Value>)>>
+where
+    T: KernelTransaction,
+    R: RowCodec<T>,
+{
+    let table = lookup_table_name(transaction, table_name).await?;
+    let row = key_row_id(key)?;
+    let schema = table_schema(transaction, table_name).await?;
+    reconciler
+        .conflict_values(transaction, &table, &row)
+        .await?
+        .into_iter()
+        .map(|(index, values)| {
+            let name = schema
+                .columns
+                .get(index)
+                .map(|column| column.name.clone())
+                .ok_or(EngineError::custom(
+                    "Conflicted column is missing from schema",
+                ))?;
+            Ok((name, values))
         })
         .collect()
 }
@@ -938,7 +1103,7 @@ async fn matching_rows<T, R>(
     reconciler: &R,
     table_name: &str,
     schema: &TableSchema,
-    predicate: (usize, Value),
+    predicate: Option<&QueryExpr>,
 ) -> EngineResult<Vec<(Uuid, Row)>>
 where
     T: KernelTransaction,
@@ -952,7 +1117,7 @@ where
     while let Some(item) = stream.next().await {
         let (row_id, row) = item?;
         let row = materialize_defaults(schema, row);
-        if row.values.get(predicate.0) == Some(&predicate.1) {
+        if predicate_matches(schema, table_name, &row, predicate)? {
             rows.push((row_id, row));
         }
     }
@@ -964,7 +1129,7 @@ fn assignments(
     schema: &TableSchema,
     table: &str,
     assignments: &[QueryUpdateAssignment],
-) -> EngineResult<Vec<(usize, Value)>> {
+) -> EngineResult<Vec<(usize, QueryExprValue)>> {
     if assignments.is_empty() {
         return Err(EngineError::InvalidQuery("UPDATE requires an assignment"));
     }
@@ -978,48 +1143,23 @@ fn assignments(
                 &assignment.column,
                 "Unknown assignment column",
             )?;
-            let QueryExprValue::Value(value) = &assignment.value else {
-                return Err(EngineError::Unsupported("UPDATE column assignments"));
-            };
+            match &assignment.value {
+                QueryExprValue::Column(column) => {
+                    column_index(schema, table, column, "Unknown assignment column")?;
+                }
+                QueryExprValue::ExcludedColumn(_) => {
+                    return Err(EngineError::InvalidQuery(
+                        "EXCLUDED is only valid in ON CONFLICT assignments",
+                    ));
+                }
+                QueryExprValue::Value(_) => {}
+            }
             if schema.columns[index].primary_key {
                 return Err(EngineError::InvalidQuery("Cannot update the primary key"));
             }
-            Ok((index, value.clone()))
+            Ok((index, assignment.value.clone()))
         })
         .collect()
-}
-
-fn predicate(
-    schema: &TableSchema,
-    table: &str,
-    predicate: Option<&QueryExpr>,
-) -> EngineResult<(usize, Value)> {
-    let Some(QueryExpr::Equals(left, right)) = predicate else {
-        return Err(EngineError::Unsupported(
-            "UPDATE and DELETE require column equality predicates",
-        ));
-    };
-
-    let (column, value) = match (left.as_ref(), right.as_ref()) {
-        (
-            QueryExpr::Value(QueryExprValue::Column(column)),
-            QueryExpr::Value(QueryExprValue::Value(value)),
-        )
-        | (
-            QueryExpr::Value(QueryExprValue::Value(value)),
-            QueryExpr::Value(QueryExprValue::Column(column)),
-        ) => (column, value),
-        _ => {
-            return Err(EngineError::Unsupported(
-                "UPDATE and DELETE require column equality predicates",
-            ));
-        }
-    };
-
-    Ok((
-        column_index(schema, table, column, "Unknown predicate column")?,
-        value.clone(),
-    ))
 }
 
 fn column_index(
@@ -1047,19 +1187,55 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    if !select.from.joins.is_empty()
-        || !select.aggregates.is_empty()
-        || !select.group_by.is_empty()
-        || !select.order_by.is_empty()
-        || select.limit.is_some()
-        || select.offset.is_some()
-        || select.having.is_some()
-    {
-        return Err(EngineError::Unsupported("complex SELECT"));
+    if !select.from.joins.is_empty() {
+        if select.having.is_some() {
+            return Err(EngineError::Unsupported("HAVING"));
+        }
+        return select_join_rows(transaction, reconciler, select).await;
     }
+    let mut select = select;
+    if let Some(QueryExpr::InSubquery {
+        expr,
+        subquery,
+        negated,
+    }) = select.predicate.clone()
+    {
+        let values = Box::pin(in_subquery_values(transaction, reconciler, &subquery)).await?;
+        let in_list = QueryExpr::InList {
+            expr,
+            list: values
+                .into_iter()
+                .map(|value| QueryExpr::Value(QueryExprValue::Value(value)))
+                .collect(),
+            negated,
+        };
+        select.predicate = Some(in_list);
+    }
+    let distinct = select.distinct;
 
     let schema = table_schema(transaction, &select.from.table).await?;
-    let projection = projection(&schema, &select.from.table, &select.projection)?;
+    let mut projection = projection(&schema, &select.from.table, &select.projection)?;
+    for (position, concat) in select.text_concats.iter().enumerate() {
+        let Some(concat) = concat else { continue };
+        let index = column_index(
+            &schema,
+            &select.from.table,
+            &concat.column,
+            "Unknown projection column",
+        )?;
+        if schema.columns[index].r#type != value::ValueType::Text {
+            return Err(EngineError::InvalidQuery(
+                "Text concatenation requires a text column",
+            ));
+        }
+        let (_, column) = projection
+            .get_mut(position)
+            .ok_or(EngineError::InvalidQuery("Invalid computed projection"))?;
+        column.name = concat.alias.clone();
+        column.source_table = None;
+        column.source_column = None;
+    }
+    let ordering = order_columns(&schema, &select.from.table, &select.order_by)?;
     let table = lookup_table_name(transaction, &select.from.table).await?;
     let stream = reconciler.scan_rows(transaction, &table);
     pin_mut!(stream);
@@ -1071,18 +1247,444 @@ where
         if !predicate_matches(&schema, &select.from.table, &row, select.predicate.as_ref())? {
             continue;
         }
-        rows.push(Row::new(
-            projection
-                .iter()
-                .map(|(index, _)| row.values[*index].clone())
-                .collect(),
+        rows.push(row);
+    }
+    if distinct {
+        let mut unique_rows: Vec<Row> = Vec::new();
+        let mut projected = Vec::new();
+        for row in rows {
+            let key = Row::new(
+                projection
+                    .iter()
+                    .map(|(index, _)| row.values[*index].clone())
+                    .collect(),
+            );
+            if !projected.contains(&key) {
+                projected.push(key);
+                unique_rows.push(row);
+            }
+        }
+        rows = unique_rows;
+    }
+
+    if !select.group_by.is_empty() {
+        if select.group_by.len() != 1
+            || select.projection.len() != 1
+            || select.aggregates.len() != 1
+        {
+            return Err(EngineError::Unsupported("GROUP BY shape"));
+        }
+        let group_index = column_index(
+            &schema,
+            &select.from.table,
+            &select.group_by[0],
+            "Unknown GROUP BY column",
+        )?;
+        let count_target = match &select.aggregates[0] {
+            QueryAggregate::Count(QueryCountTarget::AllRows) => None,
+            QueryAggregate::Count(QueryCountTarget::Single(column)) => Some(
+                schema
+                    .columns
+                    .iter()
+                    .position(|candidate| candidate.name == *column)
+                    .ok_or(EngineError::InvalidQuery("Unknown aggregate column"))?,
+            ),
+            _ => return Err(EngineError::Unsupported("GROUP BY aggregate")),
+        };
+        if select.having.is_some() && count_target.is_some() {
+            return Err(EngineError::Unsupported("HAVING requires COUNT(*)"));
+        }
+        let mut groups: Vec<(Value, usize, usize)> = Vec::new();
+        for row in rows {
+            let key = row.values[group_index].clone();
+            if let Some((_, count, non_null_count)) =
+                groups.iter_mut().find(|(value, _, _)| *value == key)
+            {
+                *count += 1;
+                if count_target.is_none_or(|index| !matches!(row.values[index], Value::Null)) {
+                    *non_null_count += 1;
+                }
+            } else {
+                let non_null_count = usize::from(
+                    count_target.is_none_or(|index| !matches!(row.values[index], Value::Null)),
+                );
+                groups.push((key, 1, non_null_count));
+            }
+        }
+        groups.retain(|(_, count, _)| {
+            select
+                .having
+                .as_ref()
+                .is_none_or(|having| match having.operator {
+                    QueryHavingCountOperator::GreaterThan => {
+                        i64::try_from(*count).is_ok_and(|count| count > having.value)
+                    }
+                    QueryHavingCountOperator::GreaterThanOrEquals => {
+                        i64::try_from(*count).is_ok_and(|count| count >= having.value)
+                    }
+                })
+        });
+        let ordering = order_columns(&schema, &select.from.table, &select.order_by)?;
+        if ordering.iter().any(|(index, _)| *index != group_index) {
+            return Err(EngineError::Unsupported("GROUP BY ORDER BY column"));
+        }
+        if let Some((_, direction)) = ordering.first() {
+            groups.sort_by(|left, right| {
+                let ordering = left.0.cmp(&right.0);
+                match direction {
+                    QuerySortDirection::Asc => ordering,
+                    QuerySortDirection::Desc => ordering.reverse(),
+                }
+            });
+        }
+        let start = select.offset.unwrap_or(0).min(groups.len());
+        let end = select
+            .limit
+            .and_then(|limit| start.checked_add(limit))
+            .unwrap_or(groups.len())
+            .min(groups.len());
+        let group_column = projection
+            .first()
+            .cloned()
+            .ok_or(EngineError::InvalidQuery("Missing group projection"))?;
+        let count_name = match count_target {
+            Some(_) => "COUNT(column)",
+            None => "COUNT(*)",
+        };
+        let result_rows = groups
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .map(|(key, count, non_null_count)| {
+                let count = if count_target.is_some() {
+                    non_null_count
+                } else {
+                    count
+                };
+                let count = i64::try_from(count)
+                    .map_err(|_| EngineError::InvalidQuery("Aggregate count overflow"))?;
+                Ok(Row::new(vec![key, Value::Integer(count)]))
+            })
+            .collect::<EngineResult<Vec<_>>>()?;
+        let mut result_columns = vec![group_column.1];
+        result_columns.push(QueryResultColumn {
+            name: count_name.into(),
+            source_table: Some(select.from.table),
+            source_column: None,
+        });
+        return Ok(QueryResult::new_with_columns(result_rows, result_columns));
+    }
+
+    if select.having.is_some() {
+        return Err(EngineError::Unsupported("HAVING requires GROUP BY"));
+    }
+    if !select.aggregates.is_empty() {
+        if select.aggregates.len() != 1
+            || !ordering.is_empty()
+            || select.limit.is_some()
+            || select.offset.is_some()
+        {
+            return Err(EngineError::Unsupported("combined aggregate SELECT"));
+        }
+        let (name, count) = match &select.aggregates[0] {
+            QueryAggregate::Count(QueryCountTarget::AllRows) => ("COUNT(*)", rows.len()),
+            QueryAggregate::Count(QueryCountTarget::Single(column)) => {
+                let index = schema
+                    .columns
+                    .iter()
+                    .position(|candidate| candidate.name == *column)
+                    .ok_or(EngineError::InvalidQuery("Unknown aggregate column"))?;
+                (
+                    "COUNT(column)",
+                    rows.iter()
+                        .filter(|row| !matches!(row.values[index], Value::Null))
+                        .count(),
+                )
+            }
+            _ => return Err(EngineError::Unsupported("aggregate function")),
+        };
+        let count = i64::try_from(count)
+            .map_err(|_| EngineError::InvalidQuery("Aggregate count overflow"))?;
+        return Ok(QueryResult::new_with_columns(
+            vec![Row::new(vec![Value::Integer(count)])],
+            vec![QueryResultColumn {
+                name: name.into(),
+                source_table: Some(select.from.table),
+                source_column: None,
+            }],
         ));
     }
+
+    if !ordering.is_empty() {
+        rows.sort_by(|left, right| {
+            for (index, direction) in &ordering {
+                let order = left.values[*index].cmp(&right.values[*index]);
+                let order = match direction {
+                    QuerySortDirection::Asc => order,
+                    QuerySortDirection::Desc => order.reverse(),
+                };
+                if !order.is_eq() {
+                    return order;
+                }
+            }
+            core::cmp::Ordering::Equal
+        });
+    }
+
+    let start = select.offset.unwrap_or(0).min(rows.len());
+    let end = select
+        .limit
+        .and_then(|limit| start.checked_add(limit))
+        .unwrap_or(rows.len())
+        .min(rows.len());
+    let rows = rows
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|row| {
+            Row::new(
+                projection
+                    .iter()
+                    .enumerate()
+                    .map(|(position, (index, _))| {
+                        let value = row.values[*index].clone();
+                        match select.text_concats.get(position).and_then(Option::as_ref) {
+                            Some(concat) => match value {
+                                Value::Text(mut text) => {
+                                    text.push_str(&concat.literal);
+                                    Value::Text(text)
+                                }
+                                Value::Null => Value::Null,
+                                _ => unreachable!("text concatenation source was validated"),
+                            },
+                            None => value,
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
 
     Ok(QueryResult::new_with_columns(
         rows,
         projection.into_iter().map(|(_, column)| column).collect(),
     ))
+}
+
+async fn select_join_rows<T, R>(
+    transaction: &T,
+    reconciler: &R,
+    select: QuerySelect,
+) -> EngineResult<QueryResult>
+where
+    T: KernelTransaction,
+    R: RowCodec<T>,
+{
+    if select.from.joins.len() != 1 || !select.aggregates.is_empty() || select.distinct {
+        return Err(EngineError::Unsupported("complex SELECT JOIN"));
+    }
+    let join = &select.from.joins[0];
+    if !matches!(join.kind, QueryJoinKind::Inner | QueryJoinKind::Left) {
+        return Err(EngineError::Unsupported("JOIN type"));
+    }
+    if select.predicate.is_some()
+        || !select.order_by.is_empty()
+        || select.limit.is_some()
+        || select.offset.is_some()
+    {
+        return Err(EngineError::Unsupported("complex SELECT JOIN"));
+    }
+    let left_schema = table_schema(transaction, &select.from.table).await?;
+    let right_schema = table_schema(transaction, &join.table).await?;
+    let left_table = lookup_table_name(transaction, &select.from.table).await?;
+    let right_table = lookup_table_name(transaction, &join.table).await?;
+    let left_stream = reconciler.scan_rows(transaction, &left_table);
+    pin_mut!(left_stream);
+    let mut left_rows = Vec::new();
+    while let Some(item) = left_stream.next().await {
+        left_rows.push(materialize_defaults(&left_schema, item?.1));
+    }
+    let right_stream = reconciler.scan_rows(transaction, &right_table);
+    pin_mut!(right_stream);
+    let mut right_rows = Vec::new();
+    while let Some(item) = right_stream.next().await {
+        right_rows.push(materialize_defaults(&right_schema, item?.1));
+    }
+    let mut columns = Vec::new();
+    for requested in &select.projection {
+        let sources = if requested.column == "*" {
+            vec![
+                (&select.from.table, &left_schema),
+                (&join.table, &right_schema),
+            ]
+        } else if requested.table == select.from.table {
+            vec![(&select.from.table, &left_schema)]
+        } else if requested.table == join.table {
+            vec![(&join.table, &right_schema)]
+        } else {
+            return Err(EngineError::InvalidQuery("Unknown column table"));
+        };
+        for (table, schema) in sources {
+            for column in &schema.columns {
+                if requested.column == "*" || requested.column == column.name {
+                    columns.push(((*table).clone(), column.name.clone()));
+                }
+            }
+        }
+    }
+    let mut result = Vec::new();
+    for left in left_rows {
+        let mut matched = false;
+        for right in &right_rows {
+            let combined = Row::new(left.values.iter().chain(&right.values).cloned().collect());
+            if !join_matches(
+                &left_schema,
+                &right_schema,
+                &select.from.table,
+                &join.table,
+                &combined,
+                &join.on,
+            )? {
+                continue;
+            }
+            matched = true;
+            result.push(Row::new(
+                columns
+                    .iter()
+                    .map(|(table, column)| {
+                        let schema = if table == &select.from.table {
+                            &left_schema
+                        } else {
+                            &right_schema
+                        };
+                        let offset = if table == &select.from.table {
+                            0
+                        } else {
+                            left_schema.columns.len()
+                        };
+                        combined.values[offset
+                            + schema
+                                .columns
+                                .iter()
+                                .position(|c| c.name == *column)
+                                .expect("projected column exists")]
+                        .clone()
+                    })
+                    .collect(),
+            ));
+        }
+        if !matched && matches!(join.kind, QueryJoinKind::Left) {
+            result.push(Row::new(
+                columns
+                    .iter()
+                    .map(|(table, column)| {
+                        if table == &select.from.table {
+                            left.values[left_schema
+                                .columns
+                                .iter()
+                                .position(|c| c.name == *column)
+                                .expect("projected column exists")]
+                            .clone()
+                        } else {
+                            Value::Null
+                        }
+                    })
+                    .collect(),
+            ));
+        }
+    }
+    let result_columns = columns
+        .into_iter()
+        .map(|(table, name)| QueryResultColumn {
+            name: name.clone(),
+            source_table: Some(table),
+            source_column: Some(name),
+        })
+        .collect();
+    Ok(QueryResult::new_with_columns(result, result_columns))
+}
+
+fn join_matches(
+    left: &TableSchema,
+    right: &TableSchema,
+    left_name: &str,
+    right_name: &str,
+    row: &Row,
+    expr: &QueryExpr,
+) -> EngineResult<bool> {
+    let value = |column: &QueryColumn| -> EngineResult<Value> {
+        let (schema, offset) = if column.table == left_name {
+            (left, 0)
+        } else if column.table == right_name {
+            (right, left.columns.len())
+        } else {
+            return Err(EngineError::InvalidQuery("Unknown column table"));
+        };
+        let index = schema
+            .columns
+            .iter()
+            .position(|candidate| candidate.name == column.column)
+            .ok_or(EngineError::InvalidQuery("Unknown predicate column"))?;
+        Ok(row.values[offset + index].clone())
+    };
+    match expr {
+        QueryExpr::Equals(a, b) => {
+            let eval = |expr: &QueryExpr| -> EngineResult<Value> {
+                match expr {
+                    QueryExpr::Value(QueryExprValue::Column(c)) => value(c),
+                    QueryExpr::Value(QueryExprValue::Value(v)) => Ok(v.clone()),
+                    _ => Err(EngineError::Unsupported("JOIN condition")),
+                }
+            };
+            let (a, b) = (eval(a)?, eval(b)?);
+            Ok(!matches!(a, Value::Null) && !matches!(b, Value::Null) && a == b)
+        }
+        _ => Err(EngineError::Unsupported("JOIN condition")),
+    }
+}
+
+fn order_columns(
+    schema: &TableSchema,
+    table: &str,
+    order_by: &[QueryOrderBy],
+) -> EngineResult<Vec<(usize, QuerySortDirection)>> {
+    order_by
+        .iter()
+        .map(|order| {
+            let index = column_index(schema, table, &order.by, "Unknown ORDER BY column")?;
+            Ok((index, order.direction.clone()))
+        })
+        .collect()
+}
+
+async fn in_subquery_values<T, R>(
+    transaction: &T,
+    reconciler: &R,
+    select: &QuerySelect,
+) -> EngineResult<Vec<Value>>
+where
+    T: KernelTransaction,
+    R: RowCodec<T>,
+{
+    if !select.from.joins.is_empty()
+        || select.projection.len() != 1
+        || !select.aggregates.is_empty()
+        || !select.group_by.is_empty()
+        || select.having.is_some()
+    {
+        return Err(EngineError::Unsupported("IN subquery shape"));
+    }
+    let result = Box::pin(select_rows(transaction, reconciler, select.clone())).await?;
+    result
+        .rows
+        .into_iter()
+        .map(|row| {
+            row.values
+                .into_iter()
+                .next()
+                .ok_or(EngineError::InvalidQuery("IN subquery returned no column"))
+        })
+        .collect()
 }
 
 fn predicate_matches(
@@ -1111,6 +1713,25 @@ fn evaluate_expr(
         QueryExpr::Value(QueryExprValue::Column(column)) => Ok(row.values
             [column_index(schema, table, column, "Unknown predicate column")?]
         .clone()),
+        QueryExpr::Value(QueryExprValue::ExcludedColumn(_)) => Err(EngineError::InvalidQuery(
+            "EXCLUDED is only valid in ON CONFLICT assignments",
+        )),
+        QueryExpr::Not(expr) => match evaluate_expr(schema, table, row, expr)? {
+            Value::Bool(value) => Ok(Value::Bool(!value)),
+            Value::Null => Ok(Value::Null),
+            _ => Err(EngineError::InvalidQuery("NOT requires a boolean value")),
+        },
+        QueryExpr::Like { expr, pattern } => {
+            let value = evaluate_expr(schema, table, row, expr)?;
+            let pattern = evaluate_expr(schema, table, row, pattern)?;
+            match (value, pattern) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (Value::Text(value), Value::Text(pattern)) => {
+                    Ok(Value::Bool(like_matches(&value, &pattern)))
+                }
+                _ => Err(EngineError::InvalidQuery("LIKE requires text values")),
+            }
+        }
         QueryExpr::IsNull(expr) => Ok(Value::Bool(matches!(
             evaluate_expr(schema, table, row, expr)?,
             Value::Null
@@ -1137,6 +1758,30 @@ fn evaluate_expr(
         QueryExpr::GreaterThanOrEquals(left, right) => {
             compare_expr(schema, table, row, left, right, |left, right| left >= right)
         }
+        QueryExpr::InList {
+            expr,
+            list,
+            negated,
+        } => {
+            let value = evaluate_expr(schema, table, row, expr)?;
+            if matches!(value, Value::Null) {
+                return Ok(Value::Null);
+            }
+            let mut contains_null = false;
+            for item in list {
+                let candidate = evaluate_expr(schema, table, row, item)?;
+                if matches!(candidate, Value::Null) {
+                    contains_null = true;
+                } else if value == candidate {
+                    return Ok(Value::Bool(!negated));
+                }
+            }
+            if contains_null {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(*negated))
+            }
+        }
         QueryExpr::And(left, right) => Ok(Value::Bool(
             matches!(evaluate_expr(schema, table, row, left)?, Value::Bool(true))
                 && matches!(evaluate_expr(schema, table, row, right)?, Value::Bool(true)),
@@ -1147,6 +1792,28 @@ fn evaluate_expr(
         )),
         _ => Err(EngineError::Unsupported("SELECT predicate")),
     }
+}
+
+fn like_matches(value: &str, pattern: &str) -> bool {
+    let value: Vec<char> = value.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let mut previous = vec![false; pattern.len() + 1];
+    previous[0] = true;
+    for (index, token) in pattern.iter().enumerate() {
+        previous[index + 1] = *token == '%' && previous[index];
+    }
+    for character in value {
+        let mut current = vec![false; pattern.len() + 1];
+        for (index, token) in pattern.iter().enumerate() {
+            current[index + 1] = if *token == '%' {
+                current[index] || previous[index + 1]
+            } else {
+                (*token == '_' || *token == character) && previous[index]
+            };
+        }
+        previous = current;
+    }
+    previous[pattern.len()]
 }
 
 fn compare_expr(

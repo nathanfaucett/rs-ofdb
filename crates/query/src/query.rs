@@ -78,6 +78,7 @@ pub struct QueryOrderBy {
 )]
 pub enum QueryExprValue {
     Column(QueryColumn),
+    ExcludedColumn(String),
     Value(Value),
 }
 
@@ -107,6 +108,7 @@ pub enum QueryExpr {
     InSubquery {
         expr: Box<QueryExpr>,
         subquery: Box<QuerySelect>,
+        negated: bool,
     },
     Like {
         expr: Box<QueryExpr>,
@@ -201,6 +203,40 @@ impl QueryResult {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "wasm",
+    derive(tsify::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
+pub enum QueryHavingCountOperator {
+    GreaterThan,
+    GreaterThanOrEquals,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "wasm",
+    derive(tsify::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
+pub struct QueryHavingCount {
+    pub operator: QueryHavingCountOperator,
+    pub value: i64,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "wasm",
+    derive(tsify::Tsify),
+    tsify(into_wasm_abi, from_wasm_abi)
+)]
+pub struct QueryTextConcat {
+    pub column: QueryColumn,
+    pub literal: String,
+    pub alias: String,
+}
+
 #[derive(Debug, Default, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(
     feature = "wasm",
@@ -210,13 +246,15 @@ impl QueryResult {
 pub struct QuerySelect {
     pub from: QueryFrom,
     pub projection: Vec<QueryColumn>,
+    pub text_concats: Vec<Option<QueryTextConcat>>,
+    pub distinct: bool,
     pub predicate: Option<QueryExpr>,
     pub aggregates: Vec<QueryAggregate>,
     pub group_by: Vec<QueryColumn>,
     pub order_by: Vec<QueryOrderBy>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
-    pub having: Option<QueryExpr>,
+    pub having: Option<QueryHavingCount>,
 }
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(
@@ -250,8 +288,10 @@ pub enum QueryInsertValue {
 pub struct QueryInsertValues {
     pub table: String,
     pub columns: Vec<String>,
-    pub values: Vec<QueryInsertValue>,
+    pub rows: Vec<Vec<QueryInsertValue>>,
     pub returning: Option<Vec<String>>,
+    pub on_conflict_do_nothing: Option<Vec<String>>,
+    pub on_conflict_do_update: Option<(Vec<String>, Vec<QueryUpdateAssignment>)>,
 }
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(

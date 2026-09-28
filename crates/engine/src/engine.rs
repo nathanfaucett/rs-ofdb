@@ -18,8 +18,8 @@ use query::{QueryParams, QueryResult, Statement, TranslateError, Translator};
 use crate::{
     codec::RowCodec,
     executor::{
-        execute_statement, resolve_row as resolve_conflicted_row,
-        row_conflicts as conflicted_row_columns,
+        execute_in_transaction, execute_statement, resolve_row as resolve_conflicted_row,
+        row_conflict_values as conflicted_row_values, row_conflicts as conflicted_row_columns,
     },
     index::{index_schema, lookup as index_lookup},
     kernel::{Kernel, KernelTransaction},
@@ -69,11 +69,20 @@ fn default_timestamp_provider() -> Option<uuid::Timestamp> {
     None
 }
 
-#[derive(Clone)]
 pub struct Engine<K, R> {
     pub(crate) kernel: Arc<K>,
     pub(crate) reconciler: Arc<R>,
     pub(crate) timestamp_provider: TimestampProvider,
+}
+
+impl<K, R> Clone for Engine<K, R> {
+    fn clone(&self) -> Self {
+        Self {
+            kernel: self.kernel.clone(),
+            reconciler: self.reconciler.clone(),
+            timestamp_provider: self.timestamp_provider,
+        }
+    }
 }
 
 impl<K, R> From<(K, R)> for Engine<K, R> {
@@ -104,11 +113,102 @@ impl<K, R> Engine<K, R> {
     }
 }
 
+pub struct EngineTransaction<K, R>
+where
+    K: Kernel,
+    R: RowCodec<K::Transaction> + Send + Sync,
+{
+    engine: Engine<K, R>,
+    transaction: Option<K::Transaction>,
+    changes: Vec<crate::Change>,
+    failed: bool,
+}
+
+impl<K, R> EngineTransaction<K, R>
+where
+    K: Kernel,
+    R: RowCodec<K::Transaction> + Send + Sync,
+{
+    pub async fn execute(&mut self, statements: Vec<Statement>) -> EngineResult<Vec<QueryResult>> {
+        if self.failed {
+            return Err(EngineError::InvalidQuery("Transaction is aborted"));
+        }
+        let transaction = self
+            .transaction
+            .as_mut()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
+        match execute_in_transaction(&self.engine, transaction, statements, &mut self.changes).await
+        {
+            Ok(results) => Ok(results),
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn translate_and_execute<T>(
+        &mut self,
+        query: &str,
+        translator: &T,
+    ) -> EngineResult<Vec<QueryResult>>
+    where
+        T: Translator,
+    {
+        let statements = translator.translate(query).await?;
+        self.execute(statements).await
+    }
+
+    pub async fn translate_and_execute_with_params<T>(
+        &mut self,
+        query: &str,
+        params: Option<&QueryParams>,
+        translator: &T,
+    ) -> EngineResult<Vec<QueryResult>>
+    where
+        T: Translator,
+    {
+        let statements = translator.translate_with_params(query, params).await?;
+        self.execute(statements).await
+    }
+
+    pub async fn commit(mut self) -> EngineResult<()> {
+        let transaction = self
+            .transaction
+            .take()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
+        if self.failed {
+            transaction.rollback().await?;
+            return Err(EngineError::InvalidQuery(
+                "Cannot commit an aborted transaction",
+            ));
+        }
+        transaction.commit().await
+    }
+
+    pub async fn rollback(mut self) -> EngineResult<()> {
+        let transaction = self
+            .transaction
+            .take()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
+        transaction.rollback().await
+    }
+}
+
 impl<K, R> Engine<K, R>
 where
     K: Kernel,
     R: RowCodec<K::Transaction> + Send + Sync,
 {
+    pub async fn transaction(&self) -> EngineResult<EngineTransaction<K, R>> {
+        Ok(EngineTransaction {
+            engine: self.clone(),
+            transaction: Some(self.kernel.transaction().await?),
+            changes: Vec::new(),
+            failed: false,
+        })
+    }
+
     pub async fn index_schema(&self, name: &str) -> EngineResult<IndexSchema> {
         let transaction = self.kernel.transaction().await?;
         let schema = index_schema(&transaction, name).await?;
@@ -205,6 +305,18 @@ where
         let transaction = self.kernel.transaction().await?;
         let result =
             conflicted_row_columns(&transaction, self.reconciler.as_ref(), table_name, key).await?;
+        transaction.rollback().await?;
+        Ok(result)
+    }
+
+    pub async fn row_conflict_values(
+        &self,
+        table_name: &str,
+        key: &Row,
+    ) -> EngineResult<Vec<(String, Vec<Value>)>> {
+        let transaction = self.kernel.transaction().await?;
+        let result =
+            conflicted_row_values(&transaction, self.reconciler.as_ref(), table_name, key).await?;
         transaction.rollback().await?;
         Ok(result)
     }

@@ -9,6 +9,6 @@ mod database;
 mod uri;
 
 pub use api::*;
-pub use database::Database;
+pub use database::{Database, DatabaseTransaction};
 
 pub use uri::{Uri, UriError, UriScheme, parse_uri};

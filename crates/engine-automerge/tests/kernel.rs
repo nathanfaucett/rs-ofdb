@@ -720,7 +720,7 @@ fn concurrent_different_column_updates_converge() {
 }
 
 #[test]
-fn concurrent_same_column_updates_converge_to_the_automerge_winner() {
+fn concurrent_same_column_updates_expose_null_and_explicit_resolution_converges() {
     let source_path = database_path();
     let destination_path = database_path();
     block_on(async {
@@ -738,9 +738,18 @@ fn concurrent_same_column_updates_converge_to_the_automerge_winner() {
         sync(&source, &destination).await.unwrap();
 
         update(&source, "name", Value::from("Grace")).await;
-        update(&destination, "name", Value::from("Linus")).await;
+        update(&destination, "name", Value::Null).await;
         sync(&source, &destination).await.unwrap();
         sync(&destination, &source).await.unwrap();
+        let conflicts = source
+            .row_conflict_values("people", &Row::new(vec![uuid_value(1)]))
+            .await
+            .unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].0, "name");
+        assert_eq!(conflicts[0].1.len(), 2);
+        assert!(conflicts[0].1.contains(&Value::from("Grace")));
+        assert!(conflicts[0].1.contains(&Value::Null));
         assert_eq!(
             people_rows(&destination, &["name"]).await,
             people_rows(&source, &["name"]).await
@@ -773,7 +782,7 @@ fn concurrent_same_column_updates_converge_to_the_automerge_winner() {
             .resolve_row(
                 "people",
                 &Row::new(vec![uuid_value(1)]),
-                vec![("name".into(), Value::from("Margaret"))],
+                vec![("name".into(), Value::Null)],
             )
             .await
             .unwrap();
@@ -788,7 +797,7 @@ fn concurrent_same_column_updates_converge_to_the_automerge_winner() {
         );
         assert_eq!(
             people_rows(&destination, &["name"]).await,
-            vec![Row::new(vec![Value::from("Margaret")])]
+            vec![Row::new(vec![Value::Null])]
         );
     });
     std::fs::remove_file(source_path).unwrap();

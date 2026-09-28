@@ -89,6 +89,7 @@ pub struct Step {
     pub node: NodeId,
     pub sql: Cow<'static, str>,
     pub expected_error: Option<ExpectedError>,
+    pub expected_rows: Option<Vec<Row>>,
 }
 
 impl Step {
@@ -97,6 +98,7 @@ impl Step {
             node: node.into(),
             sql: sql.into(),
             expected_error: None,
+            expected_rows: None,
         }
     }
 
@@ -109,6 +111,7 @@ impl Step {
             node: node.into(),
             sql: sql.into(),
             expected_error: Some(expected_error),
+            expected_rows: None,
         }
     }
 }
@@ -212,6 +215,18 @@ impl TestCaseBuilder {
         expected_error: ExpectedError,
     ) -> Self {
         self.steps.push(Step::failing(node, sql, expected_error));
+        self
+    }
+
+    pub fn step_expect_query(
+        mut self,
+        node: impl Into<NodeId>,
+        sql: impl Into<Cow<'static, str>>,
+        expected_rows: Vec<Row>,
+    ) -> Self {
+        let mut step = Step::sql(node, sql);
+        step.expected_rows = Some(expected_rows);
+        self.steps.push(step);
         self
     }
 

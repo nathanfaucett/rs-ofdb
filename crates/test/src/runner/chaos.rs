@@ -1,10 +1,12 @@
 use sync::SessionConfig;
 
+use super::verify::verify_case;
+
 use crate::{
     case::TestCase,
     chaos::ChaosNetwork,
     cluster::automerge_redb_cluster,
-    runner::{RunnerError, TestRunner, VerificationPolicy, verify::verify_case},
+    runner::{RunnerError, TestRunner, VerificationPolicy, verify_step_result},
 };
 
 /// Executes test cases under simulated network chaos:
@@ -87,7 +89,8 @@ impl TestRunner for ChaosRunner {
         for step in &case.steps {
             let result = cluster.try_exec(step.node.0, step.sql.as_ref()).await;
             match (&step.expected_error, result) {
-                (None, Ok(_)) => {
+                (None, Ok(rows)) => {
+                    verify_step_result(step, rows)?;
                     // Attempt intermittent communication across non-partitioned pairs
                     for left in 0..n {
                         for right in left + 1..n {

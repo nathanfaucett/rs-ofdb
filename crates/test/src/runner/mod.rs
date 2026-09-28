@@ -2,7 +2,7 @@ use std::{borrow::Cow, future::Future};
 
 use value::Row;
 
-use crate::case::{ExpectedError, NodeId, TestCase, TestSuite};
+use crate::case::{ExpectedError, NodeId, Step, TestCase, TestSuite};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VerificationPolicy {
@@ -82,6 +82,21 @@ pub enum RunnerError {
     Io(#[from] std::io::Error),
     #[error("Chaos failure: {0}")]
     Chaos(String),
+}
+
+pub(super) fn verify_step_result(step: &Step, actual: Vec<Row>) -> Result<(), RunnerError> {
+    let Some(expected) = &step.expected_rows else {
+        return Ok(());
+    };
+    if actual == *expected {
+        return Ok(());
+    }
+    Err(RunnerError::ExpectationFailed {
+        node: Some(step.node),
+        query: step.sql.clone(),
+        expected: expected.clone(),
+        actual,
+    })
 }
 
 pub trait TestRunner {

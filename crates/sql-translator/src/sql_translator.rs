@@ -1,20 +1,21 @@
 #[cfg(not(feature = "std"))]
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
 #[cfg(feature = "std")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use query::{
-    AlterIndexOperation, AlterTableOperation, DataDefinition, Query, QueryColumn, QueryDelete,
-    QueryExpr, QueryExprValue, QueryFrom, QueryInsertValue, QueryInsertValues, QueryJoin,
-    QueryJoinKind, QueryParams, QuerySelect, QueryUpdate, QueryUpdateAssignment, Statement,
-    TranslateError, TranslateResult, Translator,
+    AlterIndexOperation, AlterTableOperation, DataDefinition, Query, QueryAggregate, QueryColumn,
+    QueryCountTarget, QueryDelete, QueryExpr, QueryExprValue, QueryFrom, QueryHavingCount,
+    QueryHavingCountOperator, QueryInsertValue, QueryInsertValues, QueryJoin, QueryJoinKind,
+    QueryOrderBy, QueryParams, QuerySelect, QuerySortDirection, QueryTextConcat, QueryUpdate,
+    QueryUpdateAssignment, Statement, TranslateError, TranslateResult, Translator,
 };
 
 use schema::TableSchema;
@@ -25,6 +26,7 @@ use sqlparser::{
     },
     dialect::PostgreSqlDialect,
     parser::Parser,
+    tokenizer::{Token, Tokenizer},
 };
 use uuid::Uuid;
 use value::{Value, ValueType};
@@ -32,21 +34,221 @@ use value::{Value, ValueType};
 #[derive(Debug, Clone, Copy)]
 pub struct SqlTranslator;
 
+struct ParameterBindings<'a> {
+    params: Option<&'a QueryParams>,
+    positional: usize,
+    positional_used: BTreeSet<usize>,
+    named_used: BTreeSet<String>,
+    style: Option<bool>,
+}
+
+impl<'a> ParameterBindings<'a> {
+    fn new(params: Option<&'a QueryParams>) -> Self {
+        Self {
+            params,
+            positional: 0,
+            positional_used: BTreeSet::new(),
+            named_used: BTreeSet::new(),
+            style: None,
+        }
+    }
+
+    fn resolve(&mut self, placeholder: &str) -> TranslateResult<Value> {
+        let indexed = placeholder
+            .strip_prefix('$')
+            .or_else(|| placeholder.strip_prefix('?'))
+            .and_then(|value| value.parse::<usize>().ok());
+        let is_named = indexed.is_none() && !placeholder.starts_with('?');
+        if self.style.is_some_and(|style| style != is_named) {
+            return Err(TranslateError::MixedPlaceholderStyles);
+        }
+        self.style = Some(is_named);
+        match (self.params, is_named) {
+            (Some(QueryParams::Positional(values)), false) => {
+                let index = if let Some(index) = indexed {
+                    let index = index.checked_sub(1).ok_or_else(|| {
+                        TranslateError::custom("Invalid positional parameter index")
+                    })?;
+                    self.positional = self.positional.max(index + 1);
+                    index
+                } else {
+                    let index = self.positional;
+                    self.positional += 1;
+                    index
+                };
+                self.positional_used.insert(index);
+                values.get(index).cloned().ok_or_else(|| {
+                    TranslateError::custom(format!("Missing positional parameter: {}", index + 1))
+                })
+            }
+            (Some(QueryParams::Named(values)), true) => {
+                let name = placeholder.trim_start_matches([':', '@', '$']).to_string();
+                self.named_used.insert(name.clone());
+                values
+                    .get(&name)
+                    .cloned()
+                    .ok_or(TranslateError::MissingNamedParameter(name))
+            }
+            (None, _) => Err(TranslateError::custom(format!(
+                "Missing parameter: {placeholder}"
+            ))),
+            _ => Err(TranslateError::custom(
+                "Parameter style does not match placeholders",
+            )),
+        }
+    }
+
+    fn finish(self) -> TranslateResult<()> {
+        match self.params {
+            Some(QueryParams::Positional(values)) if self.style == Some(false) => {
+                let used = self.positional_used.len();
+                if values.len() != used {
+                    return Err(TranslateError::custom(format!(
+                        "Wrong parameter count: expected {used}, got {}",
+                        values.len()
+                    )));
+                }
+            }
+            Some(QueryParams::Positional(values)) if !values.is_empty() => {
+                return Err(TranslateError::custom(
+                    "Parameters supplied but query has no positional placeholders",
+                ));
+            }
+            Some(QueryParams::Named(values)) if self.style == Some(true) => {
+                if self.named_used.len() != values.len() {
+                    return Err(TranslateError::custom("Wrong named parameter count"));
+                }
+            }
+            Some(QueryParams::Named(values)) if !values.is_empty() => {
+                return Err(TranslateError::custom(
+                    "Parameters supplied but query has no named placeholders",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 impl Translator for SqlTranslator {
     async fn translate_with_params(
         &self,
         query: &str,
         params: Option<&QueryParams>,
     ) -> TranslateResult<Vec<Statement>> {
-        let stmts =
-            Parser::parse_sql(&PostgreSqlDialect {}, query).map_err(TranslateError::custom)?;
+        let dialect = PostgreSqlDialect {};
+        let mut tokens = Tokenizer::new(&dialect, query)
+            .tokenize_with_location()
+            .map_err(TranslateError::custom)?;
+        if tokens.iter().any(|token| {
+            matches!(
+                &token.token,
+                Token::Word(word) if word.value.eq_ignore_ascii_case("AUTOINCREMENT")
+            )
+        }) {
+            return Err(TranslateError::custom("AUTOINCREMENT is not supported"));
+        }
+        for token in &mut tokens {
+            if matches!(token.token, Token::Question) {
+                token.token = Token::Placeholder("?".into());
+            }
+        }
+        let stmts = Parser::new(&dialect)
+            .with_tokens_with_locations(tokens)
+            .parse_statements()
+            .map_err(TranslateError::custom)?;
 
+        let mut bindings = ParameterBindings::new(params);
         let mut results = Vec::with_capacity(stmts.len());
         for stmt in stmts {
-            results.push(translate_stmt(stmt, params)?);
+            results.push(translate_stmt(stmt, &mut bindings)?);
         }
+        bindings.finish()?;
         Ok(results)
     }
+}
+
+fn lower_simple_cte(query: &mut ast::Query) -> TranslateResult<()> {
+    let Some(with) = query.with.take() else {
+        return Ok(());
+    };
+    if with.recursive || with.cte_tables.len() != 1 {
+        return Err(TranslateError::custom(
+            "Only one non-recursive CTE is supported",
+        ));
+    }
+    let cte = with
+        .cte_tables
+        .into_iter()
+        .next()
+        .expect("one CTE was checked");
+    if !cte.alias.columns.is_empty() {
+        return Err(TranslateError::custom(
+            "CTE column aliases are not supported",
+        ));
+    }
+    let cte_query = *cte.query;
+    if cte_query.with.is_some()
+        || cte_query.order_by.is_some()
+        || cte_query.limit_clause.is_some()
+        || cte_query.fetch.is_some()
+    {
+        return Err(TranslateError::custom("Unsupported CTE query shape"));
+    }
+    let ast::SetExpr::Select(mut cte_select) = *cte_query.body else {
+        return Err(TranslateError::custom("CTE must contain a SELECT"));
+    };
+    let [cte_from] = cte_select.from.as_slice() else {
+        return Err(TranslateError::custom("CTE requires one source table"));
+    };
+    if !cte_from.joins.is_empty() {
+        return Err(TranslateError::custom("CTE joins are not supported"));
+    }
+    let projected: Vec<&str> = cte_select
+        .projection
+        .iter()
+        .map(|item| match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(identifier)) => Ok(identifier.value.as_str()),
+            _ => Err(TranslateError::custom(
+                "CTE projection must use plain columns",
+            )),
+        })
+        .collect::<TranslateResult<_>>()?;
+    let ast::SetExpr::Select(outer_select) = query.body.as_mut() else {
+        return Err(TranslateError::custom("CTE must precede a SELECT"));
+    };
+    if outer_select.from.len() != 1 {
+        return Err(TranslateError::custom("CTE query requires one source"));
+    }
+    let outer_from = &mut outer_select.from[0];
+    if !matches!(&outer_from.relation, TableFactor::Table { name, .. } if object_name_to_string(name)? == cte.alias.name.value)
+        || !outer_from.joins.is_empty()
+    {
+        return Err(TranslateError::custom(
+            "CTE source must be its declared name",
+        ));
+    }
+    for item in &outer_select.projection {
+        if let SelectItem::UnnamedExpr(Expr::Identifier(identifier)) = item {
+            if !projected.contains(&identifier.value.as_str()) {
+                return Err(TranslateError::custom("CTE column is not projected"));
+            }
+        } else {
+            return Err(TranslateError::custom(
+                "CTE outer projection must use plain columns",
+            ));
+        }
+    }
+    outer_from.relation = cte_from.relation.clone();
+    outer_select.selection = match (cte_select.selection.take(), outer_select.selection.take()) {
+        (Some(left), Some(right)) => Some(Expr::BinaryOp {
+            left: Box::new(left),
+            op: ast::BinaryOperator::And,
+            right: Box::new(right),
+        }),
+        (selection, None) | (None, selection) => selection,
+    };
+    Ok(())
 }
 
 fn table_name_to_string(name: &TableObject) -> TranslateResult<String> {
@@ -92,13 +294,13 @@ fn object_name_part_to_string(part: &ObjectNamePart) -> TranslateResult<String> 
 
 fn translate_stmt(
     stmt: ast::Statement,
-    params: Option<&QueryParams>,
+    bindings: &mut ParameterBindings<'_>,
 ) -> TranslateResult<Statement> {
     match stmt {
-        ast::Statement::Query(query) => translate_query(*query, params),
-        ast::Statement::Insert(insert) => translate_insert(insert, params),
-        ast::Statement::Update(update) => translate_update(update, params),
-        ast::Statement::Delete(delete) => translate_delete(delete, params),
+        ast::Statement::Query(query) => translate_query(*query, bindings),
+        ast::Statement::Insert(insert) => translate_insert(insert, bindings),
+        ast::Statement::Update(update) => translate_update(update, bindings),
+        ast::Statement::Delete(delete) => translate_delete(delete, bindings),
         ast::Statement::CreateTable(create_table) => translate_create_table(create_table),
         ast::Statement::Drop {
             object_type,
@@ -116,19 +318,18 @@ fn translate_stmt(
     }
 }
 
-fn translate_query(query: ast::Query, _params: Option<&QueryParams>) -> TranslateResult<Statement> {
-    if query.with.is_some() {
-        return Err(TranslateError::custom("CTEs not yet supported"));
-    }
+fn translate_query(
+    mut query: ast::Query,
+    bindings: &mut ParameterBindings<'_>,
+) -> TranslateResult<Statement> {
+    lower_simple_cte(&mut query)?;
     if !matches!(*query.body, ast::SetExpr::Select(_)) {
         return Err(TranslateError::custom(
             "Only plain SELECT queries supported",
         ));
     }
-    if query.order_by.is_some() || query.limit_clause.is_some() || query.fetch.is_some() {
-        return Err(TranslateError::custom(
-            "ORDER BY, LIMIT, and OFFSET are not supported",
-        ));
+    if query.fetch.is_some() {
+        return Err(TranslateError::custom("FETCH is not supported"));
     }
 
     let select = match *query.body {
@@ -136,39 +337,164 @@ fn translate_query(query: ast::Query, _params: Option<&QueryParams>) -> Translat
         _ => unreachable!(),
     };
 
-    if select.distinct.is_some() {
-        return Err(TranslateError::custom("DISTINCT is not supported"));
-    }
-    if !matches!(select.group_by, ast::GroupByExpr::Expressions(ref expressions, _) if expressions.is_empty())
-    {
-        return Err(TranslateError::custom("GROUP BY is not supported"));
-    }
-    if select.having.is_some() {
-        return Err(TranslateError::custom("HAVING is not supported"));
-    }
-
+    let distinct = match select.distinct {
+        None | Some(ast::Distinct::All) => false,
+        Some(ast::Distinct::Distinct) => true,
+        Some(ast::Distinct::On(_)) => {
+            return Err(TranslateError::custom("DISTINCT ON is not supported"));
+        }
+    };
+    let group_by = match &select.group_by {
+        ast::GroupByExpr::Expressions(expressions, modifiers) if modifiers.is_empty() => {
+            expressions
+                .iter()
+                .map(|expression| match expression {
+                    Expr::Identifier(identifier) => {
+                        Ok(QueryColumn::new(String::new(), identifier.value.clone()))
+                    }
+                    _ => Err(TranslateError::custom(
+                        "GROUP BY supports simple columns only",
+                    )),
+                })
+                .collect::<TranslateResult<Vec<_>>>()?
+        }
+        ast::GroupByExpr::Expressions(_, _) => {
+            return Err(TranslateError::custom(
+                "GROUP BY modifiers are not supported",
+            ));
+        }
+        _ => return Err(TranslateError::custom("GROUP BY ALL is not supported")),
+    };
     let (from, aliases) = translate_from(&select.from)?;
-    let projection = translate_projection(&aliases, &select.projection)?;
+    let mut text_concats = Vec::new();
+    let (projection, aggregates) = if !group_by.is_empty() {
+        if distinct || group_by.len() != 1 || select.projection.len() != 2 {
+            return Err(TranslateError::custom(
+                "Grouped SELECT supports one group column and one COUNT",
+            ));
+        }
+        let SelectItem::UnnamedExpr(Expr::Function(function)) = &select.projection[1] else {
+            return Err(TranslateError::custom(
+                "Grouped SELECT requires COUNT as its final projection",
+            ));
+        };
+        let group_projection = translate_projection(&aliases, &select.projection[..1])?;
+        if group_projection[0].column != group_by[0].column {
+            return Err(TranslateError::custom(
+                "Grouped SELECT must project its group column first",
+            ));
+        }
+        (group_projection, vec![translate_count(function)?])
+    } else if let [SelectItem::UnnamedExpr(Expr::Function(function))] = select.projection.as_slice()
+    {
+        (vec![], vec![translate_count(function)?])
+    } else {
+        let mut projection = Vec::with_capacity(select.projection.len());
+        for item in &select.projection {
+            match item {
+                SelectItem::ExprWithAlias { expr, alias } => {
+                    if let Expr::BinaryOp {
+                        left,
+                        op: ast::BinaryOperator::StringConcat,
+                        right,
+                    } = expr
+                    {
+                        let (column, literal) = translate_text_concat(&aliases, left, right)?;
+                        projection.push(column.clone());
+                        text_concats.push(Some(QueryTextConcat {
+                            column,
+                            literal,
+                            alias: alias.value.clone(),
+                        }));
+                    } else {
+                        projection.push(translate_projection_expr(&aliases, expr)?);
+                        text_concats.push(None);
+                    }
+                }
+                _ => {
+                    projection.push(match item {
+                        SelectItem::UnnamedExpr(expr) => translate_projection_expr(&aliases, expr)?,
+                        SelectItem::Wildcard(_) => QueryColumn::new(String::new(), "*".into()),
+                        _ => return Err(TranslateError::custom("Unsupported projection item")),
+                    });
+                    text_concats.push(None);
+                }
+            }
+        }
+        (projection, vec![])
+    };
     let predicate = select
         .selection
-        .map(|e| translate_expr(&aliases, e))
+        .map(|e| translate_expr(&aliases, e, bindings))
         .transpose()?;
-    let having = select
-        .having
-        .map(|e| translate_expr(&aliases, e))
-        .transpose()?;
+    let having = select.having.map(translate_having_count).transpose()?;
+    if having.is_some() && group_by.is_empty() {
+        return Err(TranslateError::custom("HAVING requires GROUP BY"));
+    }
 
-    // TODO: Expand these as needed
-    let aggregates = vec![];
-    let group_by = vec![];
-    let order_by = vec![];
+    let order_by = query
+        .order_by
+        .map(|order| match order.kind {
+            ast::OrderByKind::Expressions(expressions) => expressions
+                .into_iter()
+                .map(|expression| {
+                    if expression.options.nulls_first.is_some() || expression.with_fill.is_some() {
+                        return Err(TranslateError::custom(
+                            "ORDER BY NULLS and WITH FILL are not supported",
+                        ));
+                    }
+                    let column = match expression.expr {
+                        Expr::Identifier(identifier) => {
+                            QueryColumn::new(String::new(), identifier.value)
+                        }
+                        Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                            let table = aliases
+                                .get(&parts[0].value)
+                                .cloned()
+                                .unwrap_or_else(|| parts[0].value.clone());
+                            QueryColumn::new(table, parts[1].value.clone())
+                        }
+                        _ => return Err(TranslateError::custom("ORDER BY requires a column")),
+                    };
+                    Ok(QueryOrderBy {
+                        by: column,
+                        direction: if expression.options.asc == Some(false) {
+                            QuerySortDirection::Desc
+                        } else {
+                            QuerySortDirection::Asc
+                        },
+                    })
+                })
+                .collect::<TranslateResult<Vec<_>>>(),
+            _ => Err(TranslateError::custom("ORDER BY ALL is not supported")),
+        })
+        .transpose()?
+        .unwrap_or_default();
 
-    let limit = None; // TODO: implement properly
-    let offset = None; // TODO: implement properly
+    let (limit, offset) = match query.limit_clause {
+        None => (None, None),
+        Some(ast::LimitClause::LimitOffset {
+            limit,
+            offset,
+            limit_by,
+        }) if limit_by.is_empty() => (
+            limit.map(parse_nonnegative_integer).transpose()?,
+            offset
+                .map(|offset| parse_nonnegative_integer(offset.value))
+                .transpose()?,
+        ),
+        Some(ast::LimitClause::OffsetCommaLimit { offset, limit }) => (
+            Some(parse_nonnegative_integer(limit)?),
+            Some(parse_nonnegative_integer(offset)?),
+        ),
+        _ => return Err(TranslateError::custom("Unsupported LIMIT clause")),
+    };
 
     Ok(Statement::Query(Query::Select(QuerySelect {
         from,
         projection,
+        text_concats,
+        distinct,
         predicate,
         aggregates,
         group_by,
@@ -177,6 +503,81 @@ fn translate_query(query: ast::Query, _params: Option<&QueryParams>) -> Translat
         offset,
         having,
     })))
+}
+
+fn translate_having_count(expr: Expr) -> TranslateResult<QueryHavingCount> {
+    let Expr::BinaryOp { left, op, right } = expr else {
+        return Err(TranslateError::custom("Unsupported HAVING expression"));
+    };
+    let operator = match op {
+        ast::BinaryOperator::Gt => QueryHavingCountOperator::GreaterThan,
+        ast::BinaryOperator::GtEq => QueryHavingCountOperator::GreaterThanOrEquals,
+        _ => return Err(TranslateError::custom("Unsupported HAVING operator")),
+    };
+    let Expr::Function(function) = *left else {
+        return Err(TranslateError::custom("HAVING requires COUNT(*)"));
+    };
+    if translate_count(&function)? != QueryAggregate::Count(QueryCountTarget::AllRows) {
+        return Err(TranslateError::custom("HAVING requires COUNT(*)"));
+    }
+    let Expr::Value(ast::ValueWithSpan {
+        value: ast::Value::Number(value, _),
+        ..
+    }) = *right
+    else {
+        return Err(TranslateError::custom("HAVING requires an integer literal"));
+    };
+    let value = value
+        .parse::<i64>()
+        .map_err(|_| TranslateError::custom("Invalid HAVING count"))?;
+    Ok(QueryHavingCount { operator, value })
+}
+
+fn translate_count(function: &ast::Function) -> TranslateResult<QueryAggregate> {
+    if !function.name.to_string().eq_ignore_ascii_case("count")
+        || function.filter.is_some()
+        || function.over.is_some()
+    {
+        return Err(TranslateError::custom(
+            "Only COUNT aggregates are supported",
+        ));
+    }
+    let ast::FunctionArguments::List(arguments) = &function.args else {
+        return Err(TranslateError::custom("COUNT requires an argument"));
+    };
+    if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
+        return Err(TranslateError::custom("COUNT modifiers are not supported"));
+    }
+    match arguments.args.as_slice() {
+        [ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Wildcard)] => {
+            Ok(QueryAggregate::Count(QueryCountTarget::AllRows))
+        }
+        [ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(Expr::Identifier(column)))] => Ok(
+            QueryAggregate::Count(QueryCountTarget::Single(column.value.clone())),
+        ),
+        [
+            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))),
+        ] if parts.len() == 2 => Ok(QueryAggregate::Count(QueryCountTarget::Single(
+            parts[1].value.clone(),
+        ))),
+        _ => Err(TranslateError::custom(
+            "COUNT supports * or one column identifier",
+        )),
+    }
+}
+
+fn parse_nonnegative_integer(expression: Expr) -> TranslateResult<usize> {
+    match expression {
+        Expr::Value(ast::ValueWithSpan {
+            value: ast::Value::Number(value, _),
+            ..
+        }) => value
+            .parse()
+            .map_err(|_| TranslateError::custom("LIMIT/OFFSET must be a nonnegative integer")),
+        _ => Err(TranslateError::custom(
+            "LIMIT/OFFSET must be a nonnegative integer",
+        )),
+    }
 }
 
 fn translate_from(
@@ -256,7 +657,9 @@ fn parse_join_constraint(
     constraint: &JoinConstraint,
 ) -> TranslateResult<QueryExpr> {
     match constraint {
-        JoinConstraint::On(expr) => translate_expr(aliases, expr.clone()),
+        JoinConstraint::On(expr) => {
+            translate_expr(aliases, expr.clone(), &mut ParameterBindings::new(None))
+        }
         JoinConstraint::Using(_) => Err(TranslateError::custom("USING joins not yet supported")),
         JoinConstraint::Natural => Err(TranslateError::custom("NATURAL joins not yet supported")),
         JoinConstraint::None => Err(TranslateError::custom("JOIN without ON condition")),
@@ -271,7 +674,7 @@ fn translate_projection(
         .iter()
         .map(|item| match item {
             SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
-                Ok(translate_projection_expr(aliases, expr))
+                translate_projection_expr(aliases, expr)
             }
             SelectItem::Wildcard(_) => Ok(QueryColumn::new("".to_string(), "*".to_string())),
             _ => Err(TranslateError::custom("Unsupported projection item")),
@@ -279,24 +682,56 @@ fn translate_projection(
         .collect()
 }
 
-fn translate_projection_expr(aliases: &BTreeMap<String, String>, expr: &Expr) -> QueryColumn {
+fn translate_text_concat(
+    aliases: &BTreeMap<String, String>,
+    left: &Expr,
+    right: &Expr,
+) -> TranslateResult<(QueryColumn, String)> {
+    let (column, literal) = match (left, right) {
+        (Expr::Identifier(_) | Expr::CompoundIdentifier(_), Expr::Value(value)) => (left, value),
+        (Expr::Value(value), Expr::Identifier(_) | Expr::CompoundIdentifier(_)) => (right, value),
+        _ => {
+            return Err(TranslateError::custom(
+                "Text concatenation requires a text column and literal",
+            ));
+        }
+    };
+    let ast::Value::SingleQuotedString(literal) = &literal.value else {
+        return Err(TranslateError::custom(
+            "Text concatenation requires a text literal",
+        ));
+    };
+    Ok((translate_projection_expr(aliases, column)?, literal.clone()))
+}
+
+fn translate_projection_expr(
+    aliases: &BTreeMap<String, String>,
+    expr: &Expr,
+) -> TranslateResult<QueryColumn> {
     match expr {
-        Expr::Identifier(ident) => QueryColumn::new("".to_string(), ident.value.clone()),
-        Expr::CompoundIdentifier(idents) if idents.len() == 2 => QueryColumn::new(
+        Expr::Identifier(ident) => Ok(QueryColumn::new("".to_string(), ident.value.clone())),
+        Expr::CompoundIdentifier(idents) if idents.len() == 2 => Ok(QueryColumn::new(
             aliases
                 .get(&idents[0].value)
                 .cloned()
                 .unwrap_or_else(|| idents[0].value.clone()),
             idents[1].value.clone(),
-        ),
-        Expr::CompoundIdentifier(_) => QueryColumn::new("".to_string(), format!("{:?}", expr)),
-        _ => QueryColumn::new("".to_string(), format!("expr:{:?}", expr)),
+        )),
+        _ => Err(TranslateError::custom(
+            "SELECT expressions are not supported",
+        )),
     }
 }
 
-fn translate_expr(aliases: &BTreeMap<String, String>, expr: Expr) -> TranslateResult<QueryExpr> {
+fn translate_expr(
+    aliases: &BTreeMap<String, String>,
+    expr: Expr,
+    bindings: &mut ParameterBindings<'_>,
+) -> TranslateResult<QueryExpr> {
     match expr {
-        Expr::BinaryOp { left, op, right } => translate_binary_expr(aliases, *left, op, *right),
+        Expr::BinaryOp { left, op, right } => {
+            translate_binary_expr(aliases, *left, op, *right, bindings)
+        }
         Expr::Identifier(ident) => Ok(column_expr("".into(), ident.value)),
         Expr::CompoundIdentifier(idents) if idents.len() == 2 => Ok(column_expr(
             aliases
@@ -305,13 +740,78 @@ fn translate_expr(aliases: &BTreeMap<String, String>, expr: Expr) -> TranslateRe
                 .unwrap_or_else(|| idents[0].value.clone()),
             idents[1].value.clone(),
         )),
-        Expr::Nested(inner) => translate_expr(aliases, *inner),
+        Expr::Nested(inner) => translate_expr(aliases, *inner, bindings),
         Expr::IsNull(inner) => Ok(QueryExpr::IsNull(Box::new(translate_expr(
-            aliases, *inner,
+            aliases, *inner, bindings,
         )?))),
         Expr::IsNotNull(inner) => Ok(QueryExpr::IsNotNull(Box::new(translate_expr(
-            aliases, *inner,
+            aliases, *inner, bindings,
         )?))),
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => Ok(QueryExpr::InList {
+            expr: Box::new(translate_expr(aliases, *expr, bindings)?),
+            list: list
+                .into_iter()
+                .map(|item| translate_expr(aliases, item, bindings))
+                .collect::<TranslateResult<Vec<_>>>()?,
+            negated,
+        }),
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            let Statement::Query(Query::Select(subquery)) = translate_query(*subquery, bindings)?
+            else {
+                return Err(TranslateError::custom(
+                    "IN requires a plain SELECT subquery",
+                ));
+            };
+            if !subquery.from.joins.is_empty()
+                || subquery.projection.len() != 1
+                || subquery.distinct
+                || !subquery.aggregates.is_empty()
+                || !subquery.group_by.is_empty()
+                || subquery.having.is_some()
+                || !subquery.order_by.is_empty()
+                || subquery.limit.is_some()
+                || subquery.offset.is_some()
+                || !matches!(subquery.projection[0], QueryColumn { ref column, .. } if column != "*")
+            {
+                return Err(TranslateError::custom("Unsupported IN subquery shape"));
+            }
+            Ok(QueryExpr::InSubquery {
+                expr: Box::new(translate_expr(aliases, *expr, bindings)?),
+                subquery: Box::new(subquery),
+                negated,
+            })
+        }
+        Expr::Like {
+            negated,
+            any: false,
+            expr,
+            pattern,
+            escape_char: None,
+        } => {
+            let like = QueryExpr::Like {
+                expr: Box::new(translate_expr(aliases, *expr, bindings)?),
+                pattern: Box::new(translate_expr(aliases, *pattern, bindings)?),
+            };
+            Ok(if negated {
+                QueryExpr::Not(Box::new(like))
+            } else {
+                like
+            })
+        }
+        Expr::Value(ast::ValueWithSpan {
+            value: ast::Value::Placeholder(placeholder),
+            ..
+        }) => Ok(QueryExpr::Value(QueryExprValue::Value(
+            bindings.resolve(&placeholder)?,
+        ))),
         Expr::Value(ast::ValueWithSpan { value, .. }) => Ok(QueryExpr::Value(
             QueryExprValue::Value(translate_value(value)?),
         )),
@@ -323,7 +823,7 @@ fn translate_expr(aliases: &BTreeMap<String, String>, expr: Expr) -> TranslateRe
             format: None,
         } => {
             let QueryExpr::Value(QueryExprValue::Value(Value::Text(value))) =
-                translate_expr(aliases, *expr)?
+                translate_expr(aliases, *expr, bindings)?
             else {
                 return Err(TranslateError::custom("UUID casts require text values"));
             };
@@ -348,9 +848,10 @@ fn translate_binary_expr(
     left: Expr,
     op: ast::BinaryOperator,
     right: Expr,
+    bindings: &mut ParameterBindings<'_>,
 ) -> TranslateResult<QueryExpr> {
-    let left = Box::new(translate_expr(aliases, left)?);
-    let right = Box::new(translate_expr(aliases, right)?);
+    let left = Box::new(translate_expr(aliases, left, bindings)?);
+    let right = Box::new(translate_expr(aliases, right, bindings)?);
 
     match op {
         ast::BinaryOperator::Eq => Ok(QueryExpr::Equals(left, right)),
@@ -379,6 +880,20 @@ fn translate_value(value: ast::Value) -> TranslateResult<Value> {
             .map(Value::Integer)
             .map_err(|_| TranslateError::custom(format!("Invalid integer literal: {}", number))),
         ast::Value::SingleQuotedString(value) => Ok(Value::Text(value)),
+        ast::Value::HexStringLiteral(value) if value.len() % 2 == 0 => value
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                let byte = core::str::from_utf8(pair)
+                    .map_err(|_| TranslateError::custom("Invalid BLOB literal"))?;
+                u8::from_str_radix(byte, 16)
+                    .map_err(|_| TranslateError::custom("Invalid BLOB literal"))
+            })
+            .collect::<TranslateResult<Vec<_>>>()
+            .map(Value::Blob),
+        ast::Value::HexStringLiteral(_) => Err(TranslateError::custom("Invalid BLOB literal")),
         ast::Value::Boolean(value) => Ok(Value::Bool(value)),
         ast::Value::Null => Ok(Value::Null),
         value => Ok(Value::Text(format!("{:?}", value))),
@@ -387,8 +902,64 @@ fn translate_value(value: ast::Value) -> TranslateResult<Value> {
 
 fn translate_insert(
     insert: ast::Insert,
-    _params: Option<&QueryParams>,
+    bindings: &mut ParameterBindings<'_>,
 ) -> TranslateResult<Statement> {
+    let (on_conflict_do_nothing, on_conflict_do_update) = match insert.on {
+        None => (None, None),
+        Some(ast::OnInsert::OnConflict(ast::OnConflict {
+            conflict_target: Some(ast::ConflictTarget::Columns(columns)),
+            action: ast::OnConflictAction::DoNothing,
+        })) if !columns.is_empty() => (
+            Some(columns.into_iter().map(|column| column.value).collect()),
+            None,
+        ),
+        Some(ast::OnInsert::OnConflict(ast::OnConflict {
+            conflict_target: Some(ast::ConflictTarget::Columns(columns)),
+            action: ast::OnConflictAction::DoUpdate(update),
+        })) if !columns.is_empty() && update.selection.is_none() => {
+            let target = columns.into_iter().map(|column| column.value).collect();
+            let assignments = update
+                .assignments
+                .into_iter()
+                .map(|assignment| {
+                    let ast::AssignmentTarget::ColumnName(column) = assignment.target else {
+                        return Err(TranslateError::custom(
+                            "ON CONFLICT assignments require one column",
+                        ));
+                    };
+                    let value = match assignment.value {
+                        Expr::CompoundIdentifier(parts)
+                            if parts.len() == 2
+                                && parts[0].value.eq_ignore_ascii_case("excluded") =>
+                        {
+                            QueryExprValue::ExcludedColumn(parts[1].value.clone())
+                        }
+                        expr => {
+                            let QueryExpr::Value(value) =
+                                translate_expr(&BTreeMap::new(), expr, bindings)?
+                            else {
+                                return Err(TranslateError::custom(
+                                    "ON CONFLICT assignments require values",
+                                ));
+                            };
+                            value
+                        }
+                    };
+                    Ok(QueryUpdateAssignment {
+                        column: QueryColumn::new(String::new(), object_name_to_string(&column)?),
+                        value,
+                    })
+                })
+                .collect::<TranslateResult<Vec<_>>>()?;
+            if assignments.is_empty() {
+                return Err(TranslateError::custom(
+                    "ON CONFLICT DO UPDATE requires an assignment",
+                ));
+            }
+            (None, Some((target, assignments)))
+        }
+        _ => return Err(TranslateError::custom("Unsupported INSERT conflict clause")),
+    };
     Ok(Statement::Query(Query::InsertValues(QueryInsertValues {
         table: table_name_to_string(&insert.table)?,
         columns: insert
@@ -396,32 +967,43 @@ fn translate_insert(
             .into_iter()
             .map(|column| object_name_to_string(&column))
             .collect::<TranslateResult<Vec<_>>>()?,
-        values: translate_insert_values(insert.source)?,
+        rows: translate_insert_values(insert.source, bindings)?,
         returning: insert.returning.map(translate_returning).transpose()?,
+        on_conflict_do_nothing,
+        on_conflict_do_update,
     })))
 }
 
 fn translate_insert_values(
     source: Option<Box<ast::Query>>,
-) -> TranslateResult<Vec<QueryInsertValue>> {
+    bindings: &mut ParameterBindings<'_>,
+) -> TranslateResult<Vec<Vec<QueryInsertValue>>> {
     let Some(source) = source else {
         return Ok(vec![]);
     };
-    let ast::SetExpr::Values(mut values) = *source.body else {
+    let ast::SetExpr::Values(values) = *source.body else {
         return Ok(vec![]);
     };
-    let Some(ast::Parens { content, .. }) = values.rows.get_mut(0) else {
-        return Err(TranslateError::custom("INSERT with no VALUES"));
-    };
-
-    content
-        .drain(..)
-        .map(|expr| match translate_expr(&BTreeMap::new(), expr)? {
-            QueryExpr::Value(QueryExprValue::Value(value)) => Ok(QueryInsertValue::Value(value)),
-            QueryExpr::Value(QueryExprValue::Column(column)) if column.column == "DEFAULT" => {
-                Ok(QueryInsertValue::Default)
-            }
-            _ => Err(TranslateError::custom("Unsupported expression in VALUES")),
+    values
+        .rows
+        .into_iter()
+        .map(|row| {
+            row.content
+                .into_iter()
+                .map(
+                    |expr| match translate_expr(&BTreeMap::new(), expr, bindings)? {
+                        QueryExpr::Value(QueryExprValue::Value(value)) => {
+                            Ok(QueryInsertValue::Value(value))
+                        }
+                        QueryExpr::Value(QueryExprValue::Column(column))
+                            if column.column == "DEFAULT" =>
+                        {
+                            Ok(QueryInsertValue::Default)
+                        }
+                        _ => Err(TranslateError::custom("Unsupported expression in VALUES")),
+                    },
+                )
+                .collect()
         })
         .collect()
 }
@@ -450,7 +1032,7 @@ fn translate_returning_item(item: SelectItem) -> TranslateResult<String> {
 
 fn translate_update(
     update: ast::Update,
-    _params: Option<&QueryParams>,
+    bindings: &mut ParameterBindings<'_>,
 ) -> TranslateResult<Statement> {
     let table = match &update.table.relation {
         TableFactor::Table { name, .. } => object_name_to_string(name)?,
@@ -461,11 +1043,6 @@ fn translate_update(
         }
     };
 
-    let predicate = update
-        .selection
-        .map(|e| translate_expr(&BTreeMap::new(), e))
-        .transpose()?;
-
     let assignments = update
         .assignments
         .into_iter()
@@ -475,7 +1052,8 @@ fn translate_update(
                     "UPDATE assignments require one column",
                 ));
             };
-            let QueryExpr::Value(value) = translate_expr(&BTreeMap::new(), assignment.value)?
+            let QueryExpr::Value(value) =
+                translate_expr(&BTreeMap::new(), assignment.value, bindings)?
             else {
                 return Err(TranslateError::custom("UPDATE assignments require a value"));
             };
@@ -486,6 +1064,21 @@ fn translate_update(
         })
         .collect::<TranslateResult<Vec<_>>>()?;
 
+    let predicate = update
+        .selection
+        .map(|e| translate_expr(&BTreeMap::new(), e, bindings))
+        .transpose()?;
+    let returning = update
+        .returning
+        .map(translate_returning)
+        .transpose()?
+        .map(|columns| {
+            columns
+                .into_iter()
+                .map(|column| QueryColumn::new(table.clone(), column))
+                .collect()
+        });
+
     Ok(Statement::Query(Query::Update(QueryUpdate {
         from: QueryFrom {
             table,
@@ -493,13 +1086,13 @@ fn translate_update(
         },
         assignments,
         predicate,
-        returning: None, // TODO: handle RETURNING clause in UPDATE
+        returning,
     })))
 }
 
 fn translate_delete(
     delete: ast::Delete,
-    _params: Option<&QueryParams>,
+    bindings: &mut ParameterBindings<'_>,
 ) -> TranslateResult<Statement> {
     let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) =
         delete.from;
@@ -520,8 +1113,18 @@ fn translate_delete(
 
     let predicate = delete
         .selection
-        .map(|e| translate_expr(&BTreeMap::new(), e))
+        .map(|e| translate_expr(&BTreeMap::new(), e, bindings))
         .transpose()?;
+    let returning = delete
+        .returning
+        .map(translate_returning)
+        .transpose()?
+        .map(|columns| {
+            columns
+                .into_iter()
+                .map(|column| QueryColumn::new(table.clone(), column))
+                .collect()
+        });
 
     Ok(Statement::Query(Query::Delete(QueryDelete {
         from: QueryFrom {
@@ -529,7 +1132,7 @@ fn translate_delete(
             joins: vec![], // TODO: handle joins in DELETE
         },
         predicate,
-        returning: None, // TODO: handle RETURNING clause in DELETE
+        returning,
     })))
 }
 
@@ -561,11 +1164,13 @@ fn translate_column_schema(column: &ast::ColumnDef) -> TranslateResult<schema::C
             ast::ColumnOption::Default(expr) => Some(expr.clone()),
             _ => None,
         })
-        .map(|expr| match translate_expr(&BTreeMap::new(), expr)? {
-            QueryExpr::Value(QueryExprValue::Value(value)) => Ok(value),
-            _ => Err(TranslateError::custom(
-                "Column default must be a literal value",
-            )),
+        .map(|expr| {
+            match translate_expr(&BTreeMap::new(), expr, &mut ParameterBindings::new(None))? {
+                QueryExpr::Value(QueryExprValue::Value(value)) => Ok(value),
+                _ => Err(TranslateError::custom(
+                    "Column default must be a literal value",
+                )),
+            }
         })
         .transpose()?
         .unwrap_or_default();
@@ -606,6 +1211,32 @@ fn unique_columns(columns: &[ast::IndexColumn]) -> TranslateResult<Vec<String>> 
 
 fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Statement> {
     let table_name = object_name_to_string(&create_table.name)?;
+    for column in &create_table.columns {
+        if column.options.iter().any(|option| {
+            matches!(
+                option.option,
+                ast::ColumnOption::ForeignKey(_) | ast::ColumnOption::Identity(_)
+            ) || matches!(
+                &option.option,
+                ast::ColumnOption::DialectSpecific(tokens)
+                    if tokens.iter().any(|token| matches!(
+                        token,
+                        Token::Word(word) if word.value.eq_ignore_ascii_case("AUTOINCREMENT")
+                    ))
+            )
+        }) {
+            return Err(TranslateError::custom(
+                "Foreign keys and AUTOINCREMENT are not supported",
+            ));
+        }
+    }
+    if create_table
+        .constraints
+        .iter()
+        .any(|constraint| matches!(constraint, ast::TableConstraint::ForeignKey(_)))
+    {
+        return Err(TranslateError::custom("Foreign keys are not supported"));
+    }
 
     let columns = create_table
         .columns
@@ -698,7 +1329,10 @@ fn translate_drop(
     let name = object_name_to_string(&names[0])?;
 
     match object_type {
-        ast::ObjectType::Table => Err(TranslateError::custom("DROP TABLE is not supported")),
+        ast::ObjectType::Table => Ok(Statement::DataDefinition(DataDefinition::DropTable {
+            table_name: name,
+            if_exists,
+        })),
         ast::ObjectType::Index => Ok(Statement::DataDefinition(DataDefinition::DropIndex {
             index_name: name,
             if_exists,
@@ -917,12 +1551,57 @@ mod tests {
         };
         assert_eq!(insert.columns, vec!["name", "id"]);
         assert_eq!(
-            insert.values,
-            vec![
+            insert.rows,
+            vec![vec![
                 QueryInsertValue::Value(Value::from("Ada")),
                 QueryInsertValue::Default,
-            ]
+            ]]
         );
+    }
+
+    #[test]
+    fn translates_only_do_nothing_conflicts_with_column_targets() {
+        let statements = translate(
+            "INSERT INTO users (uuid_primary_key) VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID)) ON CONFLICT (uuid_primary_key) DO NOTHING",
+        );
+        let Statement::Query(Query::InsertValues(insert)) = &statements[0] else {
+            panic!("expected INSERT VALUES");
+        };
+        assert_eq!(
+            insert.on_conflict_do_nothing,
+            Some(vec!["uuid_primary_key".into()])
+        );
+
+        let statements =
+            translate("INSERT INTO users VALUES (1) ON CONFLICT (id) DO UPDATE SET name = 'Ada'");
+        let Statement::Query(Query::InsertValues(insert)) = &statements[0] else {
+            panic!("expected INSERT VALUES");
+        };
+        assert_eq!(insert.on_conflict_do_update.as_ref().unwrap().0, vec!["id"]);
+        assert_eq!(insert.on_conflict_do_update.as_ref().unwrap().1.len(), 1);
+
+        for sql in [
+            "INSERT INTO users VALUES (1) ON CONFLICT DO NOTHING",
+            "INSERT INTO users VALUES (1) ON CONFLICT ON CONSTRAINT users_pkey DO NOTHING",
+        ] {
+            assert!(
+                block_on(async { SqlTranslator.translate_with_params(sql, None).await }).is_err(),
+                "accepted unsupported clause: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn translates_multi_row_insert_values() {
+        let statements = translate(
+            "INSERT INTO users (id, name) VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada'), (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Lin')",
+        );
+        let Statement::Query(Query::InsertValues(insert)) = &statements[0] else {
+            panic!("expected INSERT VALUES");
+        };
+        assert_eq!(insert.rows.len(), 2);
+        assert_eq!(insert.rows[0].len(), 2);
+        assert_eq!(insert.rows[1].len(), 2);
     }
 
     #[test]
@@ -986,13 +1665,19 @@ mod tests {
             "SELECT * FROM users u LEFT JOIN posts p ON p.user_id = u.id",
             "SELECT * FROM users u RIGHT JOIN posts p ON p.user_id = u.id",
             "SELECT * FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id",
-            "SELECT id, u.id, u.id + 1 FROM users u WHERE id < 1 OR id <= 2 OR id <> 3 OR id >= 4 AND active = TRUE AND name = 'Ada' AND deleted_at IS NOT NULL",
+            "SELECT id, u.id FROM users u WHERE id < 1 OR id <= 2 OR id <> 3 OR id >= 4 AND active = TRUE AND name = 'Ada' AND deleted_at IS NOT NULL",
         ] {
             assert!(matches!(
                 translate(sql)[0],
                 Statement::Query(Query::Select(_))
             ));
         }
+        assert!(block_on(async {
+            SqlTranslator
+                .translate_with_params("SELECT id + 1 FROM users", None)
+                .await
+                .is_err()
+        }));
     }
 
     #[test]

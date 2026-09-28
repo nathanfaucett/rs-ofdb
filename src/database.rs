@@ -4,7 +4,12 @@ use alloc::{string::String, vec::Vec};
 
 #[cfg(feature = "in-memory")]
 use engine::InMemoryKernel;
-use engine::{Engine, EngineError, EngineResult};
+#[cfg(any(
+    all(feature = "automerge", feature = "redb"),
+    all(feature = "automerge", feature = "in-memory"),
+))]
+use engine::{Engine, EngineTransaction};
+use engine::{EngineError, EngineResult};
 use query::{QueryParams, QueryResult, Statement, Translator};
 use schema::{IndexSchema, TableSchema};
 #[cfg(feature = "sync")]
@@ -26,6 +31,92 @@ pub enum Database {
     File(Engine<RedbKernel, AutomergeRowCodec>),
     #[cfg(all(feature = "automerge", feature = "in-memory"))]
     InMemory(Engine<InMemoryKernel, AutomergeRowCodec>),
+}
+
+pub enum DatabaseTransaction {
+    #[cfg(all(feature = "automerge", feature = "redb"))]
+    File(EngineTransaction<RedbKernel, AutomergeRowCodec>),
+    #[cfg(all(feature = "automerge", feature = "in-memory"))]
+    InMemory(EngineTransaction<InMemoryKernel, AutomergeRowCodec>),
+}
+
+impl DatabaseTransaction {
+    pub async fn translate_and_execute<T>(
+        &mut self,
+        query: &str,
+        translator: &T,
+    ) -> EngineResult<Vec<QueryResult>>
+    where
+        T: Translator,
+    {
+        match self {
+            #[cfg(all(feature = "automerge", feature = "redb"))]
+            Self::File(transaction) => transaction.translate_and_execute(query, translator).await,
+            #[cfg(all(feature = "automerge", feature = "in-memory"))]
+            Self::InMemory(transaction) => {
+                transaction.translate_and_execute(query, translator).await
+            }
+            #[cfg(not(any(
+                all(feature = "automerge", feature = "redb"),
+                all(feature = "automerge", feature = "in-memory"),
+            )))]
+            _ => {
+                let _ = (query, translator);
+                Err(EngineError::custom("no database backend is enabled"))
+            }
+        }
+    }
+
+    pub async fn translate_and_execute_with_params<T>(
+        &mut self,
+        query: &str,
+        params: Option<&QueryParams>,
+        translator: &T,
+    ) -> EngineResult<Vec<QueryResult>>
+    where
+        T: Translator,
+    {
+        match self {
+            #[cfg(all(feature = "automerge", feature = "redb"))]
+            Self::File(transaction) => {
+                transaction
+                    .translate_and_execute_with_params(query, params, translator)
+                    .await
+            }
+            #[cfg(all(feature = "automerge", feature = "in-memory"))]
+            Self::InMemory(transaction) => {
+                transaction
+                    .translate_and_execute_with_params(query, params, translator)
+                    .await
+            }
+            #[cfg(not(any(
+                all(feature = "automerge", feature = "redb"),
+                all(feature = "automerge", feature = "in-memory"),
+            )))]
+            _ => {
+                let _ = (query, params, translator);
+                Err(EngineError::custom("no database backend is enabled"))
+            }
+        }
+    }
+
+    pub async fn commit(self) -> EngineResult<()> {
+        match self {
+            #[cfg(all(feature = "automerge", feature = "redb"))]
+            Self::File(transaction) => transaction.commit().await,
+            #[cfg(all(feature = "automerge", feature = "in-memory"))]
+            Self::InMemory(transaction) => transaction.commit().await,
+        }
+    }
+
+    pub async fn rollback(self) -> EngineResult<()> {
+        match self {
+            #[cfg(all(feature = "automerge", feature = "redb"))]
+            Self::File(transaction) => transaction.rollback().await,
+            #[cfg(all(feature = "automerge", feature = "in-memory"))]
+            Self::InMemory(transaction) => transaction.rollback().await,
+        }
+    }
 }
 
 macro_rules! database_call {
@@ -109,6 +200,23 @@ impl Database {
         Self::InMemory(Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new()))
     }
 
+    pub async fn transaction(&self) -> EngineResult<DatabaseTransaction> {
+        match self {
+            #[cfg(all(feature = "automerge", feature = "redb"))]
+            Self::File(engine) => engine.transaction().await.map(DatabaseTransaction::File),
+            #[cfg(all(feature = "automerge", feature = "in-memory"))]
+            Self::InMemory(engine) => engine
+                .transaction()
+                .await
+                .map(DatabaseTransaction::InMemory),
+            #[cfg(not(any(
+                all(feature = "automerge", feature = "redb"),
+                all(feature = "automerge", feature = "in-memory"),
+            )))]
+            _ => Err(EngineError::custom("no database backend is enabled")),
+        }
+    }
+
     pub async fn index_schema(&self, name: &str) -> EngineResult<IndexSchema> {
         database_call!(self, |engine| engine.index_schema(name).await)
     }
@@ -187,9 +295,25 @@ impl Database {
         T: SyncTransport,
         T::Error: core::fmt::Display,
     {
-        database_call!(self, |engine| {
-            synchronize_engine(engine, transport, config, role).await
-        })
+        #[cfg(any(
+            all(feature = "automerge", feature = "redb"),
+            all(feature = "automerge", feature = "in-memory"),
+        ))]
+        {
+            database_call!(self, |engine| {
+                synchronize_engine(engine, transport, config, role).await
+            })
+        }
+        #[cfg(not(any(
+            all(feature = "automerge", feature = "redb"),
+            all(feature = "automerge", feature = "in-memory"),
+        )))]
+        {
+            let _ = (transport, config, role);
+            Err(SyncError::Engine(EngineError::custom(
+                "no database backend is enabled",
+            )))
+        }
     }
 
     #[cfg(feature = "sync")]

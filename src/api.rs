@@ -1,5 +1,6 @@
 pub use engine::{
-    Engine, EngineError, EngineResult, Kernel, KernelTransaction, RowCodec, SchemaChange,
+    Engine, EngineError, EngineResult, EngineTransaction, Kernel, KernelTransaction, RowCodec,
+    SchemaChange,
 };
 #[cfg(feature = "in-memory")]
 pub use engine::{InMemoryKernel, InMemoryKernelTransaction};
@@ -11,10 +12,12 @@ pub use engine_redb::{RedbKernel, RedbKernelTransaction, redb};
 pub use macros::FromRow;
 pub use query::{
     Query, QueryColumn, QueryDelete, QueryExpr, QueryExprValue, QueryFrom, QueryInsert,
-    QueryResult, QuerySelect, QueryUpdate, QueryUpdateAssignment, Statement,
+    QueryParams, QueryResult, QuerySelect, QueryUpdate, QueryUpdateAssignment, Statement,
 };
 #[cfg(feature = "sql")]
 pub use sql_translator::SqlTranslator;
+#[cfg(feature = "iroh")]
+pub use sync::IrohTransport;
 #[cfg(feature = "sync")]
 pub use sync::{
     SessionConfig, SyncError, SyncHello, SyncMessage, SyncResult, SyncRole, SyncTransport,

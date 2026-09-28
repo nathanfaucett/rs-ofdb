@@ -1,9 +1,11 @@
 use sync::SessionConfig;
 
+use super::verify::verify_case;
+
 use crate::{
     case::TestCase,
     cluster::automerge_redb_cluster,
-    runner::{RunnerError, TestRunner, VerificationPolicy, verify::verify_case},
+    runner::{RunnerError, TestRunner, VerificationPolicy, verify_step_result},
 };
 
 /// Orchestrates multi-node cluster integration tests in offline partition mode:
@@ -68,7 +70,7 @@ impl TestRunner for ClusterOfflineRunner {
         for step in &case.steps {
             let result = cluster.try_exec(step.node.0, step.sql.as_ref()).await;
             match (&step.expected_error, result) {
-                (None, Ok(_)) => {}
+                (None, Ok(rows)) => verify_step_result(step, rows)?,
                 (None, Err(err)) => {
                     return Err(RunnerError::UnexpectedError {
                         node: step.node,

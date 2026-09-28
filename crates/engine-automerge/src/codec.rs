@@ -432,6 +432,46 @@ where
         )
     }
 
+    async fn conflict_values(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: &uuid::Uuid,
+    ) -> EngineResult<Vec<(usize, Vec<Value>)>> {
+        let id = Self::document_id(row);
+        let Some(document) = Self::document(transaction, table, &id).await? else {
+            return Ok(Vec::new());
+        };
+        let columns = Self::document_columns(transaction, table, &document).await?;
+        let mut conflicts = Vec::new();
+        for (index, column) in columns.iter().enumerate() {
+            let values = document
+                .get_all(ROOT, &column.id)
+                .map_err(EngineError::custom)?;
+            if values.len() < 2 {
+                continue;
+            }
+            let values = values
+                .into_iter()
+                .map(|(value, _)| {
+                    let AutomergeValue::Scalar(value) = value else {
+                        return Err(EngineError::custom(
+                            "Logical row column is not encoded bytes",
+                        ));
+                    };
+                    let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                        return Err(EngineError::custom(
+                            "Logical row column is not encoded bytes",
+                        ));
+                    };
+                    postcard::from_bytes(bytes.as_ref()).map_err(EngineError::custom)
+                })
+                .collect::<EngineResult<Vec<_>>>()?;
+            conflicts.push((index, values));
+        }
+        Ok(conflicts)
+    }
+
     async fn encode_resolution(
         &self,
         transaction: &T,

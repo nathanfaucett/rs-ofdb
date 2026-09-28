@@ -26,7 +26,7 @@ pub use catalog::{
 };
 pub use change::{Change, ChangeKey};
 pub use codec::RowCodec;
-pub use engine::{Engine, EngineError, EngineResult, TimestampProvider};
+pub use engine::{Engine, EngineError, EngineResult, EngineTransaction, TimestampProvider};
 
 #[cfg(feature = "in-memory")]
 pub use in_memory::{InMemoryKernel, InMemoryKernelTransaction};
