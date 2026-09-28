@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    EngineError, EngineResult, KernelTransaction, RowCodec,
+    EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity,
     index::{rebuild_table, update_row},
     schema::{SchemaChange, columns, materialize as materialize_schema},
 };
@@ -25,7 +25,7 @@ impl Change {
         }
     }
 
-    pub fn row(id: Uuid, table: String, row: Uuid, value: Option<Vec<u8>>) -> Self {
+    pub fn row(id: Uuid, table: String, row: RowIdentity, value: Option<Vec<u8>>) -> Self {
         Self {
             id,
             key: ChangeKey::Row { table, row },
@@ -37,7 +37,7 @@ impl Change {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChangeKey {
     Schema(SchemaChange),
-    Row { table: String, row: Uuid },
+    Row { table: String, row: RowIdentity },
 }
 
 pub(crate) async fn apply_local_change<T, R>(
@@ -90,7 +90,10 @@ where
                 return Ok(true);
             }
             let old = codec.get_row(transaction, table, row).await?;
-            let Some(value) = codec.merge_row(transaction, table, *row, value).await? else {
+            let Some(value) = codec
+                .merge_row(transaction, table, row.clone(), value)
+                .await?
+            else {
                 return Ok(true);
             };
             update_row(

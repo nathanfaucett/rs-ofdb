@@ -5,7 +5,7 @@ use schema::{ColumnSchemaIndex, IndexSchema};
 use value::{Row, Value};
 
 use crate::{
-    EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
+    EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity, RowTable,
     catalog::{ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE},
     executor::{materialize_defaults, row_id},
     schema::{columns, index_deleted, index_field_deleted, table_schema_for},
@@ -151,7 +151,11 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
         }
     }
     match winner {
-        Some(row) => codec.get_row(transaction, &schema.table_name, &row).await,
+        Some(row) => {
+            codec
+                .get_row(transaction, &schema.table_name, &RowIdentity::user(row))
+                .await
+        }
         None => Ok(None),
     }
 }

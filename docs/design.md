@@ -6,13 +6,15 @@
 
 ## SQL engine
 
-The engine owns canonical database state and exposes transactions to local callers and sync. Tables have immutable generations; rows use an immutable UUID identity within a table generation. Schema/index state and row state are exported as sync state units. The engine maintains derived indexes atomically when local or incoming state is applied.
+The catalog row lifecycle below is the target of `docs/catalog-row-unification-plan.md`; the current schema mutation and sync paths are not yet unified.
 
-Concurrent row values may be retained as conflicts by the Automerge row codec. Deterministic canonical ordering determines the visible value; an explicit resolution settles a conflict. Tombstones hide deleted rows and schema generations. Restore creates a new generation rather than reviving deleted identity.
+The engine owns canonical database state and exposes transactions to local callers and sync. The four internal catalog tables (`__engine_tables`, `__engine_table_fields`, `__engine_indices`, `__engine_index_fields`) are the sole source of SQL schema. Table and index definitions are ordinary catalog rows: each logical name may have successive UUIDv7 row identities, with the greatest UUIDv7 deciding visibility as for KV keys. A new identity must exceed the latest known identity, even if the clock moves backwards. Fields reference their parent catalog row identity; user rows belong to a table identity, and derived index storage belongs to an index identity and its table identity. The engine maintains derived indexes atomically when local or incoming state is applied.
+
+Concurrent row values may be retained as conflicts by the Automerge row codec. Deterministic canonical ordering determines the visible value; an explicit resolution settles a conflict. Deleting a table or index tombstones its current catalog row through the same codec and sync path as a user row. A tombstoned greatest UUIDv7 keeps the logical name absent; an older live row or stale snapshot cannot restore it. Recreating a name creates a new, greater UUIDv7 row instead of clearing the tombstone. This needs no separate schema-version table, schema tombstone protocol, or compatibility path. Old database files must be discarded and recreated after the format changes.
 
 ## SQL sync boundary
 
-`ofdb::sync::synchronize` coordinates a peer session over the caller-provided `SyncTransport`. `SyncMessage` protocol version 3 exchanges:
+`ofdb::sync::synchronize` coordinates a peer session over the caller-provided `SyncTransport`. `SyncMessage` protocol version 4 exchanges:
 
 - hello and a digest manifest;
 - row-change inventories;

@@ -248,16 +248,17 @@ where
             .await?;
         for row in rows {
             let table_for_row = table.clone();
+            let row_for_state = row.clone();
             let (state, metadata) = engine
                 .read_transaction(|codec, transaction| {
                     Box::pin(async move {
                         Ok((
                             codec
-                                .export_state(transaction, &table_for_row, row)
+                                .export_state(transaction, &table_for_row, row_for_state.clone())
                                 .await?
                                 .unwrap_or_default(),
                             codec
-                                .export_metadata(transaction, &table_for_row, row)
+                                .export_metadata(transaction, &table_for_row, row_for_state)
                                 .await?,
                         ))
                     })
@@ -294,18 +295,28 @@ where
         SyncKey::Row { table, row } => {
             let table_for_merge = table.clone();
             engine
-                .mutate_transaction(&table, row, |codec, transaction, _| {
+                .mutate_transaction(&table, row.clone(), |codec, transaction, _| {
                     Box::pin(async move {
                         if !unit.metadata.is_empty() {
                             codec
-                                .merge_metadata(transaction, &table_for_merge, row, &unit.metadata)
+                                .merge_metadata(
+                                    transaction,
+                                    &table_for_merge,
+                                    row.clone(),
+                                    &unit.metadata,
+                                )
                                 .await?;
                         }
                         let value = if unit.state.is_empty() {
                             None
                         } else {
                             codec
-                                .merge_state(transaction, &table_for_merge, row, &unit.state)
+                                .merge_state(
+                                    transaction,
+                                    &table_for_merge,
+                                    row.clone(),
+                                    &unit.state,
+                                )
                                 .await?
                         };
                         Ok(((), value))
@@ -367,7 +378,7 @@ where
     validate_change_batch(batch)?;
     let rows = batch
         .iter()
-        .map(|change| (change.table.clone(), change.row))
+        .map(|change| (change.table.clone(), change.row.clone()))
         .collect::<Vec<_>>();
     let changes = batch.to_vec();
     engine
@@ -382,14 +393,14 @@ where
                         .apply_change(
                             transaction,
                             &change.table,
-                            change.row,
+                            change.row.clone(),
                             &change.id,
                             &change.payload,
                         )
                         .await?;
                     mutations.push(engine::RowMutation {
                         table: change.table.clone(),
-                        row: change.row,
+                        row: change.row.clone(),
                         old,
                         new,
                     });
@@ -424,7 +435,7 @@ where
         };
         result.push(SyncRowInventory {
             table: table.clone(),
-            row,
+            row: row.clone(),
             changes: engine
                 .read_transaction(|codec, transaction| {
                     Box::pin(async move { codec.change_inventory(transaction, &table, row).await })
@@ -499,11 +510,12 @@ where
             continue;
         };
         let table_for_inventory = table.clone();
+        let row_for_inventory = row.clone();
         let local = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .change_inventory(transaction, &table_for_inventory, row)
+                        .change_inventory(transaction, &table_for_inventory, row_for_inventory)
                         .await
                 })
             })
@@ -515,11 +527,17 @@ where
             }
             let export_id = key.clone();
             let table_for_export = table.clone();
+            let row_for_export = row.clone();
             if let Some(payload) = engine
                 .read_transaction(move |codec, transaction| {
                     Box::pin(async move {
                         codec
-                            .export_change(transaction, &table_for_export, row, &export_id)
+                            .export_change(
+                                transaction,
+                                &table_for_export,
+                                row_for_export,
+                                &export_id,
+                            )
                             .await
                     })
                 })
@@ -527,7 +545,7 @@ where
             {
                 outbound.changes.push(SyncIncrementalChange {
                     table: table.clone(),
-                    row,
+                    row: row.clone(),
                     id: key,
                     payload,
                 });
@@ -619,11 +637,11 @@ where
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     let state = codec
-                        .export_state(transaction, &request.table, request.row)
+                        .export_state(transaction, &request.table, request.row.clone())
                         .await?
                         .unwrap_or_default();
                     let metadata = codec
-                        .export_metadata(transaction, &request.table, request.row)
+                        .export_metadata(transaction, &request.table, request.row.clone())
                         .await?;
                     Ok(if state.is_empty() && metadata.is_empty() {
                         None
@@ -746,7 +764,7 @@ where
                         for change in batch {
                             count.requests.push(SyncSnapshotRequest {
                                 table: change.table.clone(),
-                                row: change.row,
+                                row: change.row.clone(),
                             });
                             count.pending.push(change);
                         }

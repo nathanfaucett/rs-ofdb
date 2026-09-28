@@ -3,12 +3,11 @@ use core::{future::Future, pin::Pin};
 
 use futures::{StreamExt, pin_mut};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use value::{Row, Value};
 
 use crate::{
-    Engine, EngineError, EngineResult, Kernel, KernelTransaction, RowCodec, RowTable,
+    Engine, EngineError, EngineResult, Kernel, KernelTransaction, RowCodec, RowIdentity, RowTable,
     catalog::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
         ENGINE_TABLES_STORAGE,
@@ -34,7 +33,7 @@ pub struct CatalogEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowMutation {
     pub table: String,
-    pub row: Uuid,
+    pub row: RowIdentity,
     pub old: Option<Row>,
     pub new: Option<Row>,
 }
@@ -122,7 +121,7 @@ where
     pub async fn mutate_transaction<F, O>(
         &self,
         table: &str,
-        row: Uuid,
+        row: RowIdentity,
         operation: F,
     ) -> EngineResult<O>
     where
@@ -161,7 +160,11 @@ where
         }
     }
 
-    pub async fn mutate_rows<F, O>(&self, rows: &[(String, Uuid)], operation: F) -> EngineResult<O>
+    pub async fn mutate_rows<F, O>(
+        &self,
+        rows: &[(String, RowIdentity)],
+        operation: F,
+    ) -> EngineResult<O>
     where
         F: for<'a> FnOnce(
             &'a R,

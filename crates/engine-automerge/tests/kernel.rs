@@ -7,7 +7,10 @@ use std::{
 };
 
 use btree_automerge::DocumentChangeKey;
-use engine::{Engine, Kernel, KernelTransaction, RowCodec, RowTable};
+use engine::{
+    CatalogTable, Engine, Kernel, KernelTransaction, RowCodec, RowIdentity, RowTable,
+    catalog_row_identity,
+};
 use engine_automerge::{AutomergeRowCodec, RowMetadata};
 use engine_redb::RedbKernel;
 
@@ -177,18 +180,23 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
         update(&source, "city", Value::from("Paris")).await;
         update(&source, "name", Value::from("Grace")).await;
         let table = "people";
-        let row = Uuid::from_u128(1);
+        let row = RowIdentity::user(Uuid::from_u128(1));
         let keys = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, table, row))
+                Box::pin(codec.change_inventory(transaction, table, row.clone()))
             })
             .await
             .unwrap();
         assert_eq!(keys.len(), 2);
         let key = keys[0].clone();
+        let export_row = row.clone();
         let first_payload = source
             .read_transaction(move |codec, transaction| {
-                Box::pin(async move { codec.export_change(transaction, table, row, &key).await })
+                Box::pin(async move {
+                    codec
+                        .export_change(transaction, table, export_row, &key)
+                        .await
+                })
             })
             .await
             .unwrap()
@@ -200,13 +208,13 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
             &[
                 SyncIncrementalChange {
                     table: table.into(),
-                    row,
+                    row: row.clone(),
                     id: keys[0].clone(),
                     payload: first_payload,
                 },
                 SyncIncrementalChange {
                     table: table.into(),
-                    row,
+                    row: row.clone(),
                     id: keys[1].clone(),
                     payload: vec![1, 2, 3],
                 },
@@ -243,11 +251,11 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
 
         sync(&source, &destination).await.unwrap();
         let table = "people";
-        let row = Uuid::from_u128(1);
+        let row = RowIdentity::user(Uuid::from_u128(1));
         assert!(
             source
                 .read_transaction(|codec, transaction| {
-                    Box::pin(codec.change_inventory(transaction, table, row))
+                    Box::pin(codec.change_inventory(transaction, table, row.clone()))
                 })
                 .await
                 .unwrap()
@@ -257,18 +265,19 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         update(&source, "city", Value::from("Paris")).await;
         let inventory = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, table, row))
+                Box::pin(codec.change_inventory(transaction, table, row.clone()))
             })
             .await
             .unwrap();
         assert_eq!(inventory.len(), 1);
         let key = inventory[0].clone();
         let export_key = key.clone();
+        let export_row = row.clone();
         let payload = source
             .read_transaction(move |codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .export_change(transaction, table, row, &export_key)
+                        .export_change(transaction, table, export_row, &export_key)
                         .await
                 })
             })
@@ -311,6 +320,40 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
 }
 
 #[test]
+fn built_in_catalog_layout_decodes_without_catalog_field_rows() {
+    let path = database_path();
+    let kernel = RedbKernel::new(Arc::new(redb::Database::create(&path).unwrap()));
+    block_on(async {
+        let reconciler = AutomergeRowCodec::new();
+        let table = engine::ENGINE_TABLES_STORAGE;
+        let key = Row::new(vec![Value::from("people")]);
+        let identity = catalog_row_identity(CatalogTable::Tables, &key).unwrap();
+        let expected = Row::new(vec![Value::Bool(false)]);
+        let mut transaction = kernel.transaction().await.unwrap();
+        reconciler
+            .ensure_table(&mut transaction, table)
+            .await
+            .unwrap();
+        reconciler
+            .put_row(&mut transaction, table, identity.clone(), expected.clone())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let transaction = kernel.transaction().await.unwrap();
+        assert_eq!(
+            reconciler
+                .get_row(&transaction, table, &identity)
+                .await
+                .unwrap(),
+            Some(expected)
+        );
+        transaction.rollback().await.unwrap();
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn logical_rows_persist_in_one_kernel_transaction() {
     let path = database_path();
     let kernel = RedbKernel::new(Arc::new(redb::Database::create(&path).unwrap()));
@@ -327,7 +370,7 @@ fn logical_rows_persist_in_one_kernel_transaction() {
             .put_row(
                 &mut transaction,
                 table,
-                row_id,
+                RowIdentity::user(row_id),
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
             .await
@@ -337,7 +380,7 @@ fn logical_rows_persist_in_one_kernel_transaction() {
         let transaction = kernel.transaction().await.unwrap();
         assert_eq!(
             reconciler
-                .get_row(&transaction, table, &row_id)
+                .get_row(&transaction, table, &RowIdentity::user(row_id))
                 .await
                 .unwrap(),
             Some(Row::new(vec![uuid_value(1), Value::from("Ada")]))
@@ -362,7 +405,12 @@ fn redb_kernel_pairs_with_a_non_automerge_reconciler() {
             .await
             .unwrap();
         reconciler
-            .put_row(&mut transaction, table, row_id, row.clone())
+            .put_row(
+                &mut transaction,
+                table,
+                RowIdentity::user(row_id),
+                row.clone(),
+            )
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -370,7 +418,7 @@ fn redb_kernel_pairs_with_a_non_automerge_reconciler() {
         let transaction = kernel.transaction().await.unwrap();
         assert_eq!(
             reconciler
-                .get_row(&transaction, table, &row_id)
+                .get_row(&transaction, table, &RowIdentity::user(row_id))
                 .await
                 .unwrap(),
             Some(row)
@@ -397,14 +445,14 @@ fn removing_a_logical_row_writes_a_tombstone() {
             .put_row(
                 &mut transaction,
                 table,
-                row_id,
+                RowIdentity::user(row_id),
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
             .await
             .unwrap();
         assert!(
             reconciler
-                .remove_row(&mut transaction, table, &row_id)
+                .remove_row(&mut transaction, table, &RowIdentity::user(row_id))
                 .await
                 .unwrap()
                 .is_some()
@@ -414,7 +462,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
                 .put_row(
                     &mut transaction,
                     table,
-                    row_id,
+                    RowIdentity::user(row_id),
                     Row::new(vec![uuid_value(2), Value::from("Grace")]),
                 )
                 .await
@@ -425,13 +473,13 @@ fn removing_a_logical_row_writes_a_tombstone() {
         let transaction = kernel.transaction().await.unwrap();
         assert!(
             reconciler
-                .get_row(&transaction, table, &row_id)
+                .get_row(&transaction, table, &RowIdentity::user(row_id))
                 .await
                 .unwrap()
                 .is_none()
         );
         let metadata_key =
-            DocumentChangeKey::new_metadata(row_id.as_bytes().to_vec()).encode_ordered();
+            DocumentChangeKey::new_metadata(RowIdentity::user(row_id).to_bytes()).encode_ordered();
         let metadata = transaction
             .get_bytes(table, &metadata_key)
             .await
@@ -592,7 +640,7 @@ fn rollback_discards_catalog_and_logical_row_changes() {
             .put_row(
                 &mut transaction,
                 table,
-                row_id,
+                RowIdentity::user(row_id),
                 Row::new(vec![uuid_value(1), Value::from("Ada")]),
             )
             .await

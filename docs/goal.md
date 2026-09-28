@@ -5,7 +5,7 @@ Provide a local-first SQL-like database engine and KV store with durable, transp
 The engine must:
 
 - commit each SQL engine write atomically, including catalog/schema, row state, tombstones and derived indexes;
-- preserve immutable row and schema-generation identities and deterministic conflict visibility;
+- store SQL schema only in four internal catalog tables, use ordinary row tombstones to delete table/index definitions, and recreate a logical name with a new UUIDv7 row identity greater than the latest known identity; the greatest UUIDv7 (including a tombstone) determines visibility, so stale state cannot revive an older table/index or its user rows;
 - expose canonical state units for bootstrap/recovery and incremental row changes for normal updates;
 - synchronize SQL state through the versioned `SyncMessage` protocol over caller-supplied `SyncTransport`;
 - synchronize KV snapshots explicitly, retaining UUIDv7 generations, Automerge history and tombstones; and

@@ -286,7 +286,7 @@ fn duplicate_incremental_frames_are_idempotent() {
         let payload = change.payload;
         let table_for_apply = table.clone();
         right
-            .mutate_transaction(&table, row, move |codec, transaction, _| {
+            .mutate_transaction(&table, row.clone(), move |codec, transaction, _| {
                 Box::pin(async move {
                     let value = codec
                         .apply_change(transaction, &table_for_apply, row, &id, &payload)

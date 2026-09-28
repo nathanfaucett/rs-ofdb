@@ -212,3 +212,32 @@ fn bound_parameters_via_public_api() {
         );
     });
 }
+
+#[test]
+fn internal_catalog_tables_are_not_user_ddl_targets() {
+    futures::executor::block_on(async {
+        use ofdb::{Database, SqlTranslator};
+
+        let database = Database::in_memory();
+        assert!(
+            database
+                .translate_and_execute(
+                    "CREATE TABLE __engine_tables (id UUID PRIMARY KEY)",
+                    &SqlTranslator,
+                )
+                .await
+                .is_err()
+        );
+        database
+            .translate_and_execute("CREATE TABLE users (id UUID PRIMARY KEY)", &SqlTranslator)
+            .await
+            .expect("create a user table");
+        assert!(database
+            .translate_and_execute(
+                "CREATE INDEX __engine_tables ON users (id)",
+                &SqlTranslator,
+            )
+            .await
+            .is_err());
+    });
+}

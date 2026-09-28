@@ -21,11 +21,12 @@ mod state_transfer;
 
 pub use bytes_table::{BytesTable, BytesTableTransaction};
 pub use catalog::{
-    ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID,
-    ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE,
+    CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
+    ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE,
+    catalog_key_from_identity, catalog_row_identity, catalog_table_for_storage,
 };
 pub use change::{Change, ChangeKey};
-pub use codec::RowCodec;
+pub use codec::{RowCodec, RowIdentity};
 pub use engine::{Engine, EngineError, EngineResult, EngineTransaction, TimestampProvider};
 
 #[cfg(feature = "in-memory")]

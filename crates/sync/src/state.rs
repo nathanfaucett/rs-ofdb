@@ -1,8 +1,8 @@
 use alloc::{string::String, vec::Vec};
 
+use engine::RowIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SyncChangeId(pub Vec<u8>);
@@ -13,7 +13,7 @@ pub enum SyncKey {
     TableField { table: String, column: String },
     Index { name: String },
     IndexField { index: String, position: u32 },
-    Row { table: String, row: Uuid },
+    Row { table: String, row: RowIdentity },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
