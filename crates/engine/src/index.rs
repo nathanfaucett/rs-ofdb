@@ -1,110 +1,45 @@
 use alloc::{string::String, vec, vec::Vec};
 
 use futures::{StreamExt, pin_mut};
-use schema::{ColumnSchemaIndex, IndexSchema};
+use schema::IndexSchema;
 use value::{Row, Value};
 
 use crate::{
-    EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity, RowTable,
-    catalog::{ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE},
+    EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
     executor::{materialize_defaults, row_id},
-    schema::{columns, index_deleted, index_field_deleted, table_schema_for},
+    schema::{
+        ENGINE_INDICES_STORAGE, index_schema, index_storage, lookup_index_id, table_schema_for,
+        user_row_identity,
+    },
 };
 
-async fn index<T: KernelTransaction>(
+async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
-    name: &str,
-) -> EngineResult<Option<(String, Row)>> {
-    let value = transaction
-        .get_entry(ENGINE_INDICES_STORAGE, &Row::new(vec![Value::from(name)]))
-        .await?;
-    let Some(value) = value else { return Ok(None) };
-    if index_deleted(transaction, name).await? {
-        return Ok(None);
-    }
-    Ok(Some((name.into(), value)))
-}
-
-pub(crate) async fn index_schema<T: KernelTransaction>(
-    transaction: &T,
-    name: &str,
-) -> EngineResult<Option<IndexSchema>> {
-    let Some((_, value)) = index(transaction, name).await? else {
-        return Ok(None);
-    };
-    let table = value
-        .values
-        .first()
-        .and_then(Value::to_text)
-        .ok_or(EngineError::custom("Invalid index table"))?;
-    let unique = value
-        .values
-        .get(1)
-        .and_then(Value::to_bool)
-        .ok_or(EngineError::custom("Invalid index uniqueness"))?;
-    let mut fields = Vec::new();
-    let entries = transaction.scan_entries_owned(ENGINE_INDEX_FIELDS_STORAGE);
-    pin_mut!(entries);
-    while let Some(entry) = entries.next().await {
-        let (key, field) = entry?;
-        if key.values.first().and_then(Value::as_text) != Some(name) {
-            continue;
-        }
-        let position = key
-            .values
-            .get(1)
-            .and_then(Value::to_integer)
-            .ok_or(EngineError::custom("Invalid index field position"))?;
-        if index_field_deleted(transaction, name, position).await? {
-            continue;
-        }
-        let column = field
-            .values
-            .first()
-            .and_then(Value::to_text)
-            .ok_or(EngineError::custom("Invalid index column"))?;
-        fields.push((position, column));
-    }
-    fields.sort_by_key(|(position, _)| *position);
-    let schema_columns = columns(transaction, &table).await?;
-    let column_indices = fields
-        .into_iter()
-        .map(|(_, column)| {
-            schema_columns
-                .iter()
-                .position(|(name, _)| *name == column)
-                .map(|position| position as ColumnSchemaIndex)
-                .ok_or(EngineError::InvalidQuery("Index column not found"))
-        })
-        .collect::<EngineResult<Vec<_>>>()?;
-    Ok(Some(IndexSchema {
-        name: name.into(),
-        table_name: table,
-        column_indices,
-        unique,
-    }))
-}
-
-async fn indexes_for_table<T: KernelTransaction>(
-    transaction: &T,
+    codec: &R,
     table: &str,
 ) -> EngineResult<Vec<(String, IndexSchema)>> {
-    let entries = transaction.scan_entries_owned(ENGINE_INDICES_STORAGE);
+    let entries = codec.scan_rows(transaction, ENGINE_INDICES_STORAGE);
     pin_mut!(entries);
     let mut names: Vec<String> = Vec::new();
     while let Some(entry) = entries.next().await {
-        let (key, value) = entry?;
-        if value.values.first().and_then(Value::as_text) == Some(table)
-            && let Some(name) = key.values.first().and_then(Value::to_text)
-            && !index_deleted(transaction, &name).await?
+        let (_, value) = entry?;
+        if value.values.get(1).and_then(Value::as_text) == Some(table)
+            && let Some(name) = value.values.first().and_then(Value::to_text)
         {
             names.push(name);
         }
     }
+    names.sort();
+    names.dedup();
     let mut result = Vec::new();
     for name in names {
-        if let Some(schema) = index_schema(transaction, &name).await? {
-            result.push((name, schema));
+        if let Some(schema) = index_schema(transaction, codec, &name).await?
+            && schema.table_name == table
+        {
+            result.push((
+                index_storage(&lookup_index_id(transaction, codec, &name).await?),
+                schema,
+            ));
         }
     }
     Ok(result)
@@ -132,7 +67,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     values: &Row,
 ) -> EngineResult<Option<Row>> {
-    let schema = index_schema(transaction, name)
+    let schema = index_schema(transaction, codec, name)
         .await?
         .ok_or(EngineError::InvalidQuery("Index not found"))?;
     if values.values.len() != schema.column_indices.len() {
@@ -140,7 +75,8 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
             "Index key has the wrong column count",
         ));
     }
-    let entries = transaction.scan_entries_owned(name);
+    let storage = index_storage(&lookup_index_id(transaction, codec, name).await?);
+    let entries = transaction.scan_entries_owned(&storage);
     pin_mut!(entries);
     let mut winner = None;
     while let Some(entry) = entries.next().await {
@@ -153,7 +89,11 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     match winner {
         Some(row) => {
             codec
-                .get_row(transaction, &schema.table_name, &RowIdentity::user(row))
+                .get_row(
+                    transaction,
+                    &schema.table_name,
+                    &user_row_identity(transaction, codec, &schema.table_name, row).await?,
+                )
                 .await
         }
         None => Ok(None),
@@ -166,7 +106,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     table: &str,
     enforce_unique: bool,
 ) -> EngineResult<()> {
-    let indexes = indexes_for_table(transaction, table).await?;
+    let indexes = indexes_for_table(transaction, codec, table).await?;
     for (name, _) in &indexes {
         transaction.ensure_table(name).await?;
         let stale = {
@@ -182,7 +122,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
             transaction.remove_entry(name, &key).await?;
         }
     }
-    let schema = table_schema_for(transaction, table, table.into()).await?;
+    let schema = table_schema_for(transaction, codec, table, table.into()).await?;
     let rows = {
         let stream = codec.scan_rows(transaction, table);
         pin_mut!(stream);
@@ -195,6 +135,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     for (_, row) in rows {
         update_row(
             transaction,
+            codec,
             table,
             None,
             Some(&materialize_defaults(&schema, row)),
@@ -205,15 +146,16 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) async fn update_row<T: KernelTransaction>(
+pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
+    codec: &R,
     table: &str,
     old: Option<&Row>,
     new: Option<&Row>,
     enforce_unique: bool,
 ) -> EngineResult<()> {
-    let schema = table_schema_for(transaction, table, table.into()).await?;
-    for (name, index) in indexes_for_table(transaction, table).await? {
+    let schema = table_schema_for(transaction, codec, table, table.into()).await?;
+    for (name, index) in indexes_for_table(transaction, codec, table).await? {
         transaction.ensure_table(&name).await?;
         if let Some(row) = old {
             transaction

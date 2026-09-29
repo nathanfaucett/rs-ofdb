@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::{
     string::{String, ToString},
@@ -21,8 +22,9 @@ use crate::{
         execute_in_transaction, execute_statement, resolve_row as resolve_conflicted_row,
         row_conflict_values as conflicted_row_values, row_conflicts as conflicted_row_columns,
     },
-    index::{index_schema, lookup as index_lookup},
+    index::lookup as index_lookup,
     kernel::{Kernel, KernelTransaction},
+    schema::index_schema,
 };
 
 #[derive(Error, Debug)]
@@ -137,7 +139,13 @@ where
             .transaction
             .as_mut()
             .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
-        match execute_in_transaction(&self.engine, transaction, statements, &mut self.changes).await
+        match Box::pin(execute_in_transaction(
+            &self.engine,
+            transaction,
+            statements,
+            &mut self.changes,
+        ))
+        .await
         {
             Ok(results) => Ok(results),
             Err(error) => {
@@ -211,7 +219,7 @@ where
 
     pub async fn index_schema(&self, name: &str) -> EngineResult<IndexSchema> {
         let transaction = self.kernel.transaction().await?;
-        let schema = index_schema(&transaction, name).await?;
+        let schema = index_schema(&transaction, self.reconciler.as_ref(), name).await?;
         transaction.rollback().await?;
         schema.ok_or(EngineError::InvalidQuery("Index not found"))
     }
@@ -225,7 +233,8 @@ where
 
     pub async fn table_schema(&self, name: &str) -> EngineResult<TableSchema> {
         let transaction = self.kernel.transaction().await?;
-        let schema = crate::executor::table_schema(&transaction, name).await?;
+        let schema =
+            crate::executor::table_schema(&transaction, self.reconciler.as_ref(), name).await?;
         transaction.rollback().await?;
         Ok(schema)
     }

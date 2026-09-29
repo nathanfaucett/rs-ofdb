@@ -237,7 +237,7 @@ fn coalesces_duplicate_requests() {
 }
 
 #[test]
-fn dependency_failure_triggers_snapshot_recovery() {
+fn tombstoned_row_accepts_incremental_without_resurrection() {
     block_on(async {
         let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
         let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
@@ -266,21 +266,23 @@ fn dependency_failure_triggers_snapshot_recovery() {
         .unwrap();
 
         let frames = sync(&left, &right, &SessionConfig::default()).await;
+
         assert!(
             frames
                 .iter()
                 .any(|frame| matches!(frame, SyncMessage::Changes(_)))
         );
         assert!(
-            frames
-                .iter()
-                .any(|frame| matches!(frame, SyncMessage::RequestSnapshots(_)))
-        );
-        assert!(
-            frames
+            !frames
                 .iter()
                 .any(|frame| matches!(frame, SyncMessage::State(_)))
         );
+        assert!(frames.iter().all(|frame| !matches!(frame, SyncMessage::RequestSnapshots(requests) if !requests.is_empty())));
+        let rows = right
+            .translate_and_execute("SELECT name FROM people;", &translator)
+            .await
+            .unwrap();
+        assert!(rows[0].rows.is_empty());
     });
 }
 

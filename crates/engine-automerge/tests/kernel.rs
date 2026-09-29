@@ -7,14 +7,11 @@ use std::{
 };
 
 use btree_automerge::DocumentChangeKey;
-use engine::{
-    CatalogTable, Engine, Kernel, KernelTransaction, RowCodec, RowIdentity, RowTable,
-    catalog_row_identity,
-};
+use engine::{Engine, Kernel, KernelTransaction, RowCodec, RowIdentity};
 use engine_automerge::{AutomergeRowCodec, RowMetadata};
 use engine_redb::RedbKernel;
 
-use futures::executor::block_on;
+use futures::{StreamExt, executor::block_on};
 use query::{
     AlterTableOperation, DataDefinition, Query, QueryColumn, QueryDelete, QueryExpr,
     QueryExprValue, QueryFrom, QueryInsert, QuerySelect, QueryUpdate, QueryUpdateAssignment,
@@ -22,8 +19,8 @@ use query::{
 };
 use schema::{ColumnSchema, IndexSchema, TableSchema};
 use sync::{
-    SyncIncrementalChange, SyncRowCodec, apply_incremental_changes_for, apply_sync_state_for,
-    export_sync_state_for, sync_manifest_for,
+    SyncIncrementalChange, SyncKey, SyncRowCodec, SyncStateUnit, apply_incremental_changes_for,
+    apply_sync_state_batch_for, export_sync_state_for, sync_manifest_for,
 };
 use uuid::Uuid;
 use value::{Row, Value, ValueType};
@@ -113,10 +110,36 @@ async fn sync(
     source: &Engine<RedbKernel, AutomergeRowCodec>,
     destination: &Engine<RedbKernel, AutomergeRowCodec>,
 ) -> engine::EngineResult<()> {
-    for unit in export_sync_state_for(source).await? {
-        apply_sync_state_for(destination, unit).await?;
-    }
-    Ok(())
+    apply_sync_state_batch_for(destination, export_sync_state_for(source).await?).await
+}
+
+async fn latest_table_identity(engine: &Engine<RedbKernel, AutomergeRowCodec>) -> Vec<u8> {
+    export_sync_state_for(engine)
+        .await
+        .expect("catalog state exports")
+        .into_iter()
+        .filter_map(|unit| match unit.key {
+            SyncKey::Row {
+                table,
+                row: RowIdentity::Catalog(bytes),
+            } if table == engine::ENGINE_TABLES_STORAGE && bytes.len() == 16 => Some(bytes),
+            _ => None,
+        })
+        .max()
+        .expect("table catalog identity exists")
+}
+
+async fn scoped_row(
+    engine: &Engine<RedbKernel, AutomergeRowCodec>,
+    table: &str,
+    id: Uuid,
+) -> RowIdentity {
+    let table = table.to_string();
+    engine.read_transaction(|codec, transaction| Box::pin(async move {
+        codec.row_ids(transaction, &table).await?.into_iter()
+            .find(|row| matches!(row, RowIdentity::ScopedUser { row, .. } if *row == *id.as_bytes()))
+            .ok_or(engine::EngineError::custom("Missing scoped row"))
+    })).await.unwrap()
 }
 
 async fn update(engine: &Engine<RedbKernel, AutomergeRowCodec>, column: &str, value: Value) {
@@ -180,7 +203,7 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
         update(&source, "city", Value::from("Paris")).await;
         update(&source, "name", Value::from("Grace")).await;
         let table = "people";
-        let row = RowIdentity::user(Uuid::from_u128(1));
+        let row = scoped_row(&source, table, Uuid::from_u128(1)).await;
         let keys = source
             .read_transaction(|codec, transaction| {
                 Box::pin(codec.change_inventory(transaction, table, row.clone()))
@@ -251,7 +274,7 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
 
         sync(&source, &destination).await.unwrap();
         let table = "people";
-        let row = RowIdentity::user(Uuid::from_u128(1));
+        let row = scoped_row(&source, table, Uuid::from_u128(1)).await;
         assert!(
             source
                 .read_transaction(|codec, transaction| {
@@ -320,15 +343,457 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
 }
 
 #[test]
+fn newer_catalog_tombstone_hides_older_live_name() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        let mut later = *Uuid::now_v7().as_bytes();
+        later[..6].fill(0xff);
+        let id = RowIdentity::catalog(later.to_vec());
+        let rows = [(engine::ENGINE_TABLES_STORAGE.into(), id.clone())];
+        engine
+            .mutate_rows(&rows, |codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .put_row(
+                            transaction,
+                            engine::ENGINE_TABLES_STORAGE,
+                            id.clone(),
+                            Row::new(vec![Value::from("people")]),
+                        )
+                        .await?;
+                    codec
+                        .delete_row(transaction, engine::ENGINE_TABLES_STORAGE, &id)
+                        .await?;
+                    Ok(((), Vec::new()))
+                })
+            })
+            .await
+            .unwrap();
+        assert!(engine.table_names().await.unwrap().is_empty());
+        assert!(engine.table_schema("people").await.is_err());
+        assert!(engine.create_table(people_schema()).await.is_err());
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn newer_index_tombstone_masks_older_active_index() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        engine
+            .execute(vec![Statement::DataDefinition(
+                DataDefinition::CreateIndex {
+                    schema: IndexSchema {
+                        name: "by_name".into(),
+                        table_name: "people".into(),
+                        column_indices: vec![1],
+                        unique: false,
+                    },
+                    if_not_exists: false,
+                },
+            )])
+            .await
+            .unwrap();
+        let RowIdentity::Catalog(mut id) = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    Ok(codec
+                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                        .await?[0]
+                        .clone())
+                })
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("table id");
+        };
+        let mut future = *Uuid::now_v7().as_bytes();
+        future[..6].fill(0xff);
+        id.extend_from_slice(&future);
+        let id = RowIdentity::catalog(id);
+        let rows = [(engine::ENGINE_INDICES_STORAGE.into(), id.clone())];
+        engine
+            .mutate_rows(&rows, |codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .put_row(
+                            transaction,
+                            engine::ENGINE_INDICES_STORAGE,
+                            id.clone(),
+                            Row::new(vec![
+                                Value::from("by_name"),
+                                Value::from("people"),
+                                Value::Bool(false),
+                            ]),
+                        )
+                        .await?;
+                    codec
+                        .delete_row(transaction, engine::ENGINE_INDICES_STORAGE, &id)
+                        .await?;
+                    Ok(((), Vec::new()))
+                })
+            })
+            .await
+            .unwrap();
+        assert!(engine.index_schema("by_name").await.is_err());
+        assert!(
+            engine
+                .execute(vec![Statement::DataDefinition(
+                    DataDefinition::CreateIndex {
+                        schema: IndexSchema {
+                            name: "by_name".into(),
+                            table_name: "people".into(),
+                            column_indices: vec![1],
+                            unique: false
+                        },
+                        if_not_exists: false,
+                    }
+                )])
+                .await
+                .is_err()
+        );
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn concurrent_catalog_children_select_one_identity_per_logical_key() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        engine
+            .execute(vec![Statement::DataDefinition(
+                DataDefinition::CreateIndex {
+                    schema: IndexSchema {
+                        name: "people_by_name".into(),
+                        table_name: "people".into(),
+                        column_indices: vec![1],
+                        unique: false,
+                    },
+                    if_not_exists: false,
+                },
+            )])
+            .await
+            .unwrap();
+        let (table, index) = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    Ok((
+                        codec
+                            .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                            .await?[0]
+                            .clone(),
+                        codec
+                            .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                            .await?[0]
+                            .clone(),
+                    ))
+                })
+            })
+            .await
+            .unwrap();
+        engine
+            .execute(vec![Statement::DataDefinition(
+                DataDefinition::CreateIndex {
+                    schema: IndexSchema {
+                        name: "people_by_name".into(),
+                        table_name: "people".into(),
+                        column_indices: vec![1],
+                        unique: false,
+                    },
+                    if_not_exists: true,
+                },
+            )])
+            .await
+            .unwrap();
+        let index_count = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    Ok(codec
+                        .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                        .await?
+                        .len())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let mut future = *Uuid::now_v7().as_bytes();
+        future[..6].fill(0xff);
+        let RowIdentity::Catalog(mut column_id) = table else {
+            panic!("table id");
+        };
+        column_id.extend_from_slice(&future);
+        let RowIdentity::Catalog(mut field_id) = index else {
+            panic!("index id");
+        };
+        field_id.extend_from_slice(&future);
+        let column_id = RowIdentity::catalog(column_id);
+        let field_id = RowIdentity::catalog(field_id);
+        let rows = [
+            (
+                engine::ENGINE_TABLE_FIELDS_STORAGE.into(),
+                column_id.clone(),
+            ),
+            (engine::ENGINE_INDEX_FIELDS_STORAGE.into(), field_id.clone()),
+        ];
+        engine
+            .mutate_rows(&rows, |codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .put_row(
+                            transaction,
+                            engine::ENGINE_TABLE_FIELDS_STORAGE,
+                            column_id,
+                            Row::new(vec![
+                                Value::from("name"),
+                                ValueType::Text.into(),
+                                Value::from("later"),
+                                Value::Integer(1),
+                                Value::Bool(false),
+                            ]),
+                        )
+                        .await?;
+                    codec
+                        .put_row(
+                            transaction,
+                            engine::ENGINE_INDEX_FIELDS_STORAGE,
+                            field_id,
+                            Row::new(vec![
+                                Value::Integer(0),
+                                Value::from("city"),
+                                Value::Uuid(Uuid::now_v7()),
+                            ]),
+                        )
+                        .await?;
+                    Ok(((), Vec::new()))
+                })
+            })
+            .await
+            .unwrap();
+        let schema = engine.table_schema("people").await.unwrap();
+        assert_eq!(schema.columns.len(), 3);
+        assert_eq!(schema.columns[1].default, Value::from("later"));
+        assert!(engine.index_schema("people_by_name").await.is_err());
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn late_old_generation_row_cannot_reappear_or_populate_new_index() {
+    let source_path = database_path();
+    let dest_path = database_path();
+    block_on(async {
+        let source = replica(&source_path);
+        let dest = replica(&dest_path);
+        source.create_table(people_schema()).await.unwrap();
+        source
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "people".into(),
+                row: Row::new(vec![uuid_value(1), Value::from("Ada"), Value::Null]),
+                returning: None,
+            }))])
+            .await
+            .unwrap();
+        sync(&source, &dest).await.unwrap();
+        let stale = export_sync_state_for(&source).await.unwrap().into_iter()
+            .find(|unit| matches!(&unit.key, SyncKey::Row { table, row: RowIdentity::ScopedUser { .. } } if table == "people"))
+            .unwrap();
+        dest.drop_table("people").await.unwrap();
+        dest.create_table(people_schema()).await.unwrap();
+        dest.execute(vec![Statement::DataDefinition(
+            DataDefinition::CreateIndex {
+                schema: IndexSchema {
+                    name: "by_name".into(),
+                    table_name: "people".into(),
+                    column_indices: vec![1],
+                    unique: true,
+                },
+                if_not_exists: false,
+            },
+        )])
+        .await
+        .unwrap();
+        apply_sync_state_batch_for(&dest, vec![stale])
+            .await
+            .unwrap();
+        assert!(
+            table_rows(&dest, "people", &["id", "name"])
+                .await
+                .is_empty()
+        );
+        assert!(
+            dest.index_lookup("by_name", &Row::new(vec![Value::from("Ada")]))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+    std::fs::remove_file(source_path).unwrap();
+    std::fs::remove_file(dest_path).unwrap();
+}
+
+#[test]
+fn metadata_first_tombstone_keeps_stale_row_snapshot() {
+    let source_path = database_path();
+    let dest_path = database_path();
+    block_on(async {
+        let source = replica(&source_path);
+        let dest = replica(&dest_path);
+        source.create_table(people_schema()).await.unwrap();
+        source
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "people".into(),
+                row: Row::new(vec![uuid_value(1), Value::from("Ada"), Value::Null]),
+                returning: None,
+            }))])
+            .await
+            .unwrap();
+        let row = scoped_row(&source, "people", Uuid::from_u128(1)).await;
+        let state = source
+            .read_transaction(|codec, transaction| {
+                let row = row.clone();
+                Box::pin(async move { codec.export_state(transaction, "people", row).await })
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata = postcard::to_allocvec(&RowMetadata {
+            version: 1,
+            deleted: true,
+        })
+        .unwrap();
+        let rows = [("people".into(), row.clone())];
+        dest.mutate_rows(&rows, |codec, transaction| {
+            Box::pin(async move {
+                codec
+                    .merge_metadata(transaction, "people", row.clone(), &metadata)
+                    .await?;
+                assert!(
+                    codec
+                        .merge_state(transaction, "people", row.clone(), &state)
+                        .await?
+                        .is_none()
+                );
+                assert_eq!(
+                    codec
+                        .export_state(transaction, "people", row.clone())
+                        .await?,
+                    Some(state)
+                );
+                assert!(codec.get_row(transaction, "people", &row).await?.is_none());
+                Ok(((), Vec::new()))
+            })
+        })
+        .await
+        .unwrap();
+        let row = rows[0].1.clone();
+        let retained = dest
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    Ok((
+                        codec
+                            .export_state(transaction, "people", row.clone())
+                            .await?,
+                        codec.get_row(transaction, "people", &row).await?,
+                    ))
+                })
+            })
+            .await
+            .unwrap();
+        assert!(retained.0.is_some());
+        assert!(retained.1.is_none());
+    });
+    std::fs::remove_file(source_path).unwrap();
+    std::fs::remove_file(dest_path).unwrap();
+}
+
+#[test]
+fn catalog_rows_have_parent_scoped_uuidv7_identities() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        engine
+            .execute(vec![Statement::DataDefinition(
+                DataDefinition::CreateIndex {
+                    schema: IndexSchema {
+                        name: "people_by_name".into(),
+                        table_name: "people".into(),
+                        column_indices: vec![1],
+                        unique: false,
+                    },
+                    if_not_exists: false,
+                },
+            )])
+            .await
+            .unwrap();
+        let ids = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    let mut result = Vec::new();
+                    for storage in [
+                        engine::ENGINE_TABLES_STORAGE,
+                        engine::ENGINE_TABLE_FIELDS_STORAGE,
+                        engine::ENGINE_INDICES_STORAGE,
+                        engine::ENGINE_INDEX_FIELDS_STORAGE,
+                    ] {
+                        result.push(codec.row_ids(transaction, storage).await?);
+                    }
+                    Ok(result)
+                })
+            })
+            .await
+            .unwrap();
+        let RowIdentity::Catalog(table) = &ids[0][0] else {
+            panic!("table identity must be catalog");
+        };
+        let RowIdentity::Catalog(index) = &ids[2][0] else {
+            panic!("index identity must be catalog");
+        };
+        assert_eq!(table.len(), 16);
+        assert_eq!(
+            Uuid::from_slice(table).unwrap().get_version(),
+            Some(uuid::Version::SortRand)
+        );
+        assert_eq!(ids[1].len(), 3);
+        assert_eq!(index.len(), 32);
+        assert!(index.starts_with(table));
+        for identity in &ids[1] {
+            let RowIdentity::Catalog(field) = identity else {
+                panic!("field identity must be catalog");
+            };
+            assert_eq!(field.len(), 32);
+            assert!(field.starts_with(table));
+        }
+        let RowIdentity::Catalog(field) = &ids[3][0] else {
+            panic!("index field identity must be catalog");
+        };
+        assert_eq!(field.len(), 48);
+        assert!(field.starts_with(index));
+        engine.drop_table("people").await.unwrap();
+        assert!(engine.table_names().await.unwrap().is_empty());
+        assert!(engine.index_schema("people_by_name").await.is_err());
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn built_in_catalog_layout_decodes_without_catalog_field_rows() {
     let path = database_path();
     let kernel = RedbKernel::new(Arc::new(redb::Database::create(&path).unwrap()));
     block_on(async {
         let reconciler = AutomergeRowCodec::new();
         let table = engine::ENGINE_TABLES_STORAGE;
-        let key = Row::new(vec![Value::from("people")]);
-        let identity = catalog_row_identity(CatalogTable::Tables, &key).unwrap();
-        let expected = Row::new(vec![Value::Bool(false)]);
+
+        let identity = RowIdentity::catalog(Uuid::now_v7().as_bytes().to_vec());
+        let expected = Row::new(vec![Value::from("people")]);
         let mut transaction = kernel.transaction().await.unwrap();
         reconciler
             .ensure_table(&mut transaction, table)
@@ -468,6 +933,19 @@ fn removing_a_logical_row_writes_a_tombstone() {
                 .await
                 .is_err()
         );
+        reconciler
+            .merge_metadata(
+                &mut transaction,
+                table,
+                RowIdentity::user(row_id),
+                &postcard::to_allocvec(&RowMetadata {
+                    version: 1,
+                    deleted: false,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
         transaction.commit().await.unwrap();
 
         let transaction = kernel.transaction().await.unwrap();
@@ -488,6 +966,11 @@ fn removing_a_logical_row_writes_a_tombstone() {
             .unwrap();
         assert_eq!(metadata.version, 1);
         assert!(metadata.deleted);
+        {
+            let rows = reconciler.scan_rows(&transaction, table);
+            futures::pin_mut!(rows);
+            assert!(rows.next().await.is_none());
+        }
         transaction.rollback().await.unwrap();
     });
     std::fs::remove_file(path).unwrap();
@@ -581,9 +1064,7 @@ fn received_automerge_incremental_change_materializes_a_row() {
             RedbKernel::new(Arc::new(redb::Database::create(&destination_path).unwrap())),
             AutomergeRowCodec::new(),
         );
-        for engine in [&source, &destination] {
-            engine.create_table(schema.clone()).await.unwrap();
-        }
+        source.create_table(schema.clone()).await.unwrap();
         source
             .execute(vec![Statement::Query(Query::Insert(QueryInsert {
                 table: "people".into(),
@@ -628,10 +1109,12 @@ fn rollback_discards_catalog_and_logical_row_changes() {
             .ensure_table(&mut transaction, table)
             .await
             .unwrap();
-        transaction
-            .put_entry(
+        let catalog_id = RowIdentity::catalog(Uuid::now_v7().as_bytes().to_vec());
+        reconciler
+            .put_row(
+                &mut transaction,
                 engine::ENGINE_TABLES_STORAGE,
-                Row::new(vec![Value::from("people")]),
+                catalog_id.clone(),
                 Row::new(vec![Value::from("people")]),
             )
             .await
@@ -649,16 +1132,46 @@ fn rollback_discards_catalog_and_logical_row_changes() {
 
         let transaction = kernel.transaction().await.unwrap();
         assert!(
-            transaction
-                .get_entry(
-                    engine::ENGINE_TABLES_STORAGE,
-                    &Row::new(vec![Value::from("people")])
-                )
+            reconciler
+                .get_row(&transaction, engine::ENGINE_TABLES_STORAGE, &catalog_id)
                 .await
                 .unwrap()
                 .is_none()
         );
         transaction.rollback().await.unwrap();
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn catalog_batch_validation_fails_without_partial_mutation() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        let result = apply_sync_state_batch_for(
+            &engine,
+            vec![
+                SyncStateUnit::new(
+                    SyncKey::Row {
+                        table: engine::ENGINE_TABLES_STORAGE.into(),
+                        row: RowIdentity::catalog(uuid::Uuid::now_v7().as_bytes().to_vec()),
+                    },
+                    postcard::to_allocvec(&Row::new(vec![Value::Bool(false)])).unwrap(),
+                    vec![],
+                ),
+                SyncStateUnit::new(
+                    SyncKey::Row {
+                        table: engine::ENGINE_TABLES_STORAGE.into(),
+                        row: RowIdentity::catalog(uuid::Uuid::now_v7().as_bytes().to_vec()),
+                    },
+                    vec![],
+                    vec![],
+                ),
+            ],
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(engine.table_names().await.unwrap().is_empty());
     });
     std::fs::remove_file(path).unwrap();
 }
@@ -856,9 +1369,23 @@ fn concurrent_same_column_updates_expose_null_and_explicit_resolution_converges(
 fn codec_routes_rows_by_table_name_across_instances_and_reopen() {
     let path = database_path();
     block_on(async {
-        {
+        let catalog_identities = {
             let engine = replica(&path);
             engine.create_table(people_schema()).await.unwrap();
+            engine
+                .execute(vec![Statement::DataDefinition(
+                    DataDefinition::CreateIndex {
+                        schema: IndexSchema {
+                            name: "people_by_name".into(),
+                            table_name: "people".into(),
+                            column_indices: vec![1],
+                            unique: true,
+                        },
+                        if_not_exists: false,
+                    },
+                )])
+                .await
+                .unwrap();
             let mut other_schema = people_schema();
             other_schema.name = "other_people".into();
             engine.create_table(other_schema).await.unwrap();
@@ -880,7 +1407,39 @@ fn codec_routes_rows_by_table_name_across_instances_and_reopen() {
                 table_rows(&engine, "other_people", &["name"]).await,
                 vec![Row::new(vec![Value::from("Grace")])]
             );
-        }
+            assert_eq!(
+                engine.table_schema("people").await.unwrap(),
+                people_schema()
+            );
+            assert_eq!(
+                engine.index_schema("people_by_name").await.unwrap(),
+                IndexSchema {
+                    name: "people_by_name".into(),
+                    table_name: "people".into(),
+                    column_indices: vec![1],
+                    unique: true,
+                }
+            );
+            let mut identities = export_sync_state_for(&engine)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter_map(|unit| match unit.key {
+                    SyncKey::Row {
+                        table,
+                        row: RowIdentity::Catalog(bytes),
+                    } if (table == engine::ENGINE_TABLES_STORAGE
+                        || table == engine::ENGINE_INDICES_STORAGE)
+                        && bytes.len() == 16 =>
+                    {
+                        Some((table, bytes))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            identities.sort();
+            identities
+        };
 
         let database = Arc::new(redb::Database::open(&path).unwrap());
         let reopened = Engine::new(RedbKernel::new(database), AutomergeRowCodec::new());
@@ -892,12 +1451,31 @@ fn codec_routes_rows_by_table_name_across_instances_and_reopen() {
             table_rows(&reopened, "other_people", &["name"]).await,
             vec![Row::new(vec![Value::from("Grace")])]
         );
+        let mut reopened_catalog_identities = export_sync_state_for(&reopened)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|unit| match unit.key {
+                SyncKey::Row {
+                    table,
+                    row: RowIdentity::Catalog(bytes),
+                } if (table == engine::ENGINE_TABLES_STORAGE
+                    || table == engine::ENGINE_INDICES_STORAGE)
+                    && bytes.len() == 16 =>
+                {
+                    Some((table, bytes))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        reopened_catalog_identities.sort();
+        assert_eq!(reopened_catalog_identities, catalog_identities);
     });
     std::fs::remove_file(path).unwrap();
 }
 
 #[test]
-fn dropping_and_recreating_a_table_name_retains_rows_and_rebuilds_indexes() {
+fn dropping_and_recreating_a_table_name_isolates_rows_and_indexes() {
     let path = database_path();
     block_on(async {
         let engine = replica(&path);
@@ -945,14 +1523,26 @@ fn dropping_and_recreating_a_table_name_retains_rows_and_rebuilds_indexes() {
         engine.create_table(schema.clone()).await.unwrap();
 
         assert_eq!(engine.table_schema("people").await.unwrap(), schema);
-        assert_eq!(
-            table_rows(&engine, "people", &["id", "name", "city"]).await,
-            vec![Row::new(vec![
-                uuid_value(2),
-                Value::from("Grace"),
-                Value::from("Paris")
-            ])]
+        assert!(
+            table_rows(&engine, "people", &["id", "name", "city"])
+                .await
+                .is_empty()
         );
+        assert!(engine.index_schema("people_by_name").await.is_err());
+        engine
+            .execute(vec![Statement::DataDefinition(
+                DataDefinition::CreateIndex {
+                    schema: IndexSchema {
+                        name: "people_by_name".into(),
+                        table_name: "people".into(),
+                        column_indices: vec![1],
+                        unique: true,
+                    },
+                    if_not_exists: false,
+                },
+            )])
+            .await
+            .unwrap();
         assert_eq!(
             engine
                 .index_lookup("people_by_name", &Row::new(vec![Value::from("Ada")]))
@@ -965,9 +1555,28 @@ fn dropping_and_recreating_a_table_name_retains_rows_and_rebuilds_indexes() {
                 .index_lookup("people_by_name", &Row::new(vec![Value::from("Grace")]))
                 .await
                 .unwrap(),
+            None
+        );
+        engine
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "people".into(),
+                row: Row::new(vec![
+                    uuid_value(2),
+                    Value::from("New"),
+                    Value::from("Paris"),
+                ]),
+                returning: None,
+            }))])
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .index_lookup("people_by_name", &Row::new(vec![Value::from("New")]))
+                .await
+                .unwrap(),
             Some(Row::new(vec![
                 uuid_value(2),
-                Value::from("Grace"),
+                Value::from("New"),
                 Value::from("Paris")
             ]))
         );
@@ -1070,11 +1679,48 @@ fn concurrent_table_drop_and_recreate_converge_between_replicas() {
         sync(&source, &destination).await.unwrap();
         sync(&destination, &source).await.unwrap();
 
-        assert!(source.table_schema("people").await.is_err());
-        assert!(destination.table_schema("people").await.is_err());
+        assert_eq!(source.table_schema("people").await.unwrap(), schema);
+        assert_eq!(destination.table_schema("people").await.unwrap(), schema);
     });
     std::fs::remove_file(source_path).unwrap();
     std::fs::remove_file(destination_path).unwrap();
+}
+
+#[test]
+fn simultaneous_table_recreates_converge_on_the_greatest_uuidv7() {
+    let left_path = database_path();
+    let right_path = database_path();
+    block_on(async {
+        let left = replica(&left_path);
+        let right = replica(&right_path);
+        left.create_table(people_schema()).await.unwrap();
+        sync(&left, &right).await.unwrap();
+        let previous = latest_table_identity(&left).await;
+        left.drop_table("people").await.unwrap();
+        right.drop_table("people").await.unwrap();
+
+        let left_schema = people_schema();
+        let mut right_schema = people_schema();
+        right_schema.columns[2].default = Value::from("unknown");
+        left.create_table(left_schema.clone()).await.unwrap();
+        right.create_table(right_schema.clone()).await.unwrap();
+        let left_id = latest_table_identity(&left).await;
+        let right_id = latest_table_identity(&right).await;
+        assert!(left_id > previous);
+        assert!(right_id > previous);
+        let expected = if left_id > right_id {
+            left_schema
+        } else {
+            right_schema
+        };
+
+        sync(&left, &right).await.unwrap();
+        sync(&right, &left).await.unwrap();
+        assert_eq!(left.table_schema("people").await.unwrap(), expected);
+        assert_eq!(right.table_schema("people").await.unwrap(), expected);
+    });
+    std::fs::remove_file(left_path).unwrap();
+    std::fs::remove_file(right_path).unwrap();
 }
 
 #[test]

@@ -340,7 +340,9 @@ the feature.
       `cfg(unix)`).
 - [ ] Verify: `cargo test --test remote --features remote,sql,automerge,in-memory`.
 
-### Phase 6 — Full validation
+### Phase 6 — Full validation (run once, after implementation)
+
+Do not run the full feature-powerset suite or `just crap` incrementally during earlier phases. Run focused tests and checks for changed code as you implement; perform this full validation phase only after all implementation and focused regression tests are complete.
 
 - [ ] `just fmt-check`
 - [ ] `just clippy`

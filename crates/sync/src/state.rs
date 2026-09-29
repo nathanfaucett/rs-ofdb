@@ -9,10 +9,6 @@ pub struct SyncChangeId(pub Vec<u8>);
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum SyncKey {
-    Table { name: String },
-    TableField { table: String, column: String },
-    Index { name: String },
-    IndexField { index: String, position: u32 },
     Row { table: String, row: RowIdentity },
 }
 

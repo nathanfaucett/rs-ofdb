@@ -3,7 +3,7 @@
 extern crate alloc;
 
 mod bytes_table;
-mod catalog;
+
 mod change;
 mod codec;
 mod engine;
@@ -20,19 +20,18 @@ mod schema;
 mod state_transfer;
 
 pub use bytes_table::{BytesTable, BytesTableTransaction};
-pub use catalog::{
-    CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
-    ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE,
-    catalog_key_from_identity, catalog_row_identity, catalog_table_for_storage,
-};
 pub use change::{Change, ChangeKey};
 pub use codec::{RowCodec, RowIdentity};
 pub use engine::{Engine, EngineError, EngineResult, EngineTransaction, TimestampProvider};
+pub use schema::{
+    CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
+    ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE,
+    catalog_table_for_storage,
+};
 
 #[cfg(feature = "in-memory")]
 pub use in_memory::{InMemoryKernel, InMemoryKernelTransaction};
 pub use kernel::{Kernel, KernelTransaction};
 
 pub use row_table::RowTable;
-pub use schema::SchemaChange;
-pub use state_transfer::{CatalogEntry, CatalogEntryKind, RowMutation};
+pub use state_transfer::RowMutation;

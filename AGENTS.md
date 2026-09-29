@@ -39,9 +39,10 @@
 
 - Write unit tests for all public functions and critical internal logic.
 - Use integration tests for testing public API behavior and interactions between modules.
-- Use `cargo hack test --feature-powerset --all-targets` to run tests to ensure all features combinations are tested.
+- Use focused tests and checks while implementing changes.
+- Run `cargo hack test --feature-powerset --all-targets` as final validation after implementation is complete, not incrementally.
 
 ## CRAP (Complexity, Risk, and Priority)
 
 - Assess new features and changes for complexity, risk, and priority before implementation.
-- Use `just crap` to evaluate code complexity and identify areas for refactoring.
+- Run `just crap` as final validation after implementation is complete, not incrementally.

@@ -3,7 +3,7 @@ use alloc::{string::String, vec::Vec};
 use crate::{SyncChangeId, SyncKey, SyncManifest, SyncStateUnit};
 use engine::RowIdentity;
 use serde::{Deserialize, Serialize};
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncHello {

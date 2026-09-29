@@ -21,8 +21,8 @@ pub use protocol::{
 };
 pub use session::{
     MAX_MESSAGE_BYTES, SessionConfig, SyncError, SyncResult, SyncRole,
-    apply_incremental_changes_for, apply_sync_state_for, export_sync_state_for, sync_manifest_for,
-    synchronize,
+    apply_incremental_changes_for, apply_sync_state_batch_for, apply_sync_state_for,
+    export_sync_state_for, sync_manifest_for, synchronize,
 };
 pub use state::{StateDigest, SyncChangeId, SyncKey, SyncManifest, SyncStateUnit};
 pub use transport::SyncTransport;

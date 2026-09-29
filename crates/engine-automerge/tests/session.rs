@@ -109,10 +109,32 @@ fn synchronizes_catalog_state_and_converges() {
         let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
         let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
         left.create_table(table("users")).await.unwrap();
+        left.execute(vec![query::Statement::DataDefinition(
+            query::DataDefinition::CreateIndex {
+                schema: schema::IndexSchema {
+                    name: "users_by_id".into(),
+                    table_name: "users".into(),
+                    column_indices: vec![0],
+                    unique: true,
+                },
+                if_not_exists: false,
+            },
+        )])
+        .await
+        .unwrap();
 
         let frames = sync(&left, &right, &SessionConfig::default()).await;
 
         assert_eq!(right.table_schema("users").await.unwrap(), table("users"));
+        assert_eq!(
+            right.index_schema("users_by_id").await.unwrap(),
+            schema::IndexSchema {
+                name: "users_by_id".into(),
+                table_name: "users".into(),
+                column_indices: vec![0],
+                unique: true,
+            }
+        );
         assert!(
             frames
                 .iter()

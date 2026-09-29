@@ -14,7 +14,7 @@ A Row Reconciler stores and resolves Logical Rows through an Engine Transaction.
 
 ## Row Identity
 
-Each table has one immutable UUID primary key. A Logical Row is identified by its table generation and row UUID; the same pair identifies its Automerge document.
+A user Logical Row has an immutable UUID primary key and belongs to a Table Generation; that pair identifies its Automerge document. A catalog row's UUIDv7 Generation is part of its primary-key identity, never a value column.
 
 ## Index Record
 
@@ -26,7 +26,7 @@ A Conflict retains concurrent candidate values or objects that cannot all be act
 
 ## Generation
 
-A Generation is the immutable identity of a Table, Column, or Index. A Logical Row uses its table generation and immutable UUID. Names are labels and may be reused by a new Generation after the former Generation is Tombstoned.
+A Generation is the immutable UUIDv7 identity of a Table, Column, Index, or Index Field. A user Logical Row uses its table Generation and its own UUID. Catalog identities are scoped by parent identity and logical name or position; names may be reused by a new Generation after the former is Tombstoned. Dependents of an inactive Generation remain replication facts but are not visible.
 
 ## Sync State Unit
 
@@ -38,7 +38,7 @@ A Sync Manifest maps each sync-owned state-unit identity to its digest. A Sync S
 
 ## Tombstone
 
-A Tombstone permanently marks a deleted Logical Row, Table, Column, or Index Generation. It removes active mappings and derived Index Records. Later changes to that Generation are Superseded; they are retained as replication facts but do not alter visible state. An explicit Restore creates a new Generation.
+A Tombstone is ordinary deleted-row state for a Logical Row or catalog Generation, never a catalog value column. For reusable catalog names, it participates in selecting the greatest Generation but does not appear in search results or allow fallback to an older live Generation. Later changes to that Generation are Superseded; they are retained as replication facts but do not alter visible state. An explicit Restore creates a new Generation.
 
 ## KV Key
 

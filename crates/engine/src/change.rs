@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity,
-    index::{rebuild_table, update_row},
-    schema::{SchemaChange, columns, materialize as materialize_schema},
+    EngineResult, KernelTransaction, RowCodec, RowIdentity,
+    index::update_row,
+    schema::{active_user_row, catalog_table_for_storage, columns},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -17,14 +17,6 @@ pub struct Change {
 }
 
 impl Change {
-    pub fn schema(id: Uuid, schema: SchemaChange) -> Self {
-        Self {
-            id,
-            key: ChangeKey::Schema(schema),
-            value: None,
-        }
-    }
-
     pub fn row(id: Uuid, table: String, row: RowIdentity, value: Option<Vec<u8>>) -> Self {
         Self {
             id,
@@ -36,59 +28,33 @@ impl Change {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChangeKey {
-    Schema(SchemaChange),
     Row { table: String, row: RowIdentity },
 }
 
-pub(crate) async fn apply_local_change<T, R>(
+pub(crate) async fn apply_local_change<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     changes: &mut Vec<Change>,
     change: Change,
-) -> EngineResult<()>
-where
-    T: KernelTransaction,
-    R: RowCodec<T>,
-{
+) -> EngineResult<()> {
     let _ = materialize_change(transaction, codec, &change, true).await?;
     changes.push(change);
     Ok(())
 }
 
-pub(crate) async fn materialize_change<T, R>(
+pub(crate) async fn materialize_change<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     change: &Change,
     enforce_unique: bool,
-) -> EngineResult<bool>
-where
-    T: KernelTransaction,
-    R: RowCodec<T>,
-{
-    match (&change.key, &change.value) {
-        (ChangeKey::Schema(schema), None) => {
-            let superseded = materialize_schema(transaction, schema).await?;
-            if let SchemaChange::CreateTable { table } = schema {
-                codec.ensure_table(transaction, table).await?;
-            }
-            match schema {
-                SchemaChange::CreateTable { table }
-                | SchemaChange::AddColumn { table, .. }
-                | SchemaChange::CreateIndex { table, .. } => {
-                    rebuild_table(transaction, codec, table, enforce_unique).await?;
-                }
-                SchemaChange::TombstoneTable(_)
-                | SchemaChange::TombstoneColumn { .. }
-                | SchemaChange::TombstoneIndex(_) => {}
-            }
-            if superseded {
-                return Ok(true);
-            }
-        }
-        (ChangeKey::Row { table, row }, Some(value)) => {
-            if columns(transaction, table).await.is_err() {
-                return Ok(true);
-            }
+) -> EngineResult<bool> {
+    let ChangeKey::Row { table, row } = &change.key;
+    let catalog = catalog_table_for_storage(table).is_some();
+    if !catalog && columns(transaction, codec, table).await.is_err() {
+        return Ok(true);
+    }
+    match &change.value {
+        Some(value) => {
             let old = codec.get_row(transaction, table, row).await?;
             let Some(value) = codec
                 .merge_row(transaction, table, row.clone(), value)
@@ -96,23 +62,32 @@ where
             else {
                 return Ok(true);
             };
-            update_row(
-                transaction,
-                table,
-                old.as_ref(),
-                Some(&value),
-                enforce_unique,
-            )
-            .await?;
-        }
-        (ChangeKey::Row { table, row }, None) => {
-            if columns(transaction, table).await.is_err() {
-                return Ok(true);
+            if !catalog && active_user_row(transaction, codec, table, row).await? {
+                update_row(
+                    transaction,
+                    codec,
+                    table,
+                    old.as_ref(),
+                    Some(&value),
+                    enforce_unique,
+                )
+                .await?;
             }
-            let old = codec.remove_row(transaction, table, row).await?;
-            update_row(transaction, table, old.as_ref(), None, enforce_unique).await?;
         }
-        (_, Some(_)) => return Err(EngineError::custom("Invalid schema change value")),
+        None => {
+            let old = codec.remove_row(transaction, table, row).await?;
+            if !catalog && active_user_row(transaction, codec, table, row).await? {
+                update_row(
+                    transaction,
+                    codec,
+                    table,
+                    old.as_ref(),
+                    None,
+                    enforce_unique,
+                )
+                .await?;
+            }
+        }
     }
     Ok(false)
 }
