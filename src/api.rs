@@ -20,7 +20,7 @@ pub use sync::IrohTransport;
 #[cfg(feature = "sync")]
 pub use sync::{
     SessionConfig, SyncError, SyncHello, SyncMessage, SyncResult, SyncRole, SyncTransport,
-    synchronize,
+    apply_sync_state_batch_for, apply_sync_state_for, export_sync_state_for, synchronize,
 };
 pub use uuid::Uuid;
 pub use value::{FromRow, FromRowError, FromValue, Row, Value, ValueType, decode, value};

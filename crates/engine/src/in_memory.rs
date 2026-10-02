@@ -1,4 +1,10 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 
 use async_lock::RwLock;
 
