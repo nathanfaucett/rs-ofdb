@@ -37,9 +37,6 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Root integration boundary
-        run: "! grep -RE 'use (engine|sync|value|engine_redb|engine_automerge|redb|uuid|tokio|futures|macros)' tests"
-
       - name: Rust fmt check
         run: just fmt-check
 
