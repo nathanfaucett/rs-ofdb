@@ -12,8 +12,7 @@ use uuid::Uuid;
 use value::{Row, Value};
 
 fn next_uuid(timestamp_provider: TimestampProvider) -> EngineResult<Uuid> {
-    let timestamp = timestamp_provider().ok_or(EngineError::MissingTimestampProvider)?;
-    Ok(Uuid::new_v7(timestamp))
+    Ok(Uuid::new_v7(timestamp_provider()))
 }
 
 use crate::{
@@ -2077,7 +2076,7 @@ fn materialize_insert(
             "Table requires exactly one UUID primary key",
         ))?;
     if values.len() < schema.columns.len() && primary_key == 0 {
-        let timestamp = timestamp_provider().ok_or(EngineError::MissingTimestampProvider)?;
+        let timestamp = timestamp_provider();
         values.insert(0, Value::Uuid(Uuid::new_v7(timestamp)));
     }
     let mut row = Row::new(values);

@@ -41,9 +41,6 @@ pub enum EngineError {
     #[error("Sync dependency is unavailable")]
     SyncDependencyUnavailable,
 
-    #[error("A timestamp provider is required to generate a UUID")]
-    MissingTimestampProvider,
-
     #[error("Error: {0}")]
     Custom(String),
 }
@@ -59,16 +56,11 @@ impl EngineError {
 
 pub type EngineResult<T> = Result<T, EngineError>;
 
-pub type TimestampProvider = fn() -> Option<uuid::Timestamp>;
+pub type TimestampProvider = fn() -> uuid::Timestamp;
 
 #[cfg(feature = "std")]
-fn default_timestamp_provider() -> Option<uuid::Timestamp> {
-    Some(uuid::Timestamp::now(uuid::NoContext))
-}
-
-#[cfg(not(feature = "std"))]
-fn default_timestamp_provider() -> Option<uuid::Timestamp> {
-    None
+fn default_timestamp_provider() -> uuid::Timestamp {
+    uuid::Timestamp::now(uuid::NoContext)
 }
 
 pub struct Engine<K, R> {
@@ -87,6 +79,7 @@ impl<K, R> Clone for Engine<K, R> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<K, R> From<(K, R)> for Engine<K, R> {
     fn from((kernel, reconciler): (K, R)) -> Self {
         Self {
@@ -98,6 +91,7 @@ impl<K, R> From<(K, R)> for Engine<K, R> {
 }
 
 impl<K, R> Engine<K, R> {
+    #[cfg(feature = "std")]
     pub fn new(kernel: K, reconciler: R) -> Self {
         Self::from((kernel, reconciler))
     }
