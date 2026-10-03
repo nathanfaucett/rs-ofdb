@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use btree::InMemoryBTree;
 use btree_redb::{Bytes, RedbByteBTree, table_definition};
-use kv::KvStore;
 use kv_client::Client;
 use kv_common::{start_client_server, stop_server};
 use kv_server::Server;
+use kv_store::KvStore;
 use redb::Database;
 
 fn test_timestamp_provider() -> uuid::Timestamp {

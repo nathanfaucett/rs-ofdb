@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use btree::{BTree, InMemoryBTree};
 use btree_redb::{Bytes, RedbByteBTree, table_definition};
-use kv::KvStore;
+use kv_store::KvStore;
 use redb::Database;
 
 const TABLE: &str = "local-kv-test";
@@ -83,8 +83,12 @@ where
         .expect("export new generation")
         .expect("new generation exists");
     assert!(
-        kv::decode_document_id(&new.0.id).expect("decode new ID").1
-            > kv::decode_document_id(&old.0.id).expect("decode old ID").1
+        kv_store::decode_document_id(&new.0.id)
+            .expect("decode new ID")
+            .1
+            > kv_store::decode_document_id(&old.0.id)
+                .expect("decode old ID")
+                .1
     );
     tx.import_snapshot(old)
         .await

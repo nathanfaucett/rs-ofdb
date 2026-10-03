@@ -5,8 +5,8 @@ mod kv_common;
 use btree::{BTree, InMemoryBTree};
 use btree_redb::{Bytes, RedbByteBTree, table_definition};
 use futures::join;
-use kv::KvStore;
 use kv_common::{start_client_server, stop_server};
+use kv_store::KvStore;
 use kv_sync::{
     Config, Error, KvSnapshot, Message, SyncRole, SyncTransport, encode_frame, synchronize,
 };

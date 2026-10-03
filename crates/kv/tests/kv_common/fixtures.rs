@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use btree::BTree;
-use kv::KvStore;
 use kv_client::Client;
 use kv_server::Server;
+use kv_store::KvStore;
 use tokio::sync::oneshot;
 
 fn test_timestamp_provider() -> uuid::Timestamp {

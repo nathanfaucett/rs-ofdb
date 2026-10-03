@@ -45,10 +45,7 @@ uuid = { version = "1.23", default-features = false, features = [] }
 # Internal test dependencies
 btree = { version = "0.1", package = "ofdb-btree", path = "../btree", default-features = false, features = ["std", "in-memory"] }
 btree-redb = { version = "0.1", package = "ofdb-btree-redb", path = "../btree-redb", default-features = false, features = [] }
-kv = { version = "0.1", package = "ofdb-kv-store", path = "../kv-store", default-features = false, features = [] }
-kv-client = { version = "0.1", package = "ofdb-kv-client", path = "../kv-client", default-features = false, features = ["unix"] }
-kv-server = { version = "0.1", package = "ofdb-kv-server", path = "../kv-server", default-features = false, features = [] }
-kv-sync = { version = "0.1", package = "ofdb-kv-sync", path = "../kv-sync", default-features = false, features = [] }
+
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
 sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [] }
 tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
@@ -73,14 +70,6 @@ required-features = ["sync", "sql", "redb", "in-memory"]
 name = "local_sql"
 required-features = ["sql", "redb", "in-memory"]
 
-[[test]]
-name = "local_kv"
-
-[[test]]
-name = "remote_kv"
-
-[[test]]
-name = "cluster_kv"
 
 [[test]]
 name = "test_macros"
