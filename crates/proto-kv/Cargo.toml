@@ -1,0 +1,30 @@
+[package]
+name = "proto-kv"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "KV Proto"
+
+[lib]
+path = "src/lib.rs"
+name = "proto_kv"
+
+[dependencies]
+# gRPC
+prost = { version = "0.14", default-features = false, features = ["derive"] }
+prost-types = { version = "0.14", default-features = false }
+tonic = { version = "0.14", default-features = false, features = ["codegen"] }
+tonic-prost = { version = "0.14", default-features = false }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14", default-features = false }
+
+[package.metadata.cargo-machete]
+ignored = ["prost", "tonic-prost"]
+
+[features]
+default = ["file-descriptor-set"]
+file-descriptor-set = []

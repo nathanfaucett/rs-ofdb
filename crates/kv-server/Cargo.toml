@@ -1,0 +1,31 @@
+[package]
+name = "kv-server"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+btree = { path = "../btree", default-features = false, features = ["std"] }
+kv = { path = "../kv", default-features = false, features = [] }
+proto-kv = { path = "../proto-kv", default-features = false, features = [] }
+
+
+# External dependencies
+tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen"] }
+
+[dev-dependencies]
+# Internal dependencies
+kv-client = { path = "../kv-client", default-features = false, features = [] }
+
+# External dependencies
+tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[features]
+default = []
+unix = []

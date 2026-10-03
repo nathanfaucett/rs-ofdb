@@ -1,0 +1,66 @@
+syntax = "proto3";
+package kvdb;
+
+// ---------------------------------------------------------------------------
+// KV Service
+// ---------------------------------------------------------------------------
+
+message GetRequest {
+  string key = 1;
+  reserved 2;
+}
+
+message GetResponse {
+  bytes value = 1;
+}
+
+message SetRequest {
+  string key = 1;
+  bytes value = 2;
+  optional int64 expires_at = 3;
+}
+
+message SetResponse {}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {}
+
+message ScanRequest {
+  string start = 1;
+  string end = 2;
+  reserved 3;
+}
+
+message ScanPrefixRequest {
+  string prefix = 1;
+  reserved 2;
+}
+
+message ScanEntry {
+  string key = 1;
+  bytes value = 2;
+}
+
+message ScanResponse {
+  repeated ScanEntry entries = 1;
+}
+
+message ScanAllRequest {
+  reserved 1;
+}
+
+message ScanAllResponse {
+  repeated ScanEntry entries = 1;
+}
+
+service KvService {
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Set(SetRequest) returns (SetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Scan(ScanRequest) returns (ScanResponse);
+  rpc ScanPrefix(ScanPrefixRequest) returns (ScanResponse);
+  rpc ScanAll(ScanAllRequest) returns (ScanAllResponse);
+}

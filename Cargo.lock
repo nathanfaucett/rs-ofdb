@@ -1981,6 +1981,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv-client"
+version = "0.1.0"
+dependencies = [
+ "hyper-util",
+ "proto-kv",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
+name = "kv-server"
+version = "0.1.0"
+dependencies = [
+ "btree",
+ "kv",
+ "kv-client",
+ "proto-kv",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "kv-sync"
 version = "0.1.0"
 dependencies = [
@@ -2942,6 +2966,17 @@ dependencies = [
 
 [[package]]
 name = "proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "proto-kv"
 version = "0.1.0"
 dependencies = [
  "prost",

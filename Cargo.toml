@@ -66,9 +66,12 @@ members = [
   "crates/macros",
   "crates/test",
   "crates/proto",
+  "crates/proto-kv",
   "crates/protocol",
   "crates/server",
   "crates/client",
+  "crates/kv-server",
+  "crates/kv-client",
 ]
 
 [[test]]

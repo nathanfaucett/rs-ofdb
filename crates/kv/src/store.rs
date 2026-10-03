@@ -81,10 +81,31 @@ where
         if range.start >= range.end {
             return Ok(Vec::new());
         }
-        let bounds = (
-            Bound::Included(lower_id(&range.start)),
-            Bound::Excluded(logical_prefix(&range.end)),
-        );
+        self.scan_bounds(
+            (
+                Bound::Included(lower_id(&range.start)),
+                Bound::Excluded(logical_prefix(&range.end)),
+            ),
+            now,
+        )
+        .await
+    }
+
+    pub async fn scan_prefix(&self, prefix: &str, now: i64) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+        let start = encoded_key_prefix(prefix);
+        let end = prefix_end(start.clone());
+        let bounds = match end {
+            Some(end) => (Bound::Included(start), Bound::Excluded(end)),
+            None => (Bound::Included(start), Bound::Unbounded),
+        };
+        self.scan_bounds(bounds, now).await
+    }
+
+    async fn scan_bounds(
+        &self,
+        bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>),
+        now: i64,
+    ) -> BTreeResult<Vec<(String, Vec<u8>)>> {
         let documents = self.inner.range(bounds);
         pin_mut!(documents);
         let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
@@ -308,7 +329,13 @@ fn validate_generation(generation: Uuid) -> BTreeResult<()> {
 }
 
 fn logical_prefix(key: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(key.len() + 2);
+    let mut bytes = encoded_key_prefix(key);
+    bytes.extend_from_slice(&[0, 0]);
+    bytes
+}
+
+fn encoded_key_prefix(key: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(key.len());
     for byte in key.bytes() {
         if byte == 0 {
             bytes.extend_from_slice(&[0, 255]);
@@ -316,8 +343,14 @@ fn logical_prefix(key: &str) -> Vec<u8> {
             bytes.push(byte);
         }
     }
-    bytes.extend_from_slice(&[0, 0]);
     bytes
+}
+
+fn prefix_end(mut prefix: Vec<u8>) -> Option<Vec<u8>> {
+    let last_incrementable = prefix.iter().rposition(|byte| *byte < u8::MAX)?;
+    prefix[last_incrementable] += 1;
+    prefix.truncate(last_incrementable + 1);
+    Some(prefix)
 }
 
 fn lower_id(key: &str) -> Vec<u8> {
@@ -448,6 +481,63 @@ mod tests {
             let mut tx = destination.transaction().await.unwrap();
             tx.import_snapshot(left_branch).await.unwrap();
             assert!(tx.import_snapshot(right_branch).await.is_err());
+            tx.rollback().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn prefix_scan_matches_literal_prefixes_and_filters_expired_or_deleted_keys() {
+        block_on(async {
+            let store = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let mut id = 1;
+            let mut tx = store
+                .transaction_with_uuid_generator(move || {
+                    let next = uuid(id);
+                    id += 1;
+                    next
+                })
+                .await
+                .unwrap();
+            tx.set("test:1234", vec![1], None).await.unwrap();
+            tx.set("test:", vec![2], None).await.unwrap();
+            tx.set("test;1234", vec![3], None).await.unwrap();
+            tx.set("prefix|get|5", vec![4], None).await.unwrap();
+            tx.set("prefix|get|expired", vec![5], Some(10))
+                .await
+                .unwrap();
+            tx.set("taco-1", vec![6], None).await.unwrap();
+            tx.set("taco.1", vec![7], None).await.unwrap();
+            tx.set("雪:key", vec![8], None).await.unwrap();
+            tx.set("雪ier", vec![9], None).await.unwrap();
+            tx.set("nul\0:key", vec![10], None).await.unwrap();
+            tx.set("nul\0;key", vec![11], None).await.unwrap();
+            tx.delete("test:").await.unwrap();
+
+            assert_eq!(
+                tx.scan_prefix("test:", 9).await.unwrap(),
+                vec![("test:1234".into(), vec![1])]
+            );
+            assert_eq!(
+                tx.scan_prefix("prefix|get|", 10).await.unwrap(),
+                vec![("prefix|get|5".into(), vec![4])]
+            );
+            assert_eq!(
+                tx.scan_prefix("prefix", 10).await.unwrap(),
+                vec![("prefix|get|5".into(), vec![4])]
+            );
+            assert_eq!(
+                tx.scan_prefix("taco-", 9).await.unwrap(),
+                vec![("taco-1".into(), vec![6])]
+            );
+            assert_eq!(
+                tx.scan_prefix("雪:", 9).await.unwrap(),
+                vec![("雪:key".into(), vec![8])]
+            );
+            assert_eq!(
+                tx.scan_prefix("nul\0:", 9).await.unwrap(),
+                vec![("nul\0:key".into(), vec![10])]
+            );
+            assert!(tx.scan_prefix("missing", 9).await.unwrap().is_empty());
             tx.rollback().await.unwrap();
         });
     }
