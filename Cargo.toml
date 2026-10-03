@@ -18,12 +18,14 @@ iroh = ["sync", "sync/iroh"]
 redb = ["dep:engine-redb", "std"]
 automerge = ["dep:engine-automerge", "std"]
 in-memory = ["engine/in-memory"]
+remote = ["dep:client", "client/unix"]
 
 [lib]
 name = "ofdb"
 
 [dependencies]
 # Internal dependencies
+client = { path = "crates/client", default-features = false, features = [], optional = true }
 engine = { path = "crates/engine", default-features = false, features = [] }
 engine-automerge = { path = "crates/engine-automerge", default-features = false, features = [], optional = true }
 engine-redb = { path = "crates/engine-redb", default-features = false, features = [], optional = true }
@@ -39,10 +41,12 @@ uuid = { version = "1.23", default-features = false, features = [] }
 [dev-dependencies]
 # Internal dependencies
 examples-util = { path = "crates/examples-util" }
+server = { path = "crates/server", default-features = false, features = [] }
 ofdb-test = { package = "test", path = "crates/test", default-features = false, features = [] }
 
 # External dependencies
 futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync"] }
 
 [workspace]
 members = [
@@ -61,7 +65,15 @@ members = [
   "crates/query",
   "crates/macros",
   "crates/test",
+  "crates/proto",
+  "crates/protocol",
+  "crates/server",
+  "crates/client",
 ]
+
+[[test]]
+name = "remote"
+required-features = ["remote", "sql", "automerge", "in-memory"]
 
 [[test]]
 name = "cluster_sync"
@@ -98,6 +110,7 @@ authors = ["nathanfaucett@gmail.com"]
 license = "MIT OR Apache-2.0"
 rust-version = "1.98"
 repository = "https://github.com/nathanfaucett/rs-ofdb"
+
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"

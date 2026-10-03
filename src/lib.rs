@@ -11,4 +11,4 @@ mod uri;
 pub use api::*;
 pub use database::{Database, DatabaseTransaction};
 
-pub use uri::{Uri, UriError, UriScheme, parse_uri};
+pub use uri::{Endpoint, Uri, UriError, UriScheme, parse_uri};

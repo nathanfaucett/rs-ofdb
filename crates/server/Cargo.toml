@@ -1,0 +1,34 @@
+[package]
+name = "server"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+engine = { path = "../engine", default-features = false, features = ["std"] }
+proto = { path = "../proto", default-features = false, features = [] }
+protocol = { path = "../protocol", default-features = false, features = [] }
+query = { path = "../query", default-features = false, features = [] }
+
+# External dependencies
+
+tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen"] }
+
+[dev-dependencies]
+# Internal dependencies
+client = { path = "../client", default-features = false, features = ["unix"] }
+engine-automerge = { path = "../engine-automerge", default-features = false, features = [] }
+schema = { path = "../schema", default-features = false, features = ["std"] }
+value = { path = "../value", default-features = false, features = ["std"] }
+
+# External dependencies
+tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[features]
+default = []

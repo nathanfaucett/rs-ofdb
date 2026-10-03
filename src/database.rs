@@ -20,6 +20,9 @@ use sync::{
 };
 use value::{FromRow, Row, Value};
 
+#[cfg(feature = "remote")]
+use client::Client;
+
 #[cfg(feature = "automerge")]
 use engine_automerge::AutomergeRowCodec;
 #[cfg(feature = "redb")]
@@ -31,6 +34,8 @@ pub enum Database {
     File(Engine<RedbKernel, AutomergeRowCodec>),
     #[cfg(all(feature = "automerge", feature = "in-memory"))]
     InMemory(Engine<InMemoryKernel, AutomergeRowCodec>),
+    #[cfg(feature = "remote")]
+    Remote(Client),
 }
 
 pub enum DatabaseTransaction {
@@ -126,6 +131,10 @@ macro_rules! database_call {
             Database::File($engine) => $body,
             #[cfg(all(feature = "automerge", feature = "in-memory"))]
             Database::InMemory($engine) => $body,
+            #[cfg(feature = "remote")]
+            Database::Remote(_) => Err(EngineError::custom(
+                "operation is unsupported by remote database",
+            )),
             #[cfg(not(any(
                 all(feature = "automerge", feature = "redb"),
                 all(feature = "automerge", feature = "in-memory"),
@@ -164,6 +173,7 @@ impl Database {
             Ok(crate::uri::Uri {
                 scheme: crate::uri::UriScheme::File,
                 path,
+                ..
             }) => {
                 let path = path.ok_or_else(|| EngineError::custom("file URI missing path"))?;
                 #[cfg(all(feature = "automerge", feature = "redb"))]
@@ -172,10 +182,65 @@ impl Database {
                 }
                 #[cfg(not(all(feature = "automerge", feature = "redb")))]
                 {
+                    let _ = path;
                     Err(EngineError::custom(
                         "redb kernel not available: enable features `automerge` and `redb`",
                     ))
                 }
+            }
+            Ok(crate::uri::Uri {
+                scheme: crate::uri::UriScheme::Grpc,
+                endpoint: Some(crate::uri::Endpoint::Tcp { host, port }),
+                ..
+            }) => {
+                #[cfg(feature = "remote")]
+                {
+                    let authority = if host.contains(':') {
+                        format!("[{host}]")
+                    } else {
+                        host
+                    };
+                    Client::lazy_tcp(format!("http://{authority}:{port}")).map(Self::Remote)
+                }
+                #[cfg(not(feature = "remote"))]
+                {
+                    let _ = (host, port);
+                    Err(EngineError::custom(
+                        "remote database support is disabled: enable feature `remote`",
+                    ))
+                }
+            }
+            Ok(crate::uri::Uri {
+                scheme: crate::uri::UriScheme::Unix,
+                endpoint: Some(crate::uri::Endpoint::Unix { path }),
+                ..
+            }) => {
+                #[cfg(all(feature = "remote", unix))]
+                {
+                    Client::lazy_unix(path).map(Self::Remote)
+                }
+                #[cfg(not(all(feature = "remote", unix)))]
+                {
+                    let _ = path;
+                    Err(EngineError::custom(
+                        "Unix remote database support is unavailable",
+                    ))
+                }
+            }
+            Ok(crate::uri::Uri {
+                scheme: crate::uri::UriScheme::Grpcs,
+                ..
+            }) => Err(EngineError::custom("TLS gRPC is not supported")),
+            Ok(crate::uri::Uri {
+                scheme: crate::uri::UriScheme::Grpc | crate::uri::UriScheme::Unix,
+                endpoint: None,
+                ..
+            }) => Err(EngineError::custom("remote URI has no endpoint")),
+            Err(crate::uri::UriError::TlsUnsupported) => {
+                Err(EngineError::custom("TLS gRPC is not supported"))
+            }
+            Err(crate::uri::UriError::InvalidEndpoint) => {
+                Err(EngineError::custom("invalid remote endpoint"))
             }
             Err(crate::uri::UriError::UnsupportedScheme) => Err(EngineError::custom(format!(
                 "unsupported URI scheme: {uri}"
@@ -183,6 +248,7 @@ impl Database {
             Err(crate::uri::UriError::MissingPath) => {
                 Err(EngineError::custom("file URI missing path"))
             }
+            Ok(_) => Err(EngineError::custom("invalid remote endpoint type")),
         }
     }
 
@@ -209,6 +275,10 @@ impl Database {
                 .transaction()
                 .await
                 .map(DatabaseTransaction::InMemory),
+            #[cfg(feature = "remote")]
+            Self::Remote(_) => Err(EngineError::custom(
+                "transactions are unsupported by remote database",
+            )),
             #[cfg(not(any(
                 all(feature = "automerge", feature = "redb"),
                 all(feature = "automerge", feature = "in-memory"),
@@ -230,10 +300,34 @@ impl Database {
     }
 
     pub async fn create_table(&self, table_schema: TableSchema) -> EngineResult<()> {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            return client
+                .execute(alloc::vec![Statement::DataDefinition(
+                    query::DataDefinition::CreateTable {
+                        schema: table_schema,
+                        if_not_exists: false,
+                    },
+                )])
+                .await
+                .map(|_| ());
+        }
         database_call!(self, |engine| engine.create_table(table_schema).await)
     }
 
     pub async fn drop_table(&self, table_name: &str) -> EngineResult<()> {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            return client
+                .execute(alloc::vec![Statement::DataDefinition(
+                    query::DataDefinition::DropTable {
+                        table_name: table_name.into(),
+                        if_exists: false,
+                    },
+                )])
+                .await
+                .map(|_| ());
+        }
         database_call!(self, |engine| engine.drop_table(table_name).await)
     }
 
@@ -246,6 +340,14 @@ impl Database {
     where
         T: Translator,
     {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            let statements = translator
+                .translate_with_params(query, params)
+                .await
+                .map_err(EngineError::custom)?;
+            return client.execute(statements).await;
+        }
         database_call!(self, |engine| {
             engine
                 .translate_and_execute_with_params(query, params, translator)
@@ -261,6 +363,14 @@ impl Database {
     where
         T: Translator,
     {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            let statements = translator
+                .translate(query)
+                .await
+                .map_err(EngineError::custom)?;
+            return client.execute(statements).await;
+        }
         database_call!(self, |engine| engine
             .translate_and_execute(query, translator)
             .await)
@@ -275,12 +385,32 @@ impl Database {
         T: Translator,
         U: FromRow,
     {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            let statements = translator
+                .translate(query)
+                .await
+                .map_err(EngineError::custom)?;
+            let mut results = client.execute(statements).await?;
+            if results.len() != 1 {
+                return Err(EngineError::InvalidQuery("Expected one query result"));
+            }
+            return results
+                .pop()
+                .expect("result length was checked")
+                .rows_as()
+                .map_err(EngineError::custom);
+        }
         database_call!(self, |engine| engine
             .translate_and_select(query, translator)
             .await)
     }
 
     pub async fn execute(&self, statements: Vec<Statement>) -> EngineResult<Vec<QueryResult>> {
+        #[cfg(feature = "remote")]
+        if let Self::Remote(client) = self {
+            return client.execute(statements).await;
+        }
         database_call!(self, |engine| engine.execute(statements).await)
     }
 
@@ -300,9 +430,16 @@ impl Database {
             all(feature = "automerge", feature = "in-memory"),
         ))]
         {
-            database_call!(self, |engine| {
-                synchronize_engine(engine, transport, config, role).await
-            })
+            match self {
+                #[cfg(all(feature = "automerge", feature = "redb"))]
+                Self::File(engine) => synchronize_engine(engine, transport, config, role).await,
+                #[cfg(all(feature = "automerge", feature = "in-memory"))]
+                Self::InMemory(engine) => synchronize_engine(engine, transport, config, role).await,
+                #[cfg(feature = "remote")]
+                Self::Remote(_) => Err(SyncError::Engine(EngineError::custom(
+                    "sync is unsupported by remote database",
+                ))),
+            }
         }
         #[cfg(not(any(
             all(feature = "automerge", feature = "redb"),
