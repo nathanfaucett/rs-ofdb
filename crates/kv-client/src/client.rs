@@ -1,4 +1,4 @@
-use proto_kv::kvdb::{
+use kv_proto::kvdb::{
     DeleteRequest, GetRequest, ScanAllRequest, ScanPrefixRequest, ScanRequest, SetRequest,
     kv_service_client::KvServiceClient,
 };

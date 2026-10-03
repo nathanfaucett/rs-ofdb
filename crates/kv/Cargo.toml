@@ -14,7 +14,7 @@ name = "ofdb_kv"
 [features]
 default = []
 std = []
-remote = ["std", "dep:proto-kv", "dep:tonic", "dep:tokio", "dep:tower", "dep:hyper-util"]
+remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "dep:tower", "dep:hyper-util"]
 in-memory = ["std", "dep:btree", "dep:kv-store", "dep:uuid", "btree/in-memory"]
 redb = ["std", "dep:btree", "dep:kv-store", "dep:uuid", "dep:btree-redb", "dep:redb"]
 server = ["remote", "dep:kv-server"]
@@ -27,7 +27,7 @@ btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-re
 kv-server = { version = "0.1", path = "../kv-server", package = "ofdb-kv-server", default-features = false, features = [], optional = true }
 kv-store = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [], optional = true }
 kv-sync = { version = "0.1", path = "../kv-sync", package = "ofdb-kv-sync", default-features = false, features = [], optional = true }
-proto-kv = { version = "0.1", path = "../proto-kv", package = "ofdb-kv-proto", default-features = false, features = [], optional = true }
+kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [], optional = true }
 
 # External dependencies
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }

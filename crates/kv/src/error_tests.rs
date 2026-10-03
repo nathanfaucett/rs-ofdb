@@ -1,5 +1,5 @@
 use crate::{Error, ErrorKind, client::map_status};
-use proto_kv::{ErrorKind as ProtoErrorKind, encode_error_details};
+use kv_proto::{ErrorKind as ProtoErrorKind, encode_error_details};
 use tonic::{Code, Status, codegen::Bytes};
 
 #[test]

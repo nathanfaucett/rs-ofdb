@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use btree::{BTree, BTreeError};
 use kv::KvStore;
-use proto_kv as proto;
-use proto_kv::kvdb::{
+use kv_proto as proto;
+use kv_proto::kvdb::{
     DeleteResponse, GetResponse, ScanAllResponse, ScanEntry, ScanResponse, SetResponse,
 };
 use tonic::{Request, Response, Status};

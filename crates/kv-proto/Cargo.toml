@@ -10,7 +10,7 @@ description = "KV Proto"
 
 [lib]
 path = "src/lib.rs"
-name = "proto_kv"
+name = "kv_proto"
 
 [dependencies]
 # gRPC

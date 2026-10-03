@@ -11,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 # Internal dependencies
 
-proto-kv = { version = "0.1", path = "../proto-kv", package = "ofdb-kv-proto", default-features = false, features = [] }
+kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [] }
 
 # External dependencies
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }

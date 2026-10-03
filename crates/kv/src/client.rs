@@ -1,7 +1,7 @@
 use core::future::Future;
 use std::{path::Path, time::Duration};
 
-use proto_kv::kvdb::{
+use kv_proto::kvdb::{
     DeleteRequest, GetRequest, ScanAllRequest, ScanPrefixRequest, ScanRequest, SetRequest,
     kv_service_client::KvServiceClient,
 };
@@ -171,7 +171,7 @@ impl Client {
 }
 
 pub(crate) fn map_status(status: tonic::Status) -> Error {
-    if let Some((kind, message)) = proto_kv::decode_error_details(status.details()) {
+    if let Some((kind, message)) = kv_proto::decode_error_details(status.details()) {
         return Error::Query {
             kind: kind.into(),
             message: message.to_owned(),

@@ -12,7 +12,7 @@ rust-version.workspace = true
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
 kv = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [] }
-proto-kv = { version = "0.1", path = "../proto-kv", package = "ofdb-kv-proto", default-features = false, features = [] }
+kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [] }
 
 
 # External dependencies

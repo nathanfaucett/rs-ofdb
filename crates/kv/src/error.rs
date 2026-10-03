@@ -13,17 +13,17 @@ pub enum ErrorKind {
 }
 
 #[cfg(feature = "remote")]
-impl From<proto_kv::ErrorKind> for ErrorKind {
-    fn from(kind: proto_kv::ErrorKind) -> Self {
+impl From<kv_proto::ErrorKind> for ErrorKind {
+    fn from(kind: kv_proto::ErrorKind) -> Self {
         match kind {
-            proto_kv::ErrorKind::InvalidDocument => Self::InvalidDocument,
-            proto_kv::ErrorKind::TypeMismatch => Self::TypeMismatch,
-            proto_kv::ErrorKind::Conflict => Self::Conflict,
-            proto_kv::ErrorKind::CommitFailed => Self::CommitFailed,
-            proto_kv::ErrorKind::RollbackFailed => Self::RollbackFailed,
-            proto_kv::ErrorKind::UnsupportedOperation => Self::UnsupportedOperation,
-            proto_kv::ErrorKind::Storage => Self::Storage,
-            proto_kv::ErrorKind::Internal => Self::Internal,
+            kv_proto::ErrorKind::InvalidDocument => Self::InvalidDocument,
+            kv_proto::ErrorKind::TypeMismatch => Self::TypeMismatch,
+            kv_proto::ErrorKind::Conflict => Self::Conflict,
+            kv_proto::ErrorKind::CommitFailed => Self::CommitFailed,
+            kv_proto::ErrorKind::RollbackFailed => Self::RollbackFailed,
+            kv_proto::ErrorKind::UnsupportedOperation => Self::UnsupportedOperation,
+            kv_proto::ErrorKind::Storage => Self::Storage,
+            kv_proto::ErrorKind::Internal => Self::Internal,
         }
     }
 }
