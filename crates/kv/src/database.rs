@@ -11,7 +11,7 @@ use kv_store::KvStore;
 use crate::Error;
 
 #[derive(Clone)]
-enum Storage {
+pub(super) enum Storage {
     #[cfg(feature = "in-memory")]
     Memory(KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>>),
     #[cfg(feature = "redb")]
@@ -19,7 +19,7 @@ enum Storage {
 }
 
 pub struct Database {
-    storage: Storage,
+    pub(super) storage: Storage,
 }
 
 impl Database {
@@ -44,15 +44,38 @@ impl Database {
 
     #[cfg(feature = "redb")]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::open_with_table(path, "ofdb-kv")
+    }
+
+    #[cfg(feature = "redb")]
+    pub fn open_with_table(
+        path: impl AsRef<Path>,
+        table: impl Into<String>,
+    ) -> Result<Self, Error> {
+        let table = table.into();
         let path = path.as_ref();
-        let db = if path.exists() {
+        let existed = path.exists();
+        let db = if existed {
             redb::Database::open(path)
                 .map_err(|error| Error::from(btree::BTreeError::custom(error)))?
         } else {
             redb::Database::create(path)
                 .map_err(|error| Error::from(btree::BTreeError::custom(error)))?
         };
-        let definition = btree_redb::table_definition::<btree_redb::Bytes, Vec<u8>>("ofdb-kv");
+        let definition = btree_redb::table_definition::<btree_redb::Bytes, Vec<u8>>(&table);
+        if existed {
+            use redb::ReadableDatabase;
+
+            let transaction = db
+                .begin_read()
+                .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+            transaction
+                .open_table(definition)
+                .map_err(|_| Error::Storage {
+                    kind: crate::ErrorKind::Storage,
+                    message: "unsupported metadata store schema".into(),
+                })?;
+        }
         let transaction = db
             .begin_write()
             .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
@@ -62,7 +85,7 @@ impl Database {
         transaction
             .commit()
             .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
-        let tree = btree_redb::RedbByteBTree::new(Arc::new(db), "ofdb-kv");
+        let tree = btree_redb::RedbByteBTree::new(Arc::new(db), table);
         Ok(Self {
             storage: Storage::Redb(KvStore::new(tree, uuid_timestamp)),
         })
@@ -182,6 +205,28 @@ impl Database {
         }
     }
 
+    /// Exports winning generations, including tombstones, from one store snapshot.
+    #[cfg(feature = "sync")]
+    pub async fn export_snapshots(&self) -> Result<Vec<crate::KvSnapshot>, Error> {
+        match &self.storage {
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(store) => export_snapshots(store).await,
+            #[cfg(feature = "redb")]
+            Storage::Redb(store) => export_snapshots(store).await,
+        }
+    }
+
+    /// Imports all snapshots atomically. A failed import commits no changes.
+    #[cfg(feature = "sync")]
+    pub async fn import_snapshots(&self, snapshots: Vec<crate::KvSnapshot>) -> Result<(), Error> {
+        match &self.storage {
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(store) => import_snapshots(store, snapshots).await,
+            #[cfg(feature = "redb")]
+            Storage::Redb(store) => import_snapshots(store, snapshots).await,
+        }
+    }
+
     #[cfg(feature = "sync")]
     pub async fn synchronize<T: kv_sync::SyncTransport>(
         &self,
@@ -217,6 +262,38 @@ async fn write_set<B: BTree<Vec<u8>, Vec<u8>>>(
 ) -> Result<(), Error> {
     let mut transaction = store.transaction().await?;
     transaction.set(key, value, expires_at).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+#[cfg(feature = "sync")]
+async fn export_snapshots<B: BTree<Vec<u8>, Vec<u8>>>(
+    store: &KvStore<B>,
+) -> Result<Vec<crate::KvSnapshot>, Error> {
+    let transaction = store.transaction().await?;
+    let snapshots = transaction.export_snapshots().await?;
+    transaction.rollback().await?;
+    Ok(snapshots
+        .into_iter()
+        .map(|(key, payload)| crate::KvSnapshot { key, payload })
+        .collect())
+}
+
+#[cfg(feature = "sync")]
+async fn import_snapshots<B: BTree<Vec<u8>, Vec<u8>>>(
+    store: &KvStore<B>,
+    snapshots: Vec<crate::KvSnapshot>,
+) -> Result<(), Error> {
+    let mut transaction = store.transaction().await?;
+    for snapshot in snapshots {
+        if let Err(error) = transaction
+            .import_snapshot((snapshot.key, snapshot.payload))
+            .await
+        {
+            transaction.rollback().await?;
+            return Err(error.into());
+        }
+    }
     transaction.commit().await?;
     Ok(())
 }

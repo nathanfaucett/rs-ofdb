@@ -14,7 +14,7 @@ name = "ofdb_kv"
 [features]
 default = []
 std = []
-remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "dep:tower", "dep:hyper-util"]
+remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "tokio/sync", "dep:tokio-stream", "dep:tower", "dep:hyper-util"]
 in-memory = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "btree/in-memory"]
 redb = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "dep:btree-redb", "dep:redb"]
 server = ["remote", "dep:kv-server"]
@@ -33,6 +33,7 @@ kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", d
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
 redb = { version = "4.3", default-features = false, features = ["uuid"], optional = true }
 tokio = { version = "1.0", default-features = false, features = ["time"], optional = true }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"], optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "codegen"], optional = true }
 tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"], optional = true }
@@ -62,6 +63,10 @@ required-features = ["in-memory", "redb"]
 [[test]]
 name = "remote_kv"
 required-features = ["remote", "in-memory", "redb", "server"]
+
+[[test]]
+name = "remote_facade_transaction"
+required-features = ["remote", "in-memory", "server"]
 
 [[test]]
 name = "cluster_kv"

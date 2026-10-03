@@ -16,16 +16,18 @@ kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", d
 
 
 # External dependencies
-tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros"] }
+tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros", "sync"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen"] }
 
 [dev-dependencies]
 # Internal dependencies
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["in-memory"] }
 kv-client = { version = "0.1", path = "../kv-client", package = "ofdb-kv-client", default-features = false, features = [] }
 
 # External dependencies
 tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
 
 [features]
 default = []

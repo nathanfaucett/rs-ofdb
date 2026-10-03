@@ -13,12 +13,12 @@ This plan is self-contained. Do not require the older `facade-cli-plan.md`; that
 - SQL and KV remain separate libraries, client types, and query interfaces. Do not add a shared SQL/KV query abstraction.
 - `Database::client(&self) -> Client` is infallible and is the only embedded client constructor. Do not add `Client::open()`, `Client::in_memory()`, or a combined URI constructor.
 - `Database` constructs storage and exposes embedded database controls: hosting and sync. It does not expose direct query methods or transaction creation. Callers use `Database::client()` for every query and transaction.
-- `Client` is the only facade query API for ordinary reads, writes, and SQL transactions, for both embedded and remote storage. It never exposes hosting, sync, or a public database accessor. Do not implement `Deref` to `Database`.
+- `Client` is the only facade query API for ordinary reads, writes, and transactions, for both embedded and remote storage. It never exposes hosting, sync, or a public database accessor. Do not implement `Deref` to `Database`.
 - An embedded client owns shared storage references, has no lifetime parameter, and remains usable after the originating `Database` is dropped.
 - `Client: Clone` remains supported. Clones share storage or connections, not copies of database contents. Deadline configuration is independent per clone. Preserve `Debug` without exposing stored data.
 - SQL `Client` exposes `execute()`, SQL-gated `execute_sql()`, generic translator helpers, and `transaction()`. `Database` does not expose these query methods or transaction creation.
 - `Client::transaction()` is asynchronous for both backends and returns one `Transaction` handle. The handle supports typed statement execution, translator helpers, commit, and rollback. Remote transactions use a server-side transaction stream; dropping the handle rolls back uncommitted work.
-- KV clients expose existing `get`, `set`, `delete`, `scan`, `scan_prefix`, and `scan_all` behavior unchanged.
+- KV clients expose existing `get`, `set`, `delete`, `scan`, `scan_prefix`, and `scan_all` behavior unchanged, and `Client::transaction()` groups those operations atomically on embedded and remote stores.
 - `Client::with_deadline(Duration)` applies to both backends, without a default. Each SQL translation helper uses one budget for translation and execution; do not restart the budget for execution.
 - Library query deadlines exclude connection establishment. The CLI retains its outer budget for construction/connection and query completion.
 - Embedded queries with a configured deadline require a Tokio runtime with time enabled. Queries without a deadline must work without Tokio.
@@ -31,7 +31,7 @@ Paths below are relative to the `ofdb` workspace root.
 
 | Area                | Files                                                                | Current state                                                                                                                                                       |
 | ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| KV facade           | `crates/kv/src/client.rs`, `database.rs`, `lib.rs`, `Cargo.toml`     | `Client` supports embedded and remote queries. KV query operations on `Database` were made crate-private; facade calls dispatch through `Client`.                   |
+| KV facade           | `crates/kv/src/client.rs`, `database.rs`, `lib.rs`, `Cargo.toml`     | `Client` supports embedded and remote queries and transactions. KV query operations on `Database` were made crate-private; facade calls dispatch through `Client`.  |
 | SQL facade          | `crates/sql/src/client.rs`, `database.rs`, `lib.rs`, `Cargo.toml`    | `Client` supports embedded and remote queries and transactions. Ordinary query methods are crate-private helpers; public Database transaction creation was removed. |
 | SQL helper behavior | `crates/sql-engine/src/engine.rs`                                    | Generic helpers translate locally, then execute a statement batch. `translate_and_select` requires exactly one result and uses `rows_as()`.                         |
 | SQL CLI             | `crates/sql-cli/src/main.rs`                                         | All query targets now dispatch through `Client`.                                                                                                                    |

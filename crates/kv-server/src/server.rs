@@ -61,6 +61,19 @@ impl<S> proto::kvdb::kv_service_server::KvService for KvService<S>
 where
     S: BTree<Vec<u8>, Vec<u8>> + Send + Sync + 'static,
 {
+    type TransactionStream = crate::transaction::TransactionStream;
+
+    async fn transaction(
+        &self,
+        request: Request<tonic::Streaming<proto::kvdb::TransactionRequest>>,
+    ) -> Result<Response<Self::TransactionStream>, Status> {
+        let transaction = self.store.transaction().await.map_err(status_from_error)?;
+        Ok(Response::new(crate::transaction::stream(
+            transaction,
+            request.into_inner(),
+        )))
+    }
+
     async fn get(
         &self,
         request: Request<proto::kvdb::GetRequest>,
@@ -244,7 +257,7 @@ where
     }
 }
 
-fn current_time_millis() -> Result<i64, Status> {
+pub(crate) fn current_time_millis() -> Result<i64, Status> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(status_from_error)?
@@ -252,7 +265,7 @@ fn current_time_millis() -> Result<i64, Status> {
     i64::try_from(millis).map_err(status_from_error)
 }
 
-fn status_from_error(error: impl std::error::Error + 'static) -> Status {
+pub(crate) fn status_from_error(error: impl std::error::Error + 'static) -> Status {
     let kind = if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<BTreeError>()
     {
         match error {

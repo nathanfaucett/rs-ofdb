@@ -13,14 +13,10 @@ use tonic::transport::{Channel, Endpoint};
 
 use crate::Error;
 
-/// A query-only client for embedded or remote KV storage.
+/// A query and transaction client for embedded or remote KV storage.
 ///
-/// It does not expose embedded transactions:
-/// ```compile_fail
-/// fn no_transaction(client: &ofdb_kv::Client) {
-///     let _ = client.transaction();
-/// }
-/// ```
+/// Transactions keep all operations on one embedded transaction or remote stream. Dropping an
+/// uncommitted remote transaction rolls it back when the server observes stream closure.
 ///
 /// It does not expose sync setup:
 /// ```compile_fail
@@ -76,6 +72,39 @@ impl core::fmt::Debug for Client {
 }
 
 impl Client {
+    pub async fn transaction(&self) -> Result<crate::Transaction, Error> {
+        self.request(async {
+            #[cfg(all(any(feature = "in-memory", feature = "redb"), feature = "remote"))]
+            {
+                match &self.backend {
+                    Backend::Embedded(database) => {
+                        crate::Transaction::embedded(database, self.request_deadline).await
+                    }
+                    Backend::Remote(channel) => {
+                        crate::Transaction::remote(channel.clone(), self.request_deadline).await
+                    }
+                }
+            }
+            #[cfg(all(any(feature = "in-memory", feature = "redb"), not(feature = "remote")))]
+            {
+                match &self.backend {
+                    Backend::Embedded(database) => {
+                        crate::Transaction::embedded(database, self.request_deadline).await
+                    }
+                }
+            }
+            #[cfg(all(feature = "remote", not(any(feature = "in-memory", feature = "redb"))))]
+            {
+                match &self.backend {
+                    Backend::Remote(channel) => {
+                        crate::Transaction::remote(channel.clone(), self.request_deadline).await
+                    }
+                }
+            }
+        })
+        .await
+    }
+
     #[cfg(any(feature = "in-memory", feature = "redb"))]
     pub(crate) fn embedded(database: crate::Database) -> Self {
         Self {

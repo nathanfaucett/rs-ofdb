@@ -65,6 +65,49 @@ fn embedded_client_owns_shared_storage_without_tokio() {
 }
 
 #[test]
+fn client_transaction_commits_and_rolls_back_multiple_operations() {
+    block_on(async {
+        let database = Database::in_memory();
+        let client = database.client();
+        let mut transaction = client.transaction().await.expect("start transaction");
+        transaction
+            .set("first", vec![1], None)
+            .await
+            .expect("set first value");
+        transaction
+            .set("second", vec![2], None)
+            .await
+            .expect("set second value");
+        assert_eq!(
+            transaction.scan_all().await.expect("scan transaction"),
+            vec![("first".into(), vec![1]), ("second".into(), vec![2])]
+        );
+        transaction.rollback().await.expect("rollback transaction");
+        assert!(
+            client
+                .scan_all()
+                .await
+                .expect("scan after rollback")
+                .is_empty()
+        );
+
+        let mut transaction = client
+            .transaction()
+            .await
+            .expect("start commit transaction");
+        transaction
+            .set("first", vec![1], None)
+            .await
+            .expect("set committed value");
+        transaction.commit().await.expect("commit transaction");
+        assert_eq!(
+            client.get("first").await.expect("read committed value"),
+            Some(vec![1])
+        );
+    });
+}
+
+#[test]
 fn client_remains_usable_after_database_drop() {
     let client = {
         let database = Database::in_memory();

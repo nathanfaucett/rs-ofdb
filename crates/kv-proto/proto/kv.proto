@@ -1,6 +1,8 @@
 syntax = "proto3";
 package kvdb;
 
+import "google/protobuf/empty.proto";
+
 // ---------------------------------------------------------------------------
 // KV Service
 // ---------------------------------------------------------------------------
@@ -56,7 +58,31 @@ message ScanAllResponse {
   repeated ScanEntry entries = 1;
 }
 
+message TransactionRequest {
+  oneof command {
+    GetRequest get = 1;
+    SetRequest set = 2;
+    DeleteRequest delete = 3;
+    ScanRequest scan = 4;
+    ScanPrefixRequest scan_prefix = 5;
+    ScanAllRequest scan_all = 6;
+    google.protobuf.Empty commit = 7;
+    google.protobuf.Empty rollback = 8;
+  }
+}
+
+message TransactionResponse {
+  oneof outcome {
+    google.protobuf.Empty ready = 1;
+    GetResponse got = 2;
+    google.protobuf.Empty completed = 3;
+    ScanResponse scanned = 4;
+    bytes error_detail = 5;
+  }
+}
+
 service KvService {
+  rpc Transaction(stream TransactionRequest) returns (stream TransactionResponse);
   rpc Get(GetRequest) returns (GetResponse);
   rpc Set(SetRequest) returns (SetResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);

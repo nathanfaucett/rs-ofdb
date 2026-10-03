@@ -2488,6 +2488,7 @@ dependencies = [
  "redb",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower",
  "uuid",
@@ -2537,6 +2538,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "uuid",
 ]
 
 [[package]]
