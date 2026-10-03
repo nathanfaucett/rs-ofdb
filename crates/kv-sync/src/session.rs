@@ -144,9 +144,21 @@ mod tests {
     use futures::{SinkExt, executor::block_on, join, stream::StreamExt};
     use futures_channel::mpsc;
     use kv::decode_document_id;
-    use uuid::Uuid;
 
     use super::*;
+
+    fn test_timestamp_provider() -> uuid::Timestamp {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+        let millis = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        uuid::Timestamp::from_unix_time(
+            1_700_000_000 + millis / 1_000,
+            (millis % 1_000) as u32 * 1_000_000,
+            0,
+            0,
+        )
+    }
 
     struct Channel {
         sender: mpsc::UnboundedSender<Vec<u8>>,
@@ -165,18 +177,11 @@ mod tests {
         }
     }
 
-    fn uuid(value: u128) -> Uuid {
-        Uuid::from_u128((value << 80) | (7 << 76) | (2 << 62))
-    }
-
     #[test]
     fn failed_received_batch_rolls_back_all_snapshots() {
         block_on(async {
-            let source = KvStore::new(InMemoryBTree::new());
-            let mut tx = source
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let source = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let mut tx = source.transaction().await.unwrap();
             tx.set("valid", b"value".to_vec(), None).await.unwrap();
             let (key, payload) = tx.export_snapshot("valid").await.unwrap().unwrap();
             let snapshot = KvSnapshot { key, payload };
@@ -204,7 +209,7 @@ mod tests {
                 sender: out_sender,
                 receiver: peer_receiver,
             };
-            let destination = KvStore::new(InMemoryBTree::new());
+            let destination = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let result = synchronize(
                 &destination,
                 &mut responder,
@@ -226,24 +231,14 @@ mod tests {
     #[test]
     fn exchanges_snapshots_in_both_directions_and_repeats_idempotently() {
         block_on(async {
-            let left = KvStore::new(InMemoryBTree::new());
-            let right = KvStore::new(InMemoryBTree::new());
-            let mut tx = left
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let left = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let right = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let mut tx = left.transaction().await.unwrap();
             tx.set("left", b"L".to_vec(), None).await.unwrap();
             tx.set("expired", b"E".to_vec(), Some(5)).await.unwrap();
             tx.commit().await.unwrap();
-            let mut generation = 2;
-            let mut tx = right
-                .transaction_with_uuid_generator(move || {
-                    let id = uuid(generation);
-                    generation += 1;
-                    id
-                })
-                .await
-                .unwrap();
+
+            let mut tx = right.transaction().await.unwrap();
             tx.set("right", b"R".to_vec(), None).await.unwrap();
             tx.set("deleted", b"D".to_vec(), None).await.unwrap();
             tx.delete("deleted").await.unwrap();
@@ -318,7 +313,7 @@ mod tests {
     #[test]
     fn dropped_transport_and_malformed_frames_fail_explicitly() {
         block_on(async {
-            let store = KvStore::new(InMemoryBTree::new());
+            let store = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let (out_sender, _out_receiver) = mpsc::unbounded();
             let (_closed_sender, closed_receiver) = mpsc::unbounded();
             drop(_closed_sender);
@@ -401,8 +396,8 @@ mod tests {
     #[test]
     fn empty_peers_complete_a_session() {
         block_on(async {
-            let left = KvStore::new(InMemoryBTree::new());
-            let right = KvStore::new(InMemoryBTree::new());
+            let left = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let right = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let (left_tx, left_rx) = mpsc::unbounded();
             let (right_tx, right_rx) = mpsc::unbounded();
             let mut initiator = Channel {

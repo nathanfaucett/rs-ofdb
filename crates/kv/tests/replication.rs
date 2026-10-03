@@ -5,12 +5,23 @@ use futures::{StreamExt, executor::block_on};
 use kv::{KvStore, decode_document_id, encode_document_id};
 use uuid::Uuid;
 
+fn test_timestamp_provider() -> uuid::Timestamp {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let millis = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    uuid::Timestamp::from_unix_time(
+        1_700_000_000 + millis / 1_000,
+        (millis % 1_000) as u32 * 1_000_000,
+        0,
+        0,
+    )
+}
+
 fn uuid(timestamp: u128) -> Uuid {
     Uuid::from_u128((timestamp << 80) | (7 << 76) | (2 << 62))
 }
 
 fn store() -> KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>> {
-    KvStore::new(InMemoryBTree::new())
+    KvStore::new(InMemoryBTree::new(), test_timestamp_provider)
 }
 
 #[test]
@@ -19,11 +30,8 @@ fn converges_in_both_orders_and_prunes_old_generations() {
         for reverse in [false, true] {
             let source = store();
             let destination_backend = InMemoryBTree::new();
-            let destination = KvStore::new(destination_backend.clone());
-            let mut tx = source
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let destination = KvStore::new(destination_backend.clone(), test_timestamp_provider);
+            let mut tx = source.transaction().await.unwrap();
             tx.set("k\0雪", vec![1], None).await.unwrap();
             tx.commit().await.unwrap();
             let tx = source.transaction().await.unwrap();
@@ -32,10 +40,7 @@ fn converges_in_both_orders_and_prunes_old_generations() {
             let mut tx = source.transaction().await.unwrap();
             tx.delete("k\0雪").await.unwrap();
             tx.commit().await.unwrap();
-            let mut tx = source
-                .transaction_with_uuid_generator(|| uuid(2))
-                .await
-                .unwrap();
+            let mut tx = source.transaction().await.unwrap();
             tx.set("k\0雪", vec![2], Some(10)).await.unwrap();
             tx.commit().await.unwrap();
             let tx = source.transaction().await.unwrap();
@@ -74,10 +79,7 @@ fn converges_in_both_orders_and_prunes_old_generations() {
 fn exports_latest_snapshot_for_live_and_tombstoned_keys() {
     block_on(async {
         let store = store();
-        let mut tx = store
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = store.transaction().await.unwrap();
         tx.set("live", vec![1], None).await.unwrap();
         tx.set("deleted", vec![2], None).await.unwrap();
         tx.delete("deleted").await.unwrap();
@@ -103,10 +105,7 @@ fn tombstone_reaches_peer_that_missed_live_value() {
     block_on(async {
         let source = store();
         let destination = store();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("k", vec![1], None).await.unwrap();
         tx.delete("k").await.unwrap();
         let tombstone = tx.export_snapshot("k").await.unwrap().unwrap();
@@ -126,18 +125,12 @@ fn missed_tombstone_cannot_delete_a_new_generation() {
     block_on(async {
         let source = store();
         let destination = store();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("k", vec![1], None).await.unwrap();
         tx.delete("k").await.unwrap();
         let tombstone = tx.export_snapshot("k").await.unwrap().unwrap();
         tx.commit().await.unwrap();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(2))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("k", vec![2], None).await.unwrap();
         let newer = tx.export_snapshot("k").await.unwrap().unwrap();
         tx.commit().await.unwrap();
@@ -155,10 +148,7 @@ fn equal_generation_accepts_newer_and_ignores_stale_but_rejects_forks() {
     block_on(async {
         let source = store();
         let destination = store();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("k", vec![1], None).await.unwrap();
         tx.commit().await.unwrap();
         let tx = source.transaction().await.unwrap();
@@ -201,10 +191,7 @@ fn independent_replicas_exchange_winning_tombstone_and_ignore_delayed_loser() {
         for reverse in [false, true] {
             let left = store();
             let right = store();
-            let mut tx = left
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let mut tx = left.transaction().await.unwrap();
             tx.set("same", vec![1], None).await.unwrap();
             tx.commit().await.unwrap();
             let tx = left.transaction().await.unwrap();
@@ -217,10 +204,7 @@ fn independent_replicas_exchange_winning_tombstone_and_ignore_delayed_loser() {
             let delayed = tx.export_snapshot("same").await.unwrap().unwrap();
             tx.rollback().await.unwrap();
 
-            let mut tx = right
-                .transaction_with_uuid_generator(|| uuid(2))
-                .await
-                .unwrap();
+            let mut tx = right.transaction().await.unwrap();
             tx.set("same", vec![2], None).await.unwrap();
             tx.delete("same").await.unwrap();
             tx.commit().await.unwrap();
@@ -258,10 +242,7 @@ fn batch_import_rolls_back_if_a_later_snapshot_is_invalid() {
     block_on(async {
         let source = store();
         let destination = store();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("first", vec![1], None).await.unwrap();
         let valid = tx.export_snapshot("first").await.unwrap().unwrap();
         tx.commit().await.unwrap();
@@ -283,10 +264,7 @@ fn rejects_invalid_ids_types_hashes_payloads_and_incrementals_without_mutation()
     block_on(async {
         let source = store();
         let destination = store();
-        let mut tx = source
-            .transaction_with_uuid_generator(|| uuid(1))
-            .await
-            .unwrap();
+        let mut tx = source.transaction().await.unwrap();
         tx.set("k", vec![1], None).await.unwrap();
         let valid = tx.export_snapshot("k").await.unwrap().unwrap();
         tx.commit().await.unwrap();

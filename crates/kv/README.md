@@ -7,7 +7,10 @@
 Enable the `in-memory` feature on `btree`, then:
 
 ```rust,ignore
-let store = kv::KvStore::new(btree::InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+let store = kv::KvStore::new(
+    btree::InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+    || uuid::Timestamp::now(uuid::NoContext),
+);
 let mut tx = store.transaction().await?;
 tx.set("user:1", vec![1, 2, 3], None).await?;
 assert_eq!(tx.get("user:1", now_ms).await?, Some(vec![1, 2, 3]));
@@ -24,10 +27,10 @@ let setup = db.begin_write()?;
 setup.open_table(btree_redb::table_definition::<btree_redb::Bytes, Vec<u8>>("kv"))?;
 setup.commit()?;
 let tree = btree_redb::RedbByteBTree::new(db, "kv");
-let store = kv::KvStore::new(tree);
+let store = kv::KvStore::new(tree, || uuid::Timestamp::now(uuid::NoContext));
 ```
 
-Use `KvStore::transaction()` to generate UUIDv7 generations or `transaction_with_uuid_generator()` when deterministic generation is needed. A supplied UUID must be version 7 and greater than the current generation when recreating a tombstoned key.
+`KvStore::new` requires a timestamp provider. There is no default provider, so construction without one does not compile, with or without `std`. The store uses it to create UUIDv7 generations internally; callers cannot supply IDs. Use a controlled timestamp source in tests. UUIDv7 order does not account for clock skew.
 
 ## Snapshot exchange
 

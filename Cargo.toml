@@ -40,13 +40,23 @@ uuid = { version = "1.23", default-features = false, features = [] }
 
 [dev-dependencies]
 # Internal dependencies
+btree = { path = "crates/btree", default-features = false, features = ["std", "in-memory"] }
+btree-redb = { path = "crates/btree-redb", default-features = false, features = [] }
+
 examples-util = { path = "crates/examples-util" }
+kv = { path = "crates/kv", default-features = false, features = [] }
+kv-client = { path = "crates/kv-client", default-features = false, features = ["unix"] }
+kv-server = { path = "crates/kv-server", default-features = false, features = [] }
+kv-sync = { path = "crates/kv-sync", default-features = false, features = [] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }
+tempfile = { version = "3.27", default-features = false, features = [] }
 server = { path = "crates/server", default-features = false, features = [] }
 ofdb-test = { package = "test", path = "crates/test", default-features = false, features = [] }
 
 # External dependencies
 futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
-tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
 [workspace]
 members = [

@@ -28,6 +28,19 @@ impl SyncTransport for Channel {
     }
 }
 
+fn test_timestamp_provider() -> uuid::Timestamp {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    let millis = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    uuid::Timestamp::from_unix_time(
+        1_700_000_000 + millis / 1_000,
+        (millis % 1_000) as u32 * 1_000_000,
+        0,
+        0,
+    )
+}
+
 fn redb_store(path: &std::path::Path, create: bool) -> (Arc<Database>, KvStore<RedbByteBTree>) {
     let database = Arc::new(if create {
         Database::create(path).unwrap()
@@ -41,7 +54,10 @@ fn redb_store(path: &std::path::Path, create: bool) -> (Arc<Database>, KvStore<R
             .unwrap();
         transaction.commit().unwrap();
     }
-    let store = KvStore::new(RedbByteBTree::new(database.clone(), TABLE));
+    let store = KvStore::new(
+        RedbByteBTree::new(database.clone(), TABLE),
+        test_timestamp_provider,
+    );
     (database, store)
 }
 
@@ -78,11 +94,11 @@ where
 fn sync_retries_after_redb_peer_reopen() {
     block_on(async {
         let path = std::env::temp_dir().join(format!("kv-sync-{}.db", Uuid::now_v7()));
-        let source = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
-        let mut source_tx = source
-            .transaction_with_uuid_generator(|| Uuid::from_u128((1 << 80) | (7 << 76) | (2 << 62)))
-            .await
-            .unwrap();
+        let source = KvStore::new(
+            InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+            test_timestamp_provider,
+        );
+        let mut source_tx = source.transaction().await.unwrap();
         source_tx.set("value", vec![9], None).await.unwrap();
         source_tx.set("deleted", vec![1], None).await.unwrap();
         source_tx.delete("deleted").await.unwrap();

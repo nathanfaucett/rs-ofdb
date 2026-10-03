@@ -6,6 +6,17 @@ use kv::KvStore;
 use redb::Database;
 use uuid::Uuid;
 
+fn test_timestamp_provider() -> uuid::Timestamp {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let millis = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    uuid::Timestamp::from_unix_time(
+        1_700_000_000 + millis / 1_000,
+        (millis % 1_000) as u32 * 1_000_000,
+        0,
+        0,
+    )
+}
+
 #[test]
 fn redb_public_api_persists_live_values_and_tombstones_after_reopen() {
     block_on(async {
@@ -16,17 +27,12 @@ fn redb_public_api_persists_live_values_and_tombstones_after_reopen() {
         tx.open_table(table_definition::<Bytes, Vec<u8>>(table))
             .unwrap();
         tx.commit().unwrap();
-        let store = KvStore::new(RedbByteBTree::new(db.clone(), table));
+        let store = KvStore::new(
+            RedbByteBTree::new(db.clone(), table),
+            test_timestamp_provider,
+        );
 
-        let mut timestamp = 1;
-        let mut write = store
-            .transaction_with_uuid_generator(move || {
-                let id = Uuid::from_u128((timestamp << 80) | (7 << 76) | (2 << 62));
-                timestamp += 1;
-                id
-            })
-            .await
-            .unwrap();
+        let mut write = store.transaction().await.unwrap();
         write.set("live", vec![1, 2], None).await.unwrap();
         write.set("deleted", vec![3], None).await.unwrap();
         write.delete("deleted").await.unwrap();
@@ -49,7 +55,10 @@ fn redb_public_api_persists_live_values_and_tombstones_after_reopen() {
         drop(db);
 
         let db = Arc::new(Database::open(&path).unwrap());
-        let store = KvStore::new(RedbByteBTree::new(db.clone(), table));
+        let store = KvStore::new(
+            RedbByteBTree::new(db.clone(), table),
+            test_timestamp_provider,
+        );
         let read = store.transaction().await.unwrap();
         assert_eq!(read.get("live", 0).await.unwrap(), Some(vec![1, 2]));
         assert_eq!(read.get("deleted", 0).await.unwrap(), None);

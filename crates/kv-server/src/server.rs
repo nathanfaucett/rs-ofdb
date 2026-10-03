@@ -16,6 +16,7 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 enum Endpoint {
     Tcp(SocketAddr),
+    TcpListener(tokio::net::TcpListener),
     #[cfg(unix)]
     Unix(PathBuf),
 }
@@ -71,9 +72,7 @@ where
         let tx = self.store.transaction().await.map_err(status_from_error)?;
         let value = tx.get(&key, now).await.map_err(status_from_error)?;
 
-        Ok(Response::new(GetResponse {
-            value: value.unwrap_or_default(),
-        }))
+        Ok(Response::new(GetResponse { value }))
     }
 
     async fn set(
@@ -189,6 +188,13 @@ where
         }
     }
 
+    pub fn tcp_listener(listener: tokio::net::TcpListener, store: KvStore<S>) -> Self {
+        Self {
+            endpoint: Endpoint::TcpListener(listener),
+            service: KvService::new(store),
+        }
+    }
+
     #[cfg(unix)]
     pub fn unix(path: impl Into<PathBuf>, store: KvStore<S>) -> Self {
         Self {
@@ -216,6 +222,14 @@ where
                 .serve_with_shutdown(address, shutdown)
                 .await
                 .map_err(Into::into),
+            Endpoint::TcpListener(listener) => {
+                let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+                tonic::transport::Server::builder()
+                    .add_service(service)
+                    .serve_with_incoming_shutdown(incoming, shutdown)
+                    .await
+                    .map_err(Into::into)
+            }
             #[cfg(unix)]
             Endpoint::Unix(path) => {
                 let listener = tokio::net::UnixListener::bind(path)?;

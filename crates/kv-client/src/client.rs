@@ -36,7 +36,7 @@ impl Client {
         let request = GetRequest { key };
         let response = client.get(request).await?;
         let inner = response.into_inner();
-        Ok(Some(inner.value))
+        Ok(inner.value)
     }
 
     pub async fn set(

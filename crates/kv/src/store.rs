@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::Bound, sync::Mutex};
+use std::{collections::BTreeMap, ops::Bound};
 
 use automerge::AutoCommit;
 use btree::{BTree, BTreeError, BTreeRead, BTreeResult, BTreeTransaction};
@@ -13,39 +13,35 @@ use crate::{
     value_document::{new_document, read_document, write_live, write_tombstone},
 };
 
+pub type TimestampProvider = fn() -> uuid::Timestamp;
+
 pub struct KvStore<B>
 where
     B: BTree<Vec<u8>, Vec<u8>>,
 {
     inner: B,
+    timestamp_provider: TimestampProvider,
 }
 
 impl<B> KvStore<B>
 where
     B: BTree<Vec<u8>, Vec<u8>>,
 {
-    pub fn new(inner: B) -> Self {
-        Self { inner }
+    pub fn new(inner: B, timestamp_provider: TimestampProvider) -> Self {
+        Self {
+            inner,
+            timestamp_provider,
+        }
     }
 
     pub async fn transaction(&self) -> BTreeResult<KvTransaction<B::Transaction>> {
-        self.transaction_with_uuid_generator(Uuid::now_v7).await
-    }
-
-    pub async fn transaction_with_uuid_generator<F>(
-        &self,
-        generator: F,
-    ) -> BTreeResult<KvTransaction<B::Transaction>>
-    where
-        F: FnMut() -> Uuid + Send + 'static,
-    {
         let inner = self.inner.transaction().await?;
         Ok(KvTransaction {
             inner: AutomergeBTreeTransaction::new(
                 AutomergeChangeStore::new(inner),
                 Default::default(),
             ),
-            uuid_generator: Mutex::new(Box::new(generator)),
+            timestamp_provider: self.timestamp_provider,
         })
     }
 }
@@ -55,7 +51,7 @@ where
     T: BTreeTransaction<Vec<u8>, Vec<u8>>,
 {
     inner: AutomergeBTreeTransaction<AutomergeChangeStore<T>>,
-    uuid_generator: Mutex<Box<dyn FnMut() -> Uuid + Send>>,
+    timestamp_provider: TimestampProvider,
 }
 
 impl<T> KvTransaction<T>
@@ -161,10 +157,7 @@ where
                         .await?;
                     return Ok(());
                 }
-                let next = (self
-                    .uuid_generator
-                    .lock()
-                    .expect("UUID generator lock poisoned"))();
+                let next = Uuid::new_v7((self.timestamp_provider)());
                 validate_generation(next)?;
                 let (_, previous) = decode_document_id(&id)?;
                 if next <= previous {
@@ -176,10 +169,7 @@ where
                 next
             }
             None => {
-                let next = (self
-                    .uuid_generator
-                    .lock()
-                    .expect("UUID generator lock poisoned"))();
+                let next = Uuid::new_v7((self.timestamp_provider)());
                 validate_generation(next)?;
                 next
             }
@@ -370,31 +360,29 @@ fn upper_id(key: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::KvStore;
     use btree::{BTreeRead, InMemoryBTree};
     use btree_automerge::{DocumentChangeKey, DocumentType};
     use futures::{StreamExt, executor::block_on};
-    use uuid::Uuid;
 
-    use super::KvStore;
-
-    fn uuid(timestamp: u128) -> Uuid {
-        Uuid::from_u128((timestamp << 80) | (7 << 76) | (2 << 62))
+    fn test_timestamp_provider() -> uuid::Timestamp {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let millis = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        uuid::Timestamp::from_unix_time(
+            1_700_000_000 + millis / 1_000,
+            (millis % 1_000) as u32 * 1_000_000,
+            0,
+            0,
+        )
     }
 
     #[test]
     fn transaction_reads_writes_deletes_and_recreates() {
         block_on(async {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();
-            let store = KvStore::new(backend);
-            let mut counter = 1;
-            let mut tx = store
-                .transaction_with_uuid_generator(move || {
-                    let id = uuid(counter);
-                    counter += 1;
-                    id
-                })
-                .await
-                .unwrap();
+            let store = KvStore::new(backend, test_timestamp_provider);
+
+            let mut tx = store.transaction().await.unwrap();
             tx.set("k", vec![1], None).await.unwrap();
             assert_eq!(tx.get("k", 0).await.unwrap(), Some(vec![1]));
             tx.commit().await.unwrap();
@@ -404,10 +392,7 @@ mod tests {
             assert_eq!(tx.get("k", 0).await.unwrap(), None);
             tx.commit().await.unwrap();
 
-            let mut tx = store
-                .transaction_with_uuid_generator(|| uuid(2))
-                .await
-                .unwrap();
+            let mut tx = store.transaction().await.unwrap();
             tx.set("k", vec![2], None).await.unwrap();
             assert_eq!(tx.get("k", 0).await.unwrap(), Some(vec![2]));
             tx.rollback().await.unwrap();
@@ -422,11 +407,8 @@ mod tests {
     fn persistence_uses_document_change_keys_and_incrementals() {
         block_on(async {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();
-            let store = KvStore::new(backend.clone());
-            let mut tx = store
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let store = KvStore::new(backend.clone(), test_timestamp_provider);
+            let mut tx = store.transaction().await.unwrap();
             tx.set("key", vec![1], None).await.unwrap();
             tx.commit().await.unwrap();
             let mut tx = store.transaction().await.unwrap();
@@ -450,17 +432,23 @@ mod tests {
     #[test]
     fn import_rejects_divergent_histories_for_the_same_generation() {
         block_on(async {
-            let base = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
-            let mut tx = base
-                .transaction_with_uuid_generator(|| uuid(1))
-                .await
-                .unwrap();
+            let base = KvStore::new(
+                InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+                test_timestamp_provider,
+            );
+            let mut tx = base.transaction().await.unwrap();
             tx.set("key", vec![0], None).await.unwrap();
             let initial = tx.export_snapshot("key").await.unwrap().unwrap();
             tx.commit().await.unwrap();
 
-            let left = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
-            let right = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let left = KvStore::new(
+                InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+                test_timestamp_provider,
+            );
+            let right = KvStore::new(
+                InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+                test_timestamp_provider,
+            );
             for store in [&left, &right] {
                 let mut tx = store.transaction().await.unwrap();
                 tx.import_snapshot(initial.clone()).await.unwrap();
@@ -477,7 +465,10 @@ mod tests {
             let right_branch = tx.export_snapshot("key").await.unwrap().unwrap();
             tx.commit().await.unwrap();
 
-            let destination = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
+            let destination = KvStore::new(
+                InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+                test_timestamp_provider,
+            );
             let mut tx = destination.transaction().await.unwrap();
             tx.import_snapshot(left_branch).await.unwrap();
             assert!(tx.import_snapshot(right_branch).await.is_err());
@@ -488,16 +479,11 @@ mod tests {
     #[test]
     fn prefix_scan_matches_literal_prefixes_and_filters_expired_or_deleted_keys() {
         block_on(async {
-            let store = KvStore::new(InMemoryBTree::<Vec<u8>, Vec<u8>>::new());
-            let mut id = 1;
-            let mut tx = store
-                .transaction_with_uuid_generator(move || {
-                    let next = uuid(id);
-                    id += 1;
-                    next
-                })
-                .await
-                .unwrap();
+            let store = KvStore::new(
+                InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
+                test_timestamp_provider,
+            );
+            let mut tx = store.transaction().await.unwrap();
             tx.set("test:1234", vec![1], None).await.unwrap();
             tx.set("test:", vec![2], None).await.unwrap();
             tx.set("test;1234", vec![3], None).await.unwrap();
@@ -546,16 +532,8 @@ mod tests {
     fn expiry_is_exclusive_and_scan_respects_key_ranges() {
         block_on(async {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();
-            let store = KvStore::new(backend);
-            let mut id = 1;
-            let mut tx = store
-                .transaction_with_uuid_generator(move || {
-                    let next = uuid(id);
-                    id += 1;
-                    next
-                })
-                .await
-                .unwrap();
+            let store = KvStore::new(backend, test_timestamp_provider);
+            let mut tx = store.transaction().await.unwrap();
             tx.set("a", vec![1], Some(10)).await.unwrap();
             tx.set("ab", vec![2], None).await.unwrap();
             tx.set("b", vec![3], None).await.unwrap();
