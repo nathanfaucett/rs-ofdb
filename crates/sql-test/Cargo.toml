@@ -1,0 +1,27 @@
+[package]
+name = "ofdb-sql-test"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "test"
+path = "src/lib.rs"
+
+[dependencies]
+# Internal dependencies
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["in-memory", "std"] }
+engine-automerge = { version = "0.1", path = "../sql-engine-automerge", package = "ofdb-sql-engine-automerge", default-features = false, features = [] }
+engine-redb = { version = "0.1", path = "../sql-engine-redb", package = "ofdb-sql-engine-redb", default-features = false, features = [] }
+sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = ["std"] }
+sync = { version = "0.1", path = "../sql-sync", package = "ofdb-sql-sync", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["std"] }
+
+# External dependencies
+futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "sys_rng"] }
+redb = { version = "4.3", default-features = false, features = ["std", "uuid"] }
+thiserror = "2.0"

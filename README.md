@@ -1,23 +1,12 @@
-# Offline First Database
+# Offline First Database Workspace
 
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](LICENSE-MIT)
-![Test Status](https://github.com/nathanfaucett/rs-ofdb/actions/workflows/ci.yml/badge.svg)
+This workspace provides separate SQL and KV database libraries:
 
-## gRPC
+- [`ofdb-sql`](crates/sql/README.md): SQL database and client.
+- [`ofdb-kv`](crates/kv/README.md): key-value database and client.
 
-Enable the `remote` feature to open a lazy client with `Database::open_uri`:
+The libraries have separate query contracts and sync protocols. Use their embedded `Database` handles to host local data and configure explicit sync sessions. Use their remote `Client` handles for queries.
 
-```rust,ignore
-let db = ofdb::Database::open_uri("ofdb+grpc://127.0.0.1:50051")?;
-db.execute(statements).await?;
-```
+The `sql-cli` and `kv-cli` binaries provide one-shot commands for their matching libraries. They do not start servers or sync sessions.
 
-TCP endpoints use `ofdb+grpc://host:port`; Unix sockets use
-`ofdb+unix:///absolute/socket/path` on Unix. TLS (`ofdb+grpcs`) is not
-supported yet. gRPC dependencies are declared in the `proto`, `client`, and
-`server` crate manifests.
-
-The `server` crate exposes `QueryService` for custom tonic routing and
-`Server::tcp` / `Server::unix` for standalone servers. Wrap an engine with
-`EngineExecutor::new(engine)` before passing it to a server. The socket file is
-owned by the caller and is not removed automatically.
+See [`CONTEXT.md`](CONTEXT.md) for terminology and [`docs/facade-cli-plan.md`](docs/facade-cli-plan.md) for the implementation status.

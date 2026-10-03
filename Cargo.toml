@@ -1,120 +1,6 @@
-[package]
-name = "ofdb"
-version = "0.1.0"
-publish = true
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
-
-[features]
-default = ["macros", "sql", "std", "sync", "redb", "automerge"]
-std = ["engine/std", "value/std", "uuid/std"]
-macros = ["dep:macros"]
-sql = ["dep:sql-translator", "sql-translator/std"]
-sync = ["dep:sync"]
-iroh = ["sync", "sync/iroh"]
-redb = ["dep:engine-redb", "std"]
-automerge = ["dep:engine-automerge", "std"]
-in-memory = ["engine/in-memory"]
-remote = ["dep:client", "client/unix"]
-
-[lib]
-name = "ofdb"
-
-[dependencies]
-# Internal dependencies
-client = { path = "crates/client", default-features = false, features = [], optional = true }
-engine = { path = "crates/engine", default-features = false, features = [] }
-engine-automerge = { path = "crates/engine-automerge", default-features = false, features = [], optional = true }
-engine-redb = { path = "crates/engine-redb", default-features = false, features = [], optional = true }
-macros = { path = "crates/macros", default-features = false, features = [], optional = true }
-query = { path = "crates/query", default-features = false, features = [] }
-schema = { path = "crates/schema", default-features = false, features = [] }
-sql-translator = { path = "crates/sql-translator", default-features = false, features = [], optional = true }
-sync = { path = "crates/sync", default-features = false, features = [], optional = true }
-value = { path = "crates/value", default-features = false, features = [] }
-
-uuid = { version = "1.23", default-features = false, features = [] }
-
-[dev-dependencies]
-# Internal dependencies
-btree = { path = "crates/btree", default-features = false, features = ["std", "in-memory"] }
-btree-redb = { path = "crates/btree-redb", default-features = false, features = [] }
-
-examples-util = { path = "crates/examples-util" }
-kv = { path = "crates/kv", default-features = false, features = [] }
-kv-client = { path = "crates/kv-client", default-features = false, features = ["unix"] }
-kv-server = { path = "crates/kv-server", default-features = false, features = [] }
-kv-sync = { path = "crates/kv-sync", default-features = false, features = [] }
-redb = { version = "4.3", default-features = false, features = ["uuid"] }
-tempfile = { version = "3.27", default-features = false, features = [] }
-server = { path = "crates/server", default-features = false, features = [] }
-ofdb-test = { package = "test", path = "crates/test", default-features = false, features = [] }
-
-# External dependencies
-futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
-tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
-
 [workspace]
-members = [
-  "crates/engine",
-  "crates/engine-automerge",
-  "crates/engine-redb",
-  "crates/btree-redb",
-  "crates/btree-automerge",
-  "crates/sql-translator",
-  "crates/sync",
-  "crates/wasm",
-  "crates/btree",
-  "crates/kv",
-  "crates/kv-sync",
-  "crates/value",
-  "crates/query",
-  "crates/macros",
-  "crates/test",
-  "crates/proto",
-  "crates/proto-kv",
-  "crates/protocol",
-  "crates/server",
-  "crates/client",
-  "crates/kv-server",
-  "crates/kv-client",
-]
-
-[[test]]
-name = "remote"
-required-features = ["remote", "sql", "automerge", "in-memory"]
-
-[[test]]
-name = "cluster_sync"
-required-features = ["sync", "sql", "automerge", "redb", "in-memory"]
-
-[[test]]
-name = "cluster_chaos"
-required-features = ["sync", "sql", "automerge", "redb", "in-memory"]
-
-[[test]]
-name = "local_sql"
-required-features = ["sql", "automerge", "redb", "in-memory"]
-
-[[example]]
-name = "in_memory"
-required-features = ["sql", "automerge", "in-memory"]
-
-[[example]]
-name = "in_memory_cli"
-required-features = ["sql", "automerge", "in-memory"]
-
-[[example]]
-name = "redb_automerge"
-required-features = ["sql", "redb", "automerge"]
-
-[[example]]
-name = "redb_automerge_cli"
-required-features = ["sql", "redb", "automerge"]
+resolver = "3"
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -123,7 +9,6 @@ authors = ["nathanfaucett@gmail.com"]
 license = "MIT OR Apache-2.0"
 rust-version = "1.98"
 repository = "https://github.com/nathanfaucett/rs-ofdb"
-
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"
@@ -143,10 +28,6 @@ perf = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-
-# These lints are from the `restriction` lint group and prevent specific
-# constructs being used in source code in order to drive up consistency,
-# quality, and brevity
 allow_attributes_without_reason = "warn"
 as_pointer_underscore = "warn"
 assertions_on_result_states = "warn"
@@ -170,8 +51,6 @@ unneeded_field_pattern = "warn"
 unused_result_ok = "warn"
 absolute_paths = "warn"
 redundant_clone = "warn"
-
-# May cause issues with structured logging otherwise.
 literal_string_with_formatting_args = "allow"
 
 [profile.dev]

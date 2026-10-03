@@ -1,12 +1,12 @@
-# kv-sync
+# ofdb-kv-sync
 
-`kv-sync` explicitly exchanges self-contained winning KV snapshots over a caller-owned transport. Its public `KvSnapshot` type owns the wire/serde representation; `kv` owns document validation and generation conflict resolution and exposes snapshot parts (`DocumentChangeKey` plus Automerge bytes) without depending on `kv-sync`. It does not open sockets or provide authentication, encryption, reconnection, or background synchronization.
+`ofdb-kv-sync` explicitly exchanges self-contained winning KV snapshots over a caller-owned transport. Its public `KvSnapshot` type owns the wire/serde representation; `ofdb-kv-store` owns document validation and generation conflict resolution and exposes snapshot parts (`DocumentChangeKey` plus Automerge bytes) without depending on `ofdb-kv-sync`. It does not open sockets or provide authentication, encryption, reconnection, or background synchronization.
 
 ```rust,ignore
 let (left_transport, right_transport) = connected_transports();
 let (left, right) = futures::join!(
-    kv_sync::synchronize(&left_store, &mut left_transport, kv_sync::SyncRole::Initiator, Default::default()),
-    kv_sync::synchronize(&right_store, &mut right_transport, kv_sync::SyncRole::Responder, Default::default()),
+    ofdb_kv_sync::synchronize(&left_store, &mut left_transport, ofdb_kv_sync::SyncRole::Initiator, Default::default()),
+    ofdb_kv_sync::synchronize(&right_store, &mut right_transport, ofdb_kv_sync::SyncRole::Responder, Default::default()),
 );
 left?;
 right?;

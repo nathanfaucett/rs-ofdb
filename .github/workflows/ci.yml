@@ -43,6 +43,18 @@ jobs:
       - name: Cargo clippy
         run: just clippy
 
+      - name: Check metadata and remote dependency isolation
+        run: |
+          cargo metadata --no-deps --format-version 1 > /dev/null
+          if cargo tree -p ofdb-sql --no-default-features --features remote --edges normal | grep -E 'ofdb-(sql-engine|btree|sql-sync)|redb v|automerge v'; then
+            echo "SQL remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
+          if cargo tree -p ofdb-kv --no-default-features --features remote --edges normal | grep -E 'ofdb-(btree|kv-store|kv-sync)|redb v|automerge v'; then
+            echo "KV remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
+
   cargo-tests:
     name: Cargo tests
     needs: lint
@@ -86,4 +98,4 @@ jobs:
         run: just test-sql
 
       - name: Test feature combinations
-        run: cargo hack test --feature-powerset --all-targets
+        run: cargo hack test --feature-powerset --all-targets --workspace

@@ -1,0 +1,95 @@
+[package]
+name = "ofdb-sql"
+description = "Embedded and remote SQL database facade"
+version.workspace = true
+publish = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+std = ["value/std", "uuid/std", "engine?/std"]
+macros = ["dep:macros"]
+sql = ["dep:sql-translator", "sql-translator/std"]
+sync = ["dep:sync", "sync/iroh", "dep:engine", "dep:engine-automerge", "std"]
+redb = ["dep:engine", "dep:engine-redb", "dep:engine-automerge", "std"]
+in-memory = ["engine/in-memory", "dep:engine-automerge", "std"]
+remote = ["dep:client", "client/unix", "dep:tokio", "std"]
+server = ["dep:sql-server", "std"]
+
+[lib]
+name = "ofdb_sql"
+
+[dependencies]
+# Internal SQL dependencies
+client = { version = "0.1", package = "ofdb-sql-client", path = "../sql-client", default-features = false, features = [], optional = true }
+engine = { version = "0.1", package = "ofdb-sql-engine", path = "../sql-engine", default-features = false, features = [], optional = true }
+engine-automerge = { version = "0.1", package = "ofdb-sql-engine-automerge", path = "../sql-engine-automerge", default-features = false, features = [], optional = true }
+engine-redb = { version = "0.1", package = "ofdb-sql-engine-redb", path = "../sql-engine-redb", default-features = false, features = [], optional = true }
+macros = { version = "0.1", package = "ofdb-sql-macros", path = "../sql-macros", default-features = false, features = [], optional = true }
+query = { version = "0.1", package = "ofdb-sql-query", path = "../sql-query", default-features = false, features = [] }
+schema = { version = "0.1", package = "ofdb-sql-schema", path = "../sql-schema", default-features = false, features = [] }
+sql-translator = { version = "0.1", package = "ofdb-sql-translator", path = "../sql-translator", default-features = false, features = [], optional = true }
+sync = { version = "0.1", package = "ofdb-sql-sync", path = "../sql-sync", default-features = false, features = [], optional = true }
+value = { version = "0.1", package = "ofdb-sql-value", path = "../sql-value", default-features = false, features = [] }
+sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [], optional = true }
+
+# External dependencies
+tokio = { version = "1.0", default-features = false, features = ["time"], optional = true }
+uuid = { version = "1.23", default-features = false, features = [] }
+
+[dev-dependencies]
+# Internal test dependencies
+btree = { version = "0.1", package = "ofdb-btree", path = "../btree", default-features = false, features = ["std", "in-memory"] }
+btree-redb = { version = "0.1", package = "ofdb-btree-redb", path = "../btree-redb", default-features = false, features = [] }
+kv = { version = "0.1", package = "ofdb-kv-store", path = "../kv-store", default-features = false, features = [] }
+kv-client = { version = "0.1", package = "ofdb-kv-client", path = "../kv-client", default-features = false, features = ["unix"] }
+kv-server = { version = "0.1", package = "ofdb-kv-server", path = "../kv-server", default-features = false, features = [] }
+kv-sync = { version = "0.1", package = "ofdb-kv-sync", path = "../kv-sync", default-features = false, features = [] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }
+sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+
+ofdb-test = { version = "0.1", package = "ofdb-sql-test", path = "../sql-test", default-features = false, features = [] }
+futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
+tempfile = { version = "3.27", default-features = false, features = [] }
+
+[[test]]
+name = "remote"
+required-features = ["remote", "sql", "redb", "in-memory", "server"]
+
+[[test]]
+name = "cluster_sync"
+required-features = ["sync", "sql", "redb", "in-memory"]
+
+[[test]]
+name = "cluster_chaos"
+required-features = ["sync", "sql", "redb", "in-memory"]
+
+[[test]]
+name = "local_sql"
+required-features = ["sql", "redb", "in-memory"]
+
+[[test]]
+name = "local_kv"
+
+[[test]]
+name = "remote_kv"
+
+[[test]]
+name = "cluster_kv"
+
+[[test]]
+name = "test_macros"
+required-features = ["macros"]
+
+[[example]]
+name = "in_memory"
+required-features = ["sql", "in-memory"]
+
+[[example]]
+name = "redb_automerge"
+required-features = ["sql", "redb"]

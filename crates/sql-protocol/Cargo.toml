@@ -1,0 +1,22 @@
+[package]
+name = "ofdb-sql-protocol"
+description = "Wire conversions for ofdb SQL queries"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+proto = { version = "0.1", path = "../sql-proto", package = "ofdb-sql-proto", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = [] }
+query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }
+schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
+
+# External dependencies
+uuid = { version = "1.0", default-features = false, features = [] }
+
+[features]
+default = []

@@ -1,5 +1,43 @@
 # Domain Context
 
+SQL and KV are separate stores. The row, catalog, index, and engine terms below describe SQL; KV has its own keys, generations, and sync semantics.
+
+## Facade Roles
+
+The repository root is a workspace only, with no root crate. The public facades live in `crates/sql` and `crates/kv`; the underlying KV implementation lives in `crates/kv-store`. The public libraries are `ofdb-sql` for SQL and `ofdb-kv` for KV. Neither library exports the other store's client interface. SQL-specific crate directories use `sql-*`, and their Cargo package names use `ofdb-sql-*`; shared storage crates do not use a SQL prefix.
+
+### Query Operation
+
+A Query Operation is a store-specific read or write request. SQL operations execute statements; KV operations read or change opaque byte values under UTF-8 keys. SQL and KV do not share a query interface. Each store has structured query errors shared by its embedded and remote query interfaces. Remote requests preserve store-specific categories through structured error details, not message matching. An empty SQL statement batch is invalid, not a successful no-op.
+
+### Embedded Handle
+
+An Embedded Handle, named `Database` in each facade, provides query operations against a database in the caller's process. It also provides local transactions and explicit sync setup for that store. Callers do not supply query timestamps or timestamp providers. This restriction does not remove explicit KV expiry settings.
+
+### Remote Handle
+
+A Remote Handle, named `Client` in each facade, provides query operations against a database hosted by another process. Its async connection constructor establishes a connection immediately. Within each store, its query methods, result types, and error types match the embedded query interface. It does not provide local transactions or sync setup; initially, transactions cannot span multiple remote calls.
+
+### Database Host
+
+A Database Host owns the embedded database used to answer remote query requests. Sync setup belongs to the host or embedded caller, not to remote clients.
+
+### Sync Session
+
+A Sync Session explicitly exchanges replicated state between stores of the same kind. Transport, peer selection, authorization, and scheduling belong to the caller. SQL and KV retain their separate sync protocols; the facades do not start background replication automatically.
+
+### CLI
+
+Two separate executables, `sql-cli` and `kv-cli`, use their corresponding published facades for embedded or remote queries. They are one-shot query clients only: neither exposes hosting, sync, administration commands, or an interactive shell. Each invocation selects exactly one explicit target: database path, memory, endpoint URL, or Unix socket path. An explicit database path may create a missing database; no default path is selected or created. SQL input is one query argument or one file/stdin input executed as a single statement batch. KV file/stdin values remain opaque bytes.
+
+SQL results and KV scans use JSON. SQL value tags preserve type distinctions; integers use decimal strings, blobs use base64, and floats use exact 64-bit hexadecimal representations, including numbers nested inside JSON values. Optional `--params-file PATH` uses the same lossless value encoding with the existing positional/named parameter containers. KV get emits raw bytes without an added newline. Successful set/delete commands produce no stdout and exit 0. Scans emit an ordered JSON array of key/value entries, with base64 values. Exit codes are 0 for success, 1 for query failure or a missing KV get, and 2 for invalid command usage; errors go to stderr. Empty values and empty scans are successful. CLI request timeouts are optional positive integer seconds, with no fixed default. Library deadline configuration uses `Duration`. One timeout budget starts after input is read and covers connection plus query completion. Timeout is not proof of rollback or a guarantee of hard interruption of blocking storage work.
+
+### Build Roles
+
+Default features are empty. Remote, embedded storage, hosting, and sync dependencies are enabled explicitly. A remote-only build must not include the local engine, Redb, Automerge, or sync implementation. Each query operation must document its atomicity. Clients do not automatically retry requests. Library request deadlines are caller-configurable, with no fixed default. Embedded and remote construction is explicit, not selected through a combined URI constructor. SQL query interfaces support typed statements and SQL-text helpers; remote SQL starts with existing statement execution.
+
+See [the implementation plan](docs/facade-cli-plan.md) for the settled contracts, publication graph, and remaining validation. The separate facades, host entry points, and one-shot CLIs are implemented. KV errors preserve store categories through facade-owned structured errors. Internal path dependencies have registry version requirements, and publishable packages have descriptions. Registry-backed package verification and external-consumer checks remain blocked until prerequisites are available from a registry; no packages have been published.
+
 ## Engine Transaction
 
 One transaction owns one complete read snapshot or write set for an engine operation batch. A write transaction commits all enlisted catalog, schema, index, Automerge row, and tombstone changes together, or rolls them all back.
@@ -39,6 +77,14 @@ A Sync Manifest maps each sync-owned state-unit identity to its digest. A Sync S
 ## Tombstone
 
 A Tombstone is ordinary deleted-row state for a Logical Row or catalog Generation, never a catalog value column. For reusable catalog names, it participates in selecting the greatest Generation but does not appear in search results or allow fallback to an older live Generation. Later changes to that Generation are Superseded; they are retained as replication facts but do not alter visible state. An explicit Restore creates a new Generation.
+
+## KV Store
+
+A KV Store holds opaque byte values under UTF-8 keys, with Automerge-backed history and tombstones. The greatest UUIDv7 generation determines visible state. Same-generation divergent histories are rejected rather than resolved with last-writer-wins.
+
+## KV Expiry
+
+KV Expiry is an optional absolute Unix-millisecond deadline. A value is hidden when the read time reaches that deadline. Expiry does not tombstone the generation; it is not a relative TTL.
 
 ## KV Key
 

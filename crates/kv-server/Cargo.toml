@@ -1,5 +1,6 @@
 [package]
-name = "kv-server"
+name = "ofdb-kv-server"
+description = "gRPC server for ofdb KV stores"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,9 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 # Internal dependencies
-btree = { path = "../btree", default-features = false, features = ["std"] }
-kv = { path = "../kv", default-features = false, features = [] }
-proto-kv = { path = "../proto-kv", default-features = false, features = [] }
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
+kv = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [] }
+proto-kv = { version = "0.1", path = "../proto-kv", package = "ofdb-kv-proto", default-features = false, features = [] }
 
 
 # External dependencies
@@ -21,7 +22,7 @@ tonic = { version = "0.14", default-features = false, features = ["transport", "
 
 [dev-dependencies]
 # Internal dependencies
-kv-client = { path = "../kv-client", default-features = false, features = [] }
+kv-client = { version = "0.1", path = "../kv-client", package = "ofdb-kv-client", default-features = false, features = [] }
 
 # External dependencies
 tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }

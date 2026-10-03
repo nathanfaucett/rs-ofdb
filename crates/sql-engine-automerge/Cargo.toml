@@ -1,0 +1,40 @@
+[package]
+name = "ofdb-sql-engine-automerge"
+description = "Automerge row codec for the ofdb SQL engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "engine_automerge"
+path = "src/lib.rs"
+
+[dependencies]
+# internal dependencies
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [] }
+btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["std", "in-memory"] }
+sync = { version = "0.1", path = "../sql-sync", package = "ofdb-sql-sync", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["std"] }
+
+# external dependencies
+automerge = { version = "0.9", default-features = false, features = [] }
+async-stream = { version = "0.3", default-features = false, features = [] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+uuid = { version = "1.23", default-features = false, features = ["v7"] }
+
+[dev-dependencies]
+# internal dependencies
+engine-redb = { version = "0.1", path = "../sql-engine-redb", package = "ofdb-sql-engine-redb", default-features = false, features = [] }
+query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }
+schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
+sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = [] }
+
+# external dependencies
+futures = { version = "0.3", default-features = false, features = ["async-await", "executor"] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }

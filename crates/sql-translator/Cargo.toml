@@ -1,5 +1,5 @@
 [package]
-name = "sql-translator"
+name = "ofdb-sql-translator"
 description = "SQL translator"
 version = "0.1.0"
 authors.workspace = true
@@ -26,9 +26,9 @@ wasm = [
 ]
 
 [dependencies]
-query = { path = "../query", default-features = false, features = [] }
-schema = { path = "../schema", default-features = false, features = [] }
-value = { path = "../value", default-features = false, features = ["serde_json"] }
+query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }
+schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["serde_json"] }
 
 sqlparser = { version = "0.62", default-features = false, features = [] }
 thiserror = { version = "2.0", default-features = false, features = [] }

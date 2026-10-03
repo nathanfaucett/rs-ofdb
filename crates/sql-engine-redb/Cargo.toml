@@ -1,0 +1,26 @@
+[package]
+name = "ofdb-sql-engine-redb"
+description = "Redb backend for the ofdb SQL engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "engine_redb"
+path = "src/lib.rs"
+
+[dependencies]
+# internal dependencies
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [] }
+btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [] }
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["std"] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["redb", "std"] }
+
+# external dependencies
+async-stream = { version = "0.3", default-features = false, features = [] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }
+uuid = { version = "1.23", default-features = false, features = ["v7"] }

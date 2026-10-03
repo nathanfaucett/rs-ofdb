@@ -1,9 +1,19 @@
-mod document_id;
+#![forbid(unsafe_code)]
 
-mod store;
-mod value_document;
+mod error;
 
-pub use document_id::{decode_document_id, encode_document_id};
+#[cfg(feature = "remote")]
+mod client;
+#[cfg(any(feature = "in-memory", feature = "redb"))]
+mod database;
 
-pub use store::{KvStore, KvTransaction, TimestampProvider};
-pub use value_document::ValueState;
+#[cfg(feature = "remote")]
+pub use client::Client;
+#[cfg(any(feature = "in-memory", feature = "redb"))]
+pub use database::Database;
+pub use error::{Error, ErrorKind};
+
+#[cfg(all(test, feature = "remote"))]
+mod error_tests;
+#[cfg(feature = "server")]
+pub use kv_server::Server;

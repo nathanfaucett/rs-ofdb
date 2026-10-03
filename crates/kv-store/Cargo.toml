@@ -1,0 +1,30 @@
+[package]
+name = "ofdb-kv-store"
+description = "Automerge-backed key-value storage for ofdb"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal dependencies
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
+btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
+
+# External dependencies
+automerge = { version = "0.9", default-features = false, features = [] }
+
+futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
+uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
+
+[dev-dependencies]
+# Internal dependencies
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["in-memory", "std"] }
+btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [] }
+
+# External dependencies
+async-stream = { version = "0.3", default-features = false, features = [] }
+futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
+redb = { version = "4.3", default-features = false, features = ["uuid"] }

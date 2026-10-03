@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use btree::BTree;
+use btree::{BTree, BTreeError};
 use kv::KvStore;
 use proto_kv as proto;
 use proto_kv::kvdb::{
@@ -252,6 +252,26 @@ fn current_time_millis() -> Result<i64, Status> {
     i64::try_from(millis).map_err(status_from_error)
 }
 
-fn status_from_error(error: impl std::fmt::Display) -> Status {
-    Status::internal(error.to_string())
+fn status_from_error(error: impl std::error::Error + 'static) -> Status {
+    let kind = if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<BTreeError>()
+    {
+        match error {
+            BTreeError::InvalidDocument => proto::ErrorKind::InvalidDocument,
+            BTreeError::TypeMismatch => proto::ErrorKind::TypeMismatch,
+            BTreeError::Conflict => proto::ErrorKind::Conflict,
+            BTreeError::CommitFailed => proto::ErrorKind::CommitFailed,
+            BTreeError::RollbackFailed => proto::ErrorKind::RollbackFailed,
+            BTreeError::UnsupportedOperation => proto::ErrorKind::UnsupportedOperation,
+            BTreeError::Custom(_) => proto::ErrorKind::Storage,
+        }
+    } else {
+        proto::ErrorKind::Internal
+    };
+    let message = error.to_string();
+    let details = proto::encode_error_details(kind, &message);
+    Status::with_details(
+        tonic::Code::Internal,
+        message,
+        tonic::codegen::Bytes::from(details),
+    )
 }

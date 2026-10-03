@@ -1,5 +1,6 @@
 [package]
-name = "btree-redb"
+name = "ofdb-btree-redb"
+description = "Redb storage adapter for ofdb-btree"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -17,8 +18,8 @@ default = []
 
 [dependencies]
 # internal dependencies
-btree = { path = "../btree", default-features = false }
-value = { path = "../value", default-features = false }
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false }
 
 async-stream = { version = "0.3", default-features = false, features = [] }
 

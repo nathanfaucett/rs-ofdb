@@ -1,7 +1,7 @@
 [package]
-name = "btree-automerge"
+name = "ofdb-btree-automerge"
+description = "Automerge storage adapter for ofdb-btree"
 version = "0.1.0"
-publish = false
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ default = []
 
 [dependencies]
 # internal dependencies
-btree = { path = "../btree", default-features = false, features = ["std"] }
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
 
 async-stream = { version = "0.3", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = [
@@ -33,7 +33,7 @@ serde = { version = "1.0", default-features = false, features = ["std", "derive"
 base64 = { version = "0.21", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-btree = { path = "../btree", default-features = false, features = [
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
   "in-memory",
   "std",
 ] }

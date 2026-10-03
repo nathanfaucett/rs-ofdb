@@ -33,7 +33,7 @@ test:
     cargo hack test --feature-powerset --workspace --all-targets
 
 test-sql:
-    cargo test --test sql_select
+    cargo test -p ofdb-sql --features sql,redb,in-memory --test local_sql
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
@@ -41,11 +41,11 @@ clippy:
 clippy-fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty --broken-code -- -D warnings
 
-crap *args:
-    RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --all-targets --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info --fail-above {{ args }}
+crap threshold="30":
+    RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --all-targets --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info --threshold {{ threshold }} --fail-above
 
 crap-summary:
-    just crap --summary
+    RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --all-targets --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info --summary
 
 cov:
     RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --open

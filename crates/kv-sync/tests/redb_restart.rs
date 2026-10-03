@@ -5,7 +5,7 @@ use btree_redb::{Bytes, RedbByteBTree, table_definition};
 use futures::{SinkExt, executor::block_on, join, stream::StreamExt};
 use futures_channel::mpsc;
 use kv::KvStore;
-use kv_sync::{Config, SyncRole, SyncTransport, synchronize};
+use ofdb_kv_sync::{Config, SyncRole, SyncTransport, synchronize};
 use redb::Database;
 use uuid::Uuid;
 

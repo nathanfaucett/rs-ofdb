@@ -1,0 +1,22 @@
+[package]
+name = "ofdb-sql-macros"
+description = "Derive macros for db"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate = { version = "3.5", default-features = false, features = [] }
+quote = { version = "1.0", default-features = false, features = [] }
+syn = { version = "2.0", default-features = false, features = ["derive", "parsing", "proc-macro"] }
+
+[dev-dependencies]
+
+uuid = { version = "1.23", default-features = false, features = [] }
+ofdb_sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-features = false, features = ["macros"] }

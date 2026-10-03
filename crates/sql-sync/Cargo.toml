@@ -1,0 +1,41 @@
+[package]
+name = "ofdb-sql-sync"
+description = "Transport-neutral synchronization for engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "sync"
+path = "src/lib.rs"
+
+[features]
+iroh = ["dep:iroh"]
+
+[dependencies]
+# internal dependencies
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = [] }
+
+# external dependencies
+iroh = { version = "1.1", default-features = false, features = ["tls-ring"], optional = true }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+sha2 = { version = "0.10", default-features = false, features = [] }
+uuid = { version = "1.23", default-features = false, features = ["serde"] }
+thiserror = { version = "2.0", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = [] }
+
+[dev-dependencies]
+# internal dependencies
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["in-memory", "std"] }
+
+schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
+sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = [] }
+value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = [] }
+
+# external dependencies
+futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "rt", "time"] }

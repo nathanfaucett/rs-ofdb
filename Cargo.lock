@@ -62,6 +62,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anstyle"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -389,47 +395,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btree"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "futures",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "btree-automerge"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "automerge 0.9.0",
- "base64 0.21.7",
- "btree",
- "futures",
- "serde",
- "sha2 0.10.9",
- "uuid",
-]
-
-[[package]]
-name = "btree-redb"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "btree",
- "dashmap",
- "futures",
- "redb",
- "serde",
- "thiserror 2.0.18",
- "uuid",
- "value",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,12 +411,6 @@ name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
-
-[[package]]
-name = "cast"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "cc"
@@ -515,27 +474,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "client"
-version = "0.1.0"
+name = "clap"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946"
 dependencies = [
- "engine",
- "hyper-util",
- "proto",
- "protocol",
- "query",
- "tokio",
- "tonic",
- "tower",
+ "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
-name = "clipboard-win"
-version = "5.4.1"
+name = "clap_builder"
+version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
 dependencies = [
- "error-code",
+ "anstyle",
+ "clap_lex",
 ]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "clap_lex"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cmov"
@@ -569,16 +543,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
-]
-
-[[package]]
-name = "console_error_panic_hook"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
-dependencies = [
- "cfg-if",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -921,70 +885,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
-name = "endian-type"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "869b0adbda23651a9c5c0c3d270aac9fcb52e8622a8f2b17e57802d7791962f2"
-
-[[package]]
-name = "engine"
-version = "0.1.0"
-dependencies = [
- "async-lock",
- "async-stream",
- "btree",
- "futures",
- "postcard",
- "query",
- "schema",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tsify",
- "uuid",
- "value",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "engine-automerge"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "automerge 0.9.0",
- "btree",
- "btree-automerge",
- "engine",
- "engine-redb",
- "futures",
- "postcard",
- "query",
- "redb",
- "schema",
- "serde",
- "sql-translator",
- "sync",
- "uuid",
- "value",
-]
-
-[[package]]
-name = "engine-redb"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "btree",
- "btree-redb",
- "engine",
- "futures",
- "redb",
- "uuid",
- "value",
-]
-
-[[package]]
 name = "enum-assoc"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1012,12 +912,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "error-code"
-version = "3.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
-
-[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1036,15 +930,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
-]
-
-[[package]]
-name = "examples-util"
-version = "0.1.0"
-dependencies = [
- "engine",
- "query",
- "rustyline",
 ]
 
 [[package]]
@@ -1385,15 +1270,6 @@ dependencies = [
  "leb128",
  "thiserror 2.0.18",
  "web-sys",
-]
-
-[[package]]
-name = "home"
-version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1967,60 +1843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "automerge 0.9.0",
- "btree",
- "btree-automerge",
- "btree-redb",
- "futures",
- "redb",
- "uuid",
-]
-
-[[package]]
-name = "kv-client"
-version = "0.1.0"
-dependencies = [
- "hyper-util",
- "proto-kv",
- "tokio",
- "tonic",
- "tower",
-]
-
-[[package]]
-name = "kv-server"
-version = "0.1.0"
-dependencies = [
- "btree",
- "kv",
- "kv-client",
- "proto-kv",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
-name = "kv-sync"
-version = "0.1.0"
-dependencies = [
- "btree",
- "btree-automerge",
- "btree-redb",
- "futures",
- "futures-channel",
- "kv",
- "postcard",
- "redb",
- "serde",
- "uuid",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2043,12 +1865,6 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
-
-[[package]]
-name = "libm"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "linux-raw-sys"
@@ -2112,17 +1928,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 
 [[package]]
-name = "macros"
-version = "0.1.0"
-dependencies = [
- "ofdb",
- "quote",
- "syn 2.0.117",
- "uuid",
- "value",
-]
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2148,16 +1953,6 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
-
-[[package]]
-name = "minicov"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4869b6a491569605d66d3952bcdf03df789e5b536e5f0cf7758a7f08a55ae24d"
-dependencies = [
- "cc",
- "walkdir",
-]
 
 [[package]]
 name = "miniz_oxide"
@@ -2439,27 +2234,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nibble_vec"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
-dependencies = [
- "smallvec",
-]
-
-[[package]]
-name = "nix"
-version = "0.31.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
-
-[[package]]
 name = "noq"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2543,7 +2317,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
- "libm",
 ]
 
 [[package]]
@@ -2659,33 +2432,393 @@ dependencies = [
 ]
 
 [[package]]
-name = "ofdb"
+name = "ofdb-btree"
 version = "0.1.0"
 dependencies = [
- "btree",
- "btree-redb",
- "client",
- "engine",
- "engine-automerge",
- "engine-redb",
- "examples-util",
+ "async-lock",
+ "async-stream",
  "futures",
- "kv",
- "kv-client",
- "kv-server",
- "kv-sync",
- "macros",
- "query",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ofdb-btree-automerge"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "automerge 0.9.0",
+ "base64 0.21.7",
+ "futures",
+ "ofdb-btree",
+ "serde",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-btree-redb"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "dashmap",
+ "futures",
+ "ofdb-btree",
+ "ofdb-sql-value",
  "redb",
- "schema",
- "server",
- "sql-translator",
- "sync",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "hyper-util",
+ "ofdb-btree",
+ "ofdb-btree-redb",
+ "ofdb-kv-proto",
+ "ofdb-kv-server",
+ "ofdb-kv-store",
+ "ofdb-kv-sync",
+ "redb",
+ "tokio",
+ "tonic",
+ "tower",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv-cli"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "ofdb-kv",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "ofdb-kv-client"
+version = "0.1.0"
+dependencies = [
+ "hyper-util",
+ "ofdb-kv-proto",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
+name = "ofdb-kv-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "ofdb-kv-server"
+version = "0.1.0"
+dependencies = [
+ "ofdb-btree",
+ "ofdb-kv-client",
+ "ofdb-kv-proto",
+ "ofdb-kv-store",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
+name = "ofdb-kv-store"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "automerge 0.9.0",
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-automerge",
+ "ofdb-btree-redb",
+ "redb",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-kv-sync"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "futures-channel",
+ "ofdb-btree",
+ "ofdb-btree-automerge",
+ "ofdb-btree-redb",
+ "ofdb-kv-store",
+ "postcard",
+ "redb",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-redb",
+ "ofdb-kv-client",
+ "ofdb-kv-server",
+ "ofdb-kv-store",
+ "ofdb-kv-sync",
+ "ofdb-sql-client",
+ "ofdb-sql-engine",
+ "ofdb-sql-engine-automerge",
+ "ofdb-sql-engine-redb",
+ "ofdb-sql-macros",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-server",
+ "ofdb-sql-sync",
+ "ofdb-sql-test",
+ "ofdb-sql-translator",
+ "ofdb-sql-value",
+ "redb",
  "tempfile",
- "test",
  "tokio",
  "uuid",
- "value",
+]
+
+[[package]]
+name = "ofdb-sql-cli"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "ofdb-sql",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "ofdb-sql-client"
+version = "0.1.0"
+dependencies = [
+ "hyper-util",
+ "ofdb-sql-proto",
+ "ofdb-sql-protocol",
+ "ofdb-sql-query",
+ "tokio",
+ "tonic",
+ "tower",
+]
+
+[[package]]
+name = "ofdb-sql-engine"
+version = "0.1.0"
+dependencies = [
+ "async-lock",
+ "async-stream",
+ "futures",
+ "ofdb-btree",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-value",
+ "postcard",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "ofdb-sql-engine-automerge"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "automerge 0.9.0",
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-automerge",
+ "ofdb-sql-engine",
+ "ofdb-sql-engine-redb",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-sync",
+ "ofdb-sql-translator",
+ "ofdb-sql-value",
+ "postcard",
+ "redb",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-engine-redb"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-redb",
+ "ofdb-sql-engine",
+ "ofdb-sql-value",
+ "redb",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-macros"
+version = "0.1.0"
+dependencies = [
+ "ofdb-sql",
+ "proc-macro-crate",
+ "quote",
+ "syn 2.0.117",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "ofdb-sql-protocol"
+version = "0.1.0"
+dependencies = [
+ "ofdb-sql-proto",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-value",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-query"
+version = "0.1.0"
+dependencies = [
+ "ofdb-sql-schema",
+ "ofdb-sql-value",
+ "serde",
+ "serde-wasm-bindgen",
+ "thiserror 2.0.18",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "ofdb-sql-schema"
+version = "0.1.0"
+dependencies = [
+ "ofdb-sql-value",
+ "serde",
+ "serde-wasm-bindgen",
+ "tsify",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "ofdb-sql-server"
+version = "0.1.0"
+dependencies = [
+ "ofdb-sql-client",
+ "ofdb-sql-engine",
+ "ofdb-sql-engine-automerge",
+ "ofdb-sql-proto",
+ "ofdb-sql-protocol",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-value",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
+name = "ofdb-sql-sync"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "iroh",
+ "ofdb-sql-engine",
+ "ofdb-sql-schema",
+ "ofdb-sql-translator",
+ "ofdb-sql-value",
+ "postcard",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-test"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-sql-engine",
+ "ofdb-sql-engine-automerge",
+ "ofdb-sql-engine-redb",
+ "ofdb-sql-sync",
+ "ofdb-sql-translator",
+ "ofdb-sql-value",
+ "rand",
+ "redb",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ofdb-sql-translator"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
+ "ofdb-sql-value",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sqlparser",
+ "thiserror 2.0.18",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "ofdb-sql-value"
+version = "0.1.0"
+dependencies = [
+ "automerge 0.10.0",
+ "autosurgeon",
+ "postcard",
+ "redb",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2693,12 +2826,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "oorandom"
-version = "11.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "opaque-debug"
@@ -2973,53 +3100,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proto"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "proto-kv"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "protocol"
-version = "0.1.0"
-dependencies = [
- "proto",
- "query",
- "schema",
- "uuid",
- "value",
-]
-
-[[package]]
-name = "query"
-version = "0.1.0"
-dependencies = [
- "schema",
- "serde",
- "serde-wasm-bindgen",
- "thiserror 2.0.18",
- "tsify",
- "uuid",
- "value",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "quick-xml"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3042,16 +3122,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "radix_trie"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b4431027dcd37fc2a73ef740b5f233aa805897935b8bce0195e41bbf9a3289a"
-dependencies = [
- "endian-type",
- "nibble_vec",
-]
 
 [[package]]
 name = "rand"
@@ -3288,27 +3358,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "rustyline"
-version = "18.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a990b25f351b25139ddc7f21ee3f6f56f86d6846b74ac8fad3a719a287cd4a0"
-dependencies = [
- "bitflags",
- "cfg-if",
- "clipboard-win",
- "home",
- "libc",
- "log",
- "memchr",
- "nix",
- "radix_trie",
- "unicode-segmentation",
- "unicode-width",
- "utf8parse",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3330,17 +3379,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "schema"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde-wasm-bindgen",
- "tsify",
- "value",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3479,23 +3517,6 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct",
  "serde",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "client",
- "engine",
- "engine-automerge",
- "proto",
- "protocol",
- "query",
- "schema",
- "tokio",
- "tokio-stream",
- "tonic",
- "value",
 ]
 
 [[package]]
@@ -3676,24 +3697,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sql-translator"
-version = "0.1.0"
-dependencies = [
- "futures",
- "query",
- "schema",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "sqlparser",
- "thiserror 2.0.18",
- "tsify",
- "uuid",
- "value",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "sqlparser"
 version = "0.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3758,24 +3761,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sync"
-version = "0.1.0"
-dependencies = [
- "engine",
- "futures",
- "iroh",
- "postcard",
- "schema",
- "serde",
- "sha2 0.10.9",
- "sql-translator",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
- "value",
-]
-
-[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3827,22 +3812,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "test"
-version = "0.1.0"
-dependencies = [
- "engine",
- "engine-automerge",
- "engine-redb",
- "futures",
- "rand",
- "redb",
- "sql-translator",
- "sync",
- "thiserror 2.0.18",
- "value",
 ]
 
 [[package]]
@@ -4295,12 +4264,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
-name = "unicode-width"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
-
-[[package]]
 name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4342,12 +4305,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
-name = "utf8parse"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
 name = "uuid"
 version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4365,22 +4322,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "value"
-version = "0.1.0"
-dependencies = [
- "automerge 0.10.0",
- "autosurgeon",
- "postcard",
- "redb",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "tsify",
- "uuid",
- "wasm-bindgen",
-]
 
 [[package]]
 name = "version_check"
@@ -4429,24 +4370,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
  "wit-bindgen 0.51.0",
-]
-
-[[package]]
-name = "wasm"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "console_error_panic_hook",
- "engine",
- "futures",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "sql-translator",
- "tsify",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -4503,45 +4426,6 @@ checksum = "23939e44bb9a5d7576fa2b563dc2e136628f1224e88a8deed09e04858b77871f"
 dependencies = [
  "unicode-ident",
 ]
-
-[[package]]
-name = "wasm-bindgen-test"
-version = "0.3.75"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d16931d57bcdd6a0dcc11254bdd1388827690c1b6807f0d2836f59a4f9eb30ac"
-dependencies = [
- "async-trait",
- "cast",
- "js-sys",
- "libm",
- "minicov",
- "nu-ansi-term",
- "num-traits",
- "oorandom",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test-macro",
- "wasm-bindgen-test-shared",
-]
-
-[[package]]
-name = "wasm-bindgen-test-macro"
-version = "0.3.75"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fccaddcb2cd722baa7453b4c3d2cb2a3071597bb91f7a4373e8775bdb151778c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "wasm-bindgen-test-shared"
-version = "0.2.125"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3746ad029217960123cf2ebf939dda51eb931ba9f8f09c117e39c820b96aa794"
 
 [[package]]
 name = "wasm-encoder"

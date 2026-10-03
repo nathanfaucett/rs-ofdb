@@ -1,5 +1,6 @@
 [package]
-name = "kv-client"
+name = "ofdb-kv-client"
+description = "gRPC client for ofdb KV services"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -10,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 # Internal dependencies
 
-proto-kv = { path = "../proto-kv", default-features = false, features = [] }
+proto-kv = { version = "0.1", path = "../proto-kv", package = "ofdb-kv-proto", default-features = false, features = [] }
 
 # External dependencies
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
