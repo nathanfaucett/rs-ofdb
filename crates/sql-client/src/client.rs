@@ -1,7 +1,11 @@
 use proto::{ExecuteRequest, query_service_client::QueryServiceClient};
 use protocol::{decode_error_detail, query_result_from_proto, statement_to_proto};
 use query::{QueryError, QueryErrorKind, QueryResult, Statement};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
+
+use crate::Transaction;
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -42,6 +46,16 @@ impl Client {
         Ok(Self { channel })
     }
 
+    pub async fn transaction(&self) -> Result<Transaction, QueryError> {
+        let mut client = QueryServiceClient::new(self.channel.clone());
+        let (sender, receiver) = mpsc::channel(1);
+        let response = client
+            .transaction(ReceiverStream::new(receiver))
+            .await
+            .map_err(status_error)?;
+        Transaction::new(sender, response.into_inner()).await
+    }
+
     pub async fn execute(
         &self,
         statements: Vec<Statement>,
@@ -63,7 +77,7 @@ impl Client {
     }
 }
 
-fn status_error(status: tonic::Status) -> QueryError {
+pub(crate) fn status_error(status: tonic::Status) -> QueryError {
     if let Some((kind, message)) = decode_error_detail(status.details()) {
         return QueryError::new(kind, message);
     }

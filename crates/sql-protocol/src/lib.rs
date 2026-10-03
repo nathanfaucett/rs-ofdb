@@ -14,7 +14,7 @@ mod tests;
 
 pub use error::QueryServiceError;
 pub use error::{decode_error_detail, encode_error_detail};
-pub use executor::QueryExecutor;
+pub use executor::{QueryExecutor, QueryTransaction};
 pub use query::{
     query_column_from_proto, query_column_to_proto, query_expr_from_proto, query_expr_to_proto,
     query_expr_value_from_proto, query_expr_value_to_proto, query_from_proto,

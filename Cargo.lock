@@ -2614,6 +2614,7 @@ dependencies = [
  "ofdb-sql-protocol",
  "ofdb-sql-query",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower",
 ]

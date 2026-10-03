@@ -8,7 +8,7 @@ use std::{
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb", test))]
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgGroup, Parser, Subcommand};
-#[cfg(feature = "remote")]
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 use ofdb_kv::Client;
 #[cfg(any(feature = "in-memory", feature = "redb"))]
 use ofdb_kv::Database;
@@ -100,7 +100,8 @@ async fn main() -> ExitCode {
             #[cfg(feature = "in-memory")]
             {
                 let database = Database::in_memory();
-                return execute_database(&database, &args.command, _input).await;
+                let client = database.client();
+                return execute_client(&client, &args.command, _input).await;
             }
             #[cfg(not(feature = "in-memory"))]
             return Err("kv-cli was built without the `in-memory` feature".to_owned());
@@ -109,7 +110,8 @@ async fn main() -> ExitCode {
             #[cfg(feature = "redb")]
             {
                 let database = Database::open(_path).map_err(|error| error.to_string())?;
-                return execute_database(&database, &args.command, _input).await;
+                let client = database.client();
+                return execute_client(&client, &args.command, _input).await;
             }
             #[cfg(not(feature = "redb"))]
             return Err("kv-cli was built without the `redb` feature".to_owned());
@@ -148,7 +150,7 @@ fn read_input(path: &PathBuf) -> io::Result<Vec<u8>> {
     }
 }
 
-#[cfg(feature = "remote")]
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 async fn execute_client(
     client: &Client,
     command: &Command,
@@ -195,61 +197,6 @@ async fn execute_client(
                 .map_err(|error| error.to_string())?,
         ),
         Command::ScanAll => json_scan(client.scan_all().await.map_err(|error| error.to_string())?),
-    }
-}
-
-#[cfg(any(feature = "in-memory", feature = "redb"))]
-async fn execute_database(
-    database: &Database,
-    command: &Command,
-    input: Option<Vec<u8>>,
-) -> Result<Option<Vec<u8>>, String> {
-    match command {
-        Command::Get { key } => database
-            .get(key)
-            .await
-            .map_err(|error| error.to_string())?
-            .map(Some)
-            .ok_or_else(|| format!("key not found: {key}")),
-        Command::Set {
-            key,
-            value,
-            expires_at,
-            ..
-        } => {
-            let bytes =
-                input.unwrap_or_else(|| value.as_deref().unwrap_or_default().as_bytes().to_vec());
-            database
-                .set(key, bytes, *expires_at)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(None)
-        }
-        Command::Delete { key } => {
-            database
-                .delete(key)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(None)
-        }
-        Command::Scan { start, end } => json_scan(
-            database
-                .scan(start, end)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        Command::ScanPrefix { prefix } => json_scan(
-            database
-                .scan_prefix(prefix)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        Command::ScanAll => json_scan(
-            database
-                .scan_all()
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
     }
 }
 

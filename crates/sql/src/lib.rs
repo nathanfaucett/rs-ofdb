@@ -4,15 +4,15 @@
 extern crate alloc;
 
 mod api;
-#[cfg(feature = "remote")]
+#[cfg(any(feature = "remote", feature = "redb", feature = "in-memory"))]
 mod client;
 #[cfg(any(feature = "redb", feature = "in-memory"))]
 mod database;
 mod error;
 
 pub use api::*;
-#[cfg(feature = "remote")]
-pub use client::Client;
+#[cfg(any(feature = "remote", feature = "redb", feature = "in-memory"))]
+pub use client::{Client, Transaction};
 #[cfg(any(feature = "redb", feature = "in-memory"))]
-pub use database::{Database, DatabaseTransaction};
+pub use database::Database;
 pub use error::{Error, ErrorKind};

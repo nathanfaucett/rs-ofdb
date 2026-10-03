@@ -483,6 +483,24 @@ message Statement {
 
 service QueryService {
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc Transaction(stream TransactionRequest) returns (stream TransactionResponse);
+}
+
+message TransactionRequest {
+  oneof command {
+    ExecuteRequest execute = 1;
+    google.protobuf.Empty commit = 2;
+    google.protobuf.Empty rollback = 3;
+  }
+}
+
+message TransactionResponse {
+  oneof outcome {
+    google.protobuf.Empty ready = 1;
+    ExecuteResponse executed = 2;
+    google.protobuf.Empty completed = 3;
+    bytes error_detail = 4;
+  }
 }
 
 message ExecuteRequest {

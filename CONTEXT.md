@@ -12,11 +12,17 @@ A Query Operation is a store-specific read or write request. SQL operations exec
 
 ### Embedded Handle
 
-An Embedded Handle, named `Database` in each facade, provides query operations against a database in the caller's process. It also provides local transactions and explicit sync setup for that store. Callers do not supply query timestamps or timestamp providers. This restriction does not remove explicit KV expiry settings.
+An Embedded Handle, named `Database` in each facade, constructs and controls a database in the caller's process. It provides explicit sync and hosting setup, but is not the facade query or transaction API. Callers use `Database::client()` for embedded queries and SQL transactions. Callers do not supply query timestamps or timestamp providers; explicit KV expiry settings remain supported.
 
-### Remote Handle
+### Query Handle
 
-A Remote Handle, named `Client` in each facade, provides query operations against a database hosted by another process. Its async connection constructor establishes a connection immediately. Within each store, its query methods, result types, and error types match the embedded query interface. It does not provide local transactions or sync setup; initially, transactions cannot span multiple remote calls.
+A Query Handle, named `Client` in each facade, is the only facade API for ordinary queries against embedded storage or a database hosted by another process. It includes reads and writes. The SQL client also creates explicit transactions for embedded and remote databases. Clients do not provide hosting or sync setup. SQL and KV clients remain separate types with separate query interfaces.
+
+`Client` supports embedded and remote queries. `Database::client()` is the only embedded client constructor. It creates an owned handle that shares storage and remains usable after the `Database` handle is dropped. Storage construction stays on `Database`; remote connection constructors stay on `Client`. `Database` does not expose duplicate query methods or SQL transaction creation. Both CLIs use `Client` for query dispatch.
+
+A remote client's async connection constructor establishes a connection immediately. `Client::transaction()` establishes an SQL transaction for embedded or remote storage. Remote transactions use one server-side transaction stream across calls; dropping an uncommitted transaction rolls it back when the server observes stream closure. `Client::with_deadline(Duration)` applies to queries and transaction operations, with no default. Timeout does not prove rollback or guarantee interruption of blocking storage work. The CLI retains one budget for construction plus query.
+
+Clients support `Clone`. Embedded clones share storage; remote clones share the connection. Each clone keeps its own deadline setting. SQL `Client` exposes typed statement execution, SQL-gated `execute_sql()`, generic translator helpers, and explicit transactions. `Database` does not expose ordinary query methods or transaction creation. SQL-text queries use one deadline budget for translation plus execution. Library query deadlines do not include connection establishment. Embedded queries with a configured deadline require a Tokio runtime with time enabled; embedded queries without a deadline remain usable without Tokio.
 
 ### Database Host
 
@@ -36,7 +42,7 @@ SQL results and KV scans use JSON. SQL value tags preserve type distinctions; in
 
 Default features are empty. Remote, embedded storage, hosting, and sync dependencies are enabled explicitly. A remote-only build must not include the local engine, Redb, Automerge, or sync implementation. Each query operation must document its atomicity. Clients do not automatically retry requests. Library request deadlines are caller-configurable, with no fixed default. Embedded and remote construction is explicit, not selected through a combined URI constructor. SQL query interfaces support typed statements and SQL-text helpers; remote SQL starts with existing statement execution.
 
-See [the implementation plan](docs/facade-cli-plan.md) for the settled contracts, publication graph, and remaining validation. The separate facades, host entry points, and one-shot CLIs are implemented. KV errors preserve store categories through facade-owned structured errors. Internal path dependencies have registry version requirements, and publishable packages have descriptions. Registry-backed package verification and external-consumer checks remain blocked until prerequisites are available from a registry; no packages have been published.
+See [the embedded client plan](docs/embedded-client-plan.md) for the settled contract and focused validation. The separate facades, embedded and remote query clients, host entry points, and one-shot CLIs are implemented. KV errors preserve store categories through facade-owned structured errors. Internal path dependencies have registry version requirements, and publishable packages have descriptions. Registry-backed package verification and external-consumer checks remain blocked until prerequisites are available from a registry; no packages have been published.
 
 ## Engine Transaction
 

@@ -10,14 +10,14 @@ use engine::EngineTransaction;
 use engine::InMemoryKernel;
 use query::QueryError;
 use query::{QueryParams, QueryResult, Statement, Translator};
-use schema::{IndexSchema, TableSchema};
+
 #[cfg(feature = "sync")]
 use sync::{
     SessionConfig, SyncError, SyncManifest, SyncResult, SyncRole, SyncStateUnit, SyncTransport,
     apply_sync_state_for, export_sync_state_for, sync_manifest_for,
     synchronize as synchronize_engine,
 };
-use value::{FromRow, Row, Value};
+use value::FromRow;
 
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use engine_automerge::AutomergeRowCodec;
@@ -26,61 +26,39 @@ use engine_redb::{RedbKernel, redb};
 
 /// An application-facing database using the Automerge row codec.
 #[derive(Clone)]
-pub enum Database {
+pub struct Database {
+    backend: DatabaseBackend,
+}
+
+#[derive(Clone)]
+enum DatabaseBackend {
     #[cfg(feature = "redb")]
     File(Engine<RedbKernel, AutomergeRowCodec>),
     #[cfg(feature = "in-memory")]
     InMemory(Engine<InMemoryKernel, AutomergeRowCodec>),
 }
 
-pub enum DatabaseTransaction {
+pub(crate) enum EmbeddedTransaction {
     #[cfg(feature = "redb")]
     File(Box<EngineTransaction<RedbKernel, AutomergeRowCodec>>),
     #[cfg(feature = "in-memory")]
     InMemory(EngineTransaction<InMemoryKernel, AutomergeRowCodec>),
 }
 
-impl DatabaseTransaction {
-    pub async fn translate_and_execute<T>(
+impl EmbeddedTransaction {
+    pub(crate) async fn execute(
         &mut self,
-        query: &str,
-        translator: &T,
-    ) -> SqlResult<Vec<QueryResult>>
-    where
-        T: Translator,
-    {
+        statements: Vec<Statement>,
+    ) -> SqlResult<Vec<QueryResult>> {
         match self {
             #[cfg(feature = "redb")]
             Self::File(transaction) => transaction
-                .translate_and_execute(query, translator)
+                .execute(statements)
                 .await
                 .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
-                .translate_and_execute(query, translator)
-                .await
-                .map_err(crate::error::from_engine),
-        }
-    }
-
-    pub async fn translate_and_execute_with_params<T>(
-        &mut self,
-        query: &str,
-        params: Option<&QueryParams>,
-        translator: &T,
-    ) -> SqlResult<Vec<QueryResult>>
-    where
-        T: Translator,
-    {
-        match self {
-            #[cfg(feature = "redb")]
-            Self::File(transaction) => transaction
-                .translate_and_execute_with_params(query, params, translator)
-                .await
-                .map_err(crate::error::from_engine),
-            #[cfg(feature = "in-memory")]
-            Self::InMemory(transaction) => transaction
-                .translate_and_execute_with_params(query, params, translator)
+                .execute(statements)
                 .await
                 .map_err(crate::error::from_engine),
         }
@@ -121,70 +99,74 @@ type SqlResult<T> = Result<T, QueryError>;
 
 macro_rules! database_call {
     ($database:expr, |$engine:ident| $body:expr) => {{
-        match $database {
+        match &$database.backend {
             #[cfg(feature = "redb")]
-            Database::File($engine) => $body.map_err(crate::error::from_engine),
+            DatabaseBackend::File($engine) => $body.map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
-            Database::InMemory($engine) => $body.map_err(crate::error::from_engine),
+            DatabaseBackend::InMemory($engine) => $body.map_err(crate::error::from_engine),
         }
     }};
 }
 
 impl Database {
+    pub fn client(&self) -> crate::Client {
+        crate::Client::embedded(self.clone())
+    }
+
     #[cfg(feature = "redb")]
     pub fn open(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
         let database = redb::Database::create(path)
             .map_err(|error| QueryError::new(crate::ErrorKind::Storage, error.to_string()))?;
-        Ok(Self::File(Engine::new(
-            RedbKernel::new(std::sync::Arc::new(database)),
-            AutomergeRowCodec::new(),
-        )))
+        Ok(Self {
+            backend: DatabaseBackend::File(Engine::new(
+                RedbKernel::new(std::sync::Arc::new(database)),
+                AutomergeRowCodec::new(),
+            )),
+        })
     }
 
     #[cfg(feature = "in-memory")]
     pub fn in_memory() -> Self {
-        Self::InMemory(Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new()))
+        Self {
+            backend: DatabaseBackend::InMemory(Engine::new(
+                InMemoryKernel::new(),
+                AutomergeRowCodec::new(),
+            )),
+        }
     }
 
-    pub async fn transaction(&self) -> SqlResult<DatabaseTransaction> {
-        match self {
+    pub(crate) async fn begin_transaction(&self) -> SqlResult<EmbeddedTransaction> {
+        match &self.backend {
             #[cfg(feature = "redb")]
-            Self::File(engine) => engine
+            DatabaseBackend::File(engine) => engine
                 .transaction()
                 .await
                 .map(Box::new)
-                .map(DatabaseTransaction::File)
+                .map(EmbeddedTransaction::File)
                 .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
-            Self::InMemory(engine) => engine
+            DatabaseBackend::InMemory(engine) => engine
                 .transaction()
                 .await
-                .map(DatabaseTransaction::InMemory)
+                .map(EmbeddedTransaction::InMemory)
                 .map_err(crate::error::from_engine),
         }
     }
 
-    pub async fn index_schema(&self, name: &str) -> SqlResult<IndexSchema> {
-        database_call!(self, |engine| engine.index_schema(name).await)
+    pub(crate) async fn query_execute_untimed(
+        &self,
+        statements: Vec<Statement>,
+    ) -> SqlResult<Vec<QueryResult>> {
+        if statements.is_empty() {
+            return Err(QueryError::new(
+                crate::ErrorKind::Validation,
+                "statement batch must not be empty",
+            ));
+        }
+        database_call!(self, |engine| engine.execute(statements).await)
     }
 
-    pub async fn index_lookup(&self, name: &str, values: &Row) -> SqlResult<Option<Row>> {
-        database_call!(self, |engine| engine.index_lookup(name, values).await)
-    }
-
-    pub async fn table_schema(&self, name: &str) -> SqlResult<TableSchema> {
-        database_call!(self, |engine| engine.table_schema(name).await)
-    }
-
-    pub async fn create_table(&self, table_schema: TableSchema) -> SqlResult<()> {
-        database_call!(self, |engine| engine.create_table(table_schema).await)
-    }
-
-    pub async fn drop_table(&self, table_name: &str) -> SqlResult<()> {
-        database_call!(self, |engine| engine.drop_table(table_name).await)
-    }
-
-    pub async fn translate_and_execute_with_params<T>(
+    pub(crate) async fn query_translate_and_execute_with_params<T>(
         &self,
         query: &str,
         params: Option<&QueryParams>,
@@ -200,7 +182,7 @@ impl Database {
         })
     }
 
-    pub async fn translate_and_execute<T>(
+    pub(crate) async fn query_translate_and_execute<T>(
         &self,
         query: &str,
         translator: &T,
@@ -213,7 +195,11 @@ impl Database {
             .await)
     }
 
-    pub async fn translate_and_select<T, U>(&self, query: &str, translator: &T) -> SqlResult<Vec<U>>
+    pub(crate) async fn query_translate_and_select<T, U>(
+        &self,
+        query: &str,
+        translator: &T,
+    ) -> SqlResult<Vec<U>>
     where
         T: Translator,
         U: FromRow,
@@ -223,46 +209,21 @@ impl Database {
             .await)
     }
 
-    pub async fn execute(&self, statements: Vec<Statement>) -> SqlResult<Vec<QueryResult>> {
-        if statements.is_empty() {
-            return Err(QueryError::new(
-                crate::ErrorKind::Validation,
-                "statement batch must not be empty",
-            ));
-        }
-        database_call!(self, |engine| engine.execute(statements).await)
-    }
-
-    #[cfg(feature = "sql")]
-    pub async fn execute_sql(
-        &self,
-        sql: &str,
-        params: Option<&QueryParams>,
-    ) -> SqlResult<Vec<QueryResult>> {
-        use query::Translator;
-
-        let statements = sql_translator::SqlTranslator
-            .translate_with_params(sql, params)
-            .await
-            .map_err(|error| QueryError::new(crate::ErrorKind::Validation, error.to_string()))?;
-        self.execute(statements).await
-    }
-
     #[cfg(feature = "server")]
     pub async fn serve_tcp(
         &self,
         address: std::net::SocketAddr,
         shutdown: impl core::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match self {
+        match &self.backend {
             #[cfg(feature = "redb")]
-            Self::File(engine) => {
+            DatabaseBackend::File(engine) => {
                 crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()))
                     .serve(shutdown)
                     .await
             }
             #[cfg(feature = "in-memory")]
-            Self::InMemory(engine) => {
+            DatabaseBackend::InMemory(engine) => {
                 crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()))
                     .serve(shutdown)
                     .await
@@ -276,15 +237,15 @@ impl Database {
         path: impl Into<std::path::PathBuf>,
         shutdown: impl core::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match self {
+        match &self.backend {
             #[cfg(feature = "redb")]
-            Self::File(engine) => {
+            DatabaseBackend::File(engine) => {
                 crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
                     .serve(shutdown)
                     .await
             }
             #[cfg(feature = "in-memory")]
-            Self::InMemory(engine) => {
+            DatabaseBackend::InMemory(engine) => {
                 crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
                     .serve(shutdown)
                     .await
@@ -305,11 +266,15 @@ impl Database {
     {
         #[cfg(any(feature = "redb", feature = "in-memory",))]
         {
-            match self {
+            match &self.backend {
                 #[cfg(feature = "redb")]
-                Self::File(engine) => synchronize_engine(engine, transport, config, role).await,
+                DatabaseBackend::File(engine) => {
+                    synchronize_engine(engine, transport, config, role).await
+                }
                 #[cfg(feature = "in-memory")]
-                Self::InMemory(engine) => synchronize_engine(engine, transport, config, role).await,
+                DatabaseBackend::InMemory(engine) => {
+                    synchronize_engine(engine, transport, config, role).await
+                }
             }
         }
     }
@@ -328,21 +293,6 @@ impl Database {
     pub async fn apply_sync_state(&self, unit: SyncStateUnit) -> SqlResult<()> {
         database_call!(self, |engine| apply_sync_state_for(engine, unit).await)
     }
-
-    pub async fn row_conflicts(&self, table_name: &str, key: &Row) -> SqlResult<Vec<String>> {
-        database_call!(self, |engine| engine.row_conflicts(table_name, key).await)
-    }
-
-    pub async fn resolve_row(
-        &self,
-        table_name: &str,
-        key: &Row,
-        values: Vec<(String, Value)>,
-    ) -> SqlResult<()> {
-        database_call!(self, |engine| engine
-            .resolve_row(table_name, key, values)
-            .await)
-    }
 }
 
 #[cfg(all(test, feature = "redb", feature = "sql"))]
@@ -357,6 +307,7 @@ mod tests {
         block_on(async {
             let database = Database::in_memory();
             let error = database
+                .client()
                 .execute(Vec::new())
                 .await
                 .expect_err("empty statement batches are invalid");
@@ -369,11 +320,15 @@ mod tests {
     fn in_memory_database_uses_the_engine_api() {
         block_on(async {
             let database = Database::in_memory();
-            database
+            let client = database.client();
+            client
                 .execute_sql("CREATE TABLE users (id UUID PRIMARY KEY, name TEXT)", None)
                 .await
                 .expect("execute SQL text");
-            assert_eq!(database.table_schema("users").await.unwrap().name, "users");
+            client
+                .execute_sql("SELECT id FROM users", None)
+                .await
+                .expect("query created table");
         });
     }
 
@@ -390,6 +345,7 @@ mod tests {
             {
                 let database = Database::open(&database_path).unwrap();
                 database
+                    .client()
                     .translate_and_execute(
                         "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT)",
                         &crate::SqlTranslator,
@@ -399,7 +355,11 @@ mod tests {
             }
 
             let database = Database::open(&database_path).unwrap();
-            assert_eq!(database.table_schema("users").await.unwrap().name, "users");
+            database
+                .client()
+                .translate_and_execute("SELECT id FROM users", &crate::SqlTranslator)
+                .await
+                .expect("query persisted schema");
             let _ = std::fs::remove_file(&database_path);
         });
     }

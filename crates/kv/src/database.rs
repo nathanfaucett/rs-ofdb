@@ -10,6 +10,7 @@ use kv_store::KvStore;
 
 use crate::Error;
 
+#[derive(Clone)]
 enum Storage {
     #[cfg(feature = "in-memory")]
     Memory(KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>>),
@@ -22,6 +23,18 @@ pub struct Database {
 }
 
 impl Database {
+    /// Creates an owned query-only handle that shares this database's storage.
+    /// The client remains usable after this handle is dropped.
+    pub fn client(&self) -> crate::Client {
+        crate::Client::embedded(self.clone_shared())
+    }
+
+    pub(crate) fn clone_shared(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+        }
+    }
+
     #[cfg(feature = "in-memory")]
     pub fn in_memory() -> Self {
         Self {
@@ -55,7 +68,7 @@ impl Database {
         })
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub(crate) async fn query_get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -65,7 +78,7 @@ impl Database {
         }
     }
 
-    pub async fn set(
+    pub(crate) async fn query_set(
         &self,
         key: &str,
         value: Vec<u8>,
@@ -79,7 +92,7 @@ impl Database {
         }
     }
 
-    pub async fn delete(&self, key: &str) -> Result<(), Error> {
+    pub(crate) async fn query_delete(&self, key: &str) -> Result<(), Error> {
         match &self.storage {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => write_delete(store, key).await,
@@ -88,7 +101,11 @@ impl Database {
         }
     }
 
-    pub async fn scan(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub(crate) async fn query_scan(
+        &self,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -98,7 +115,10 @@ impl Database {
         }
     }
 
-    pub async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub(crate) async fn query_scan_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -108,7 +128,7 @@ impl Database {
         }
     }
 
-    pub async fn scan_all(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub(crate) async fn query_scan_all(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -270,35 +290,30 @@ mod tests {
     fn facade_preserves_expiry_and_scan_contract() {
         block_on(async {
             let database = Database::in_memory();
-            database
+            let client = database.client();
+            client
                 .set("a", vec![1], Some(0))
                 .await
                 .expect("set expired value");
-            assert_eq!(database.get("a").await.expect("read expired value"), None);
-            database
-                .set("a", vec![1], None)
-                .await
-                .expect("clear expiry");
-            database
+            assert_eq!(client.get("a").await.expect("read expired value"), None);
+            client.set("a", vec![1], None).await.expect("clear expiry");
+            client
                 .set("ab", vec![2], None)
                 .await
                 .expect("set second value");
             assert_eq!(
-                database.scan("a", "ab").await.expect("exclusive range"),
+                client.scan("a", "ab").await.expect("exclusive range"),
                 vec![("a".into(), vec![1])]
             );
             assert_eq!(
-                database
+                client
                     .scan_prefix("")
                     .await
                     .expect("empty prefix matches all")
                     .len(),
                 2
             );
-            database
-                .delete("missing")
-                .await
-                .expect("delete missing key");
+            client.delete("missing").await.expect("delete missing key");
         });
     }
 }

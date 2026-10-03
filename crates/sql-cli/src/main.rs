@@ -9,7 +9,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgGroup, Parser};
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
-use ofdb_sql::QueryResult;
+use ofdb_sql::{Client, QueryResult};
 use ofdb_sql::{JsonNumber, JsonValue, QueryParams, Value, ValueType};
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb", test))]
 use serde_json::Map;
@@ -54,14 +54,10 @@ async fn main() -> ExitCode {
         if let Some(_endpoint) = &args.endpoint {
             #[cfg(feature = "remote")]
             {
-                let client = ofdb_sql::Client::connect(_endpoint)
+                let client = Client::connect(_endpoint)
                     .await
                     .map_err(|error| error.to_string())?;
-                let result = client
-                    .execute_sql(&_sql, _params.as_ref())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return encode_results(result);
+                return execute_query(&client, &_sql, _params.as_ref()).await;
             }
             #[cfg(not(feature = "remote"))]
             return Err("sql-cli was built without the `remote` feature".to_owned());
@@ -69,14 +65,10 @@ async fn main() -> ExitCode {
         if let Some(_path) = &args.unix_socket {
             #[cfg(all(feature = "remote", unix))]
             {
-                let client = ofdb_sql::Client::connect_unix(_path)
+                let client = Client::connect_unix(_path)
                     .await
                     .map_err(|error| error.to_string())?;
-                let result = client
-                    .execute_sql(&_sql, _params.as_ref())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return encode_results(result);
+                return execute_query(&client, &_sql, _params.as_ref()).await;
             }
             #[cfg(not(all(feature = "remote", unix)))]
             return Err("Unix sockets require a Unix build with the `remote` feature".to_owned());
@@ -85,11 +77,8 @@ async fn main() -> ExitCode {
             #[cfg(feature = "in-memory")]
             {
                 let database = ofdb_sql::Database::in_memory();
-                let result = database
-                    .execute_sql(&_sql, _params.as_ref())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return encode_results(result);
+                let client = database.client();
+                return execute_query(&client, &_sql, _params.as_ref()).await;
             }
             #[cfg(not(feature = "in-memory"))]
             return Err("sql-cli was built without the `in-memory` feature".to_owned());
@@ -99,11 +88,8 @@ async fn main() -> ExitCode {
             {
                 let database =
                     ofdb_sql::Database::open(_path).map_err(|error| error.to_string())?;
-                let result = database
-                    .execute_sql(&_sql, _params.as_ref())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return encode_results(result);
+                let client = database.client();
+                return execute_query(&client, &_sql, _params.as_ref()).await;
             }
             #[cfg(not(feature = "redb"))]
             return Err("sql-cli was built without the `redb` feature".to_owned());
@@ -130,6 +116,19 @@ async fn main() -> ExitCode {
         }
         Err(error) => fail(1, error),
     }
+}
+
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
+async fn execute_query(
+    client: &Client,
+    sql: &str,
+    params: Option<&QueryParams>,
+) -> Result<Vec<u8>, String> {
+    let results = client
+        .execute_sql(sql, params)
+        .await
+        .map_err(|error| error.to_string())?;
+    encode_results(results)
 }
 
 fn read_text(query: Option<&str>, file: Option<&std::path::Path>) -> Result<String, String> {

@@ -29,7 +29,8 @@ fn explicit_transactions_span_api_calls() {
         use ofdb_sql::{Database, SqlTranslator};
 
         let database = Database::in_memory();
-        database
+        let client = database.client();
+        client
             .translate_and_execute(
                 "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
                 &SqlTranslator,
@@ -37,7 +38,7 @@ fn explicit_transactions_span_api_calls() {
             .await
             .expect("create table");
 
-        let mut transaction = database.transaction().await.expect("begin transaction");
+        let mut transaction = client.transaction().await.expect("begin transaction");
         transaction
             .translate_and_execute(
                 "INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')",
@@ -51,13 +52,13 @@ fn explicit_transactions_span_api_calls() {
             .expect("read own write");
         assert_eq!(rows[0].rows, vec![ofdb_sql::Row::from(["Ada"])]);
         transaction.rollback().await.expect("rollback transaction");
-        let rows = database
+        let rows = client
             .translate_and_execute("SELECT name FROM people", &SqlTranslator)
             .await
             .expect("read after rollback");
         assert!(rows[0].rows.is_empty());
 
-        let mut transaction = database.transaction().await.expect("begin transaction");
+        let mut transaction = client.transaction().await.expect("begin transaction");
         transaction
             .translate_and_execute(
                 "INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Lin')",
@@ -66,13 +67,13 @@ fn explicit_transactions_span_api_calls() {
             .await
             .expect("insert before commit");
         transaction.commit().await.expect("commit transaction");
-        let rows = database
+        let rows = client
             .translate_and_execute("SELECT name FROM people", &SqlTranslator)
             .await
             .expect("read after commit");
         assert_eq!(rows[0].rows, vec![ofdb_sql::Row::from(["Lin"])]);
 
-        let mut transaction = database.transaction().await.expect("begin transaction");
+        let mut transaction = client.transaction().await.expect("begin transaction");
         transaction
             .translate_and_execute(
                 "INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abe' AS UUID), 'Grace')",
@@ -88,7 +89,7 @@ fn explicit_transactions_span_api_calls() {
             .await
             .is_err());
         assert!(transaction.commit().await.is_err());
-        let rows = database
+        let rows = client
             .translate_and_execute("SELECT name FROM people ORDER BY name", &SqlTranslator)
             .await
             .expect("read after aborted transaction");
@@ -104,7 +105,8 @@ fn bound_parameters_via_public_api() {
         use ofdb_sql::{Database, QueryParams, SqlTranslator, Value};
 
         let database = Database::in_memory();
-        database
+        let client = database.client();
+        client
             .translate_and_execute(
                 "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
                 &SqlTranslator,
@@ -115,7 +117,7 @@ fn bound_parameters_via_public_api() {
         let person_id = ofdb_sql::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc")
             .expect("valid test UUID");
         let insert = QueryParams::Positional(vec![Value::Uuid(person_id), Value::from("Ada")]);
-        database
+        client
             .translate_and_execute_with_params(
                 "INSERT INTO people VALUES ($1, $2)",
                 Some(&insert),
@@ -128,7 +130,7 @@ fn bound_parameters_via_public_api() {
             ("name".to_string(), Value::from("Ada")),
             ("id".to_string(), Value::Uuid(person_id)),
         ]));
-        let rows = database
+        let rows = client
             .translate_and_execute_with_params(
                 "SELECT name FROM people WHERE id = :id AND name = :name",
                 Some(&named),
@@ -139,7 +141,7 @@ fn bound_parameters_via_public_api() {
         assert_eq!(rows[0].rows, vec![ofdb_sql::Row::from(["Ada"])]);
 
         let update = QueryParams::Positional(vec![Value::from("Lin"), Value::Uuid(person_id)]);
-        database
+        client
             .translate_and_execute_with_params(
                 "UPDATE people SET name = ? WHERE id = ?",
                 Some(&update),
@@ -149,7 +151,7 @@ fn bound_parameters_via_public_api() {
             .expect("update with positional parameters");
 
         let delete = QueryParams::Named(BTreeMap::from([("name".to_string(), Value::from("Lin"))]));
-        database
+        client
             .translate_and_execute_with_params(
                 "DELETE FROM people WHERE name = :name",
                 Some(&delete),
@@ -158,14 +160,14 @@ fn bound_parameters_via_public_api() {
             .await
             .expect("delete with named parameters");
 
-        let rows = database
+        let rows = client
             .translate_and_execute("SELECT * FROM people", &SqlTranslator)
             .await
             .expect("query remaining rows");
         assert!(rows[0].rows.is_empty());
 
         assert!(
-            database
+            client
                 .translate_and_execute_with_params(
                     "SELECT id FROM people WHERE id = $1",
                     None,
@@ -175,7 +177,7 @@ fn bound_parameters_via_public_api() {
                 .is_err()
         );
         assert!(
-            database
+            client
                 .translate_and_execute_with_params(
                     "SELECT id FROM people WHERE id = $1",
                     Some(&QueryParams::Positional(vec![
@@ -188,7 +190,7 @@ fn bound_parameters_via_public_api() {
                 .is_err()
         );
         assert!(
-            database
+            client
                 .translate_and_execute_with_params(
                     "SELECT id FROM people WHERE id = $1 AND name = :name",
                     Some(&insert),
@@ -198,7 +200,7 @@ fn bound_parameters_via_public_api() {
                 .is_err()
         );
         assert!(
-            database
+            client
                 .translate_and_execute_with_params(
                     "INSERT INTO people (id, name) VALUES ($1, $2)",
                     Some(&QueryParams::Positional(vec![
@@ -219,8 +221,9 @@ fn internal_catalog_tables_are_not_user_ddl_targets() {
         use ofdb_sql::{Database, SqlTranslator};
 
         let database = Database::in_memory();
+        let client = database.client();
         assert!(
-            database
+            client
                 .translate_and_execute(
                     "CREATE TABLE __engine_tables (id UUID PRIMARY KEY)",
                     &SqlTranslator,
@@ -228,11 +231,11 @@ fn internal_catalog_tables_are_not_user_ddl_targets() {
                 .await
                 .is_err()
         );
-        database
+        client
             .translate_and_execute("CREATE TABLE users (id UUID PRIMARY KEY)", &SqlTranslator)
             .await
             .expect("create a user table");
-        assert!(database
+        assert!(client
             .translate_and_execute(
                 "CREATE INDEX __engine_tables ON users (id)",
                 &SqlTranslator,

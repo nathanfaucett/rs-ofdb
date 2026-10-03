@@ -210,6 +210,76 @@ async fn failed_write_batch_does_not_commit_earlier_statements() {
     server.await.expect("server task should complete");
 }
 
+#[tokio::test]
+async fn remote_transaction_commits_across_calls_and_rolls_back_on_drop() {
+    let engine = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+    let address = free_address();
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let server_engine = engine.clone();
+    let server = tokio::spawn(async move {
+        Server::tcp(address, EngineExecutor::new(server_engine))
+            .serve(async {
+                let _ = signal.await;
+            })
+            .await
+            .expect("server should stop cleanly");
+    });
+    wait_for_tcp(address).await;
+    let client = Client::tcp(format!("http://{address}"))
+        .await
+        .expect("connect");
+
+    let mut transaction = client.transaction().await.expect("begin transaction");
+    transaction
+        .execute(vec![Statement::DataDefinition(
+            DataDefinition::CreateTable {
+                schema: TableSchema {
+                    name: "remote_commit".into(),
+                    columns: vec![ColumnSchema {
+                        name: "id".into(),
+                        r#type: ValueType::Uuid,
+                        default: Value::Null,
+                        primary_key: true,
+                    }],
+                },
+                if_not_exists: false,
+            },
+        )])
+        .await
+        .expect("execute in transaction");
+    assert!(engine.table_schema("remote_commit").await.is_err());
+    transaction.commit().await.expect("commit transaction");
+    assert!(engine.table_schema("remote_commit").await.is_ok());
+
+    let mut transaction = client
+        .transaction()
+        .await
+        .expect("begin second transaction");
+    transaction
+        .execute(vec![Statement::DataDefinition(
+            DataDefinition::CreateTable {
+                schema: TableSchema {
+                    name: "remote_rollback".into(),
+                    columns: vec![ColumnSchema {
+                        name: "id".into(),
+                        r#type: ValueType::Uuid,
+                        default: Value::Null,
+                        primary_key: true,
+                    }],
+                },
+                if_not_exists: false,
+            },
+        )])
+        .await
+        .expect("execute in transaction");
+    drop(transaction);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(engine.table_schema("remote_rollback").await.is_err());
+
+    shutdown.send(()).expect("server is awaiting shutdown");
+    server.await.expect("server task should complete");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_socket_client_executes_batch() {

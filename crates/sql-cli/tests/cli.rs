@@ -54,6 +54,7 @@ async fn remote_cli_executes_queries_through_the_facade() {
     let address = free_address();
     let database = Database::in_memory();
     database
+        .client()
         .execute_sql("CREATE TABLE items (id UUID PRIMARY KEY)", None)
         .await
         .expect("create hosted table");

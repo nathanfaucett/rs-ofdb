@@ -46,7 +46,7 @@ pub enum Error {
     Transport(String),
     #[cfg(feature = "remote")]
     Query { kind: ErrorKind, message: String },
-    #[cfg(feature = "remote")]
+    #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
     Timeout,
 }
 
@@ -73,7 +73,7 @@ impl fmt::Display for Error {
             Self::Query { kind, message } => {
                 write!(formatter, "KV query error ({kind:?}): {message}")
             }
-            #[cfg(feature = "remote")]
+            #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
             Self::Timeout => formatter.write_str("KV request deadline exceeded"),
         }
     }

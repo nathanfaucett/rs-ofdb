@@ -1,8 +1,18 @@
 use std::net::{SocketAddr, TcpListener};
 
 use ofdb_sql::{
-    Client, Database, Query, QueryColumn, QueryErrorKind, QueryFrom, QuerySelect, Statement,
+    Client, Database, FromRow, FromRowError, Query, QueryColumn, QueryErrorKind, QueryFrom,
+    QueryParams, QuerySelect, Row, SqlTranslator, Statement, Uuid, Value,
 };
+
+struct IdRow(Uuid);
+
+impl FromRow for IdRow {
+    fn from_row(row: &Row, columns: &[&str]) -> Result<Self, FromRowError> {
+        let id = ofdb_sql::decode::<Uuid>(ofdb_sql::value(row, columns, "id")?, "id")?;
+        Ok(Self(id))
+    }
+}
 
 fn free_address() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind temporary listener");
@@ -13,7 +23,8 @@ fn free_address() -> SocketAddr {
 async fn remote_client_executes_typed_queries_over_tcp() {
     let address = free_address();
     let database = Database::in_memory();
-    database
+    let database_client = database.client();
+    database_client
         .execute_sql("CREATE TABLE items (id UUID PRIMARY KEY)", None)
         .await
         .expect("create table in embedded database");
@@ -56,6 +67,38 @@ async fn remote_client_executes_typed_queries_over_tcp() {
     assert_eq!(results.len(), 1);
     assert!(results[0].rows.is_empty());
 
+    let id = Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("valid test UUID");
+    let params = QueryParams::Positional(vec![Value::Uuid(id)]);
+    client
+        .translate_and_execute_with_params(
+            "INSERT INTO items VALUES ($1)",
+            Some(&params),
+            &SqlTranslator,
+        )
+        .await
+        .expect("execute parameterized translator query remotely");
+    let typed = client
+        .translate_and_select::<_, IdRow>("SELECT id FROM items", &SqlTranslator)
+        .await
+        .expect("decode typed remote row");
+    assert_eq!(typed.len(), 1);
+    assert_eq!(typed[0].0, id);
+    assert!(
+        client
+            .translate_and_select::<_, IdRow>(
+                "SELECT id FROM items; SELECT id FROM items",
+                &SqlTranslator,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .translate_and_execute("INVALID SQL", &SqlTranslator)
+            .await
+            .is_err()
+    );
+
     let empty_error = client
         .execute(Vec::new())
         .await
@@ -71,7 +114,7 @@ async fn remote_client_executes_typed_queries_over_tcp() {
         .execute_sql(duplicate_batch, None)
         .await
         .expect_err("reject duplicate row in batch");
-    let local_error = database
+    let local_error = database_client
         .execute_sql(duplicate_batch, None)
         .await
         .expect_err("reject duplicate local batch");
@@ -85,6 +128,57 @@ async fn remote_client_executes_typed_queries_over_tcp() {
     assert!(client.execute_sql("BEGIN", None).await.is_err());
     assert!(client.execute_sql("COMMIT", None).await.is_err());
     assert!(client.execute_sql("ROLLBACK", None).await.is_err());
+
+    client
+        .execute_sql("CREATE TABLE transaction_items (id UUID PRIMARY KEY)", None)
+        .await
+        .expect("create transaction table");
+    let mut transaction = client
+        .transaction()
+        .await
+        .expect("begin remote transaction");
+    transaction
+        .execute_sql(
+            "INSERT INTO transaction_items VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID))",
+            None,
+        )
+        .await
+        .expect("write in remote transaction");
+    let rows = transaction
+        .translate_and_execute("SELECT id FROM transaction_items", &SqlTranslator)
+        .await
+        .expect("read remote transaction write");
+    assert_eq!(rows[0].rows.len(), 1);
+    transaction
+        .rollback()
+        .await
+        .expect("rollback remote transaction");
+    let rows = client
+        .execute_sql("SELECT id FROM transaction_items", None)
+        .await
+        .expect("read after remote rollback");
+    assert!(rows[0].rows.is_empty());
+
+    let mut transaction = client
+        .transaction()
+        .await
+        .expect("begin remote transaction");
+    transaction
+        .translate_and_execute(
+            "INSERT INTO transaction_items VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abe' AS UUID))",
+            &SqlTranslator,
+        )
+        .await
+        .expect("write before remote commit");
+    transaction
+        .commit()
+        .await
+        .expect("commit remote transaction");
+    let rows = client
+        .execute_sql("SELECT id FROM transaction_items", None)
+        .await
+        .expect("read after remote commit");
+    assert_eq!(rows[0].rows.len(), 1);
 
     shutdown.send(()).expect("server is awaiting shutdown");
     server.await.expect("server task should complete");

@@ -2,12 +2,12 @@
 
 mod error;
 
-#[cfg(feature = "remote")]
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 mod client;
 #[cfg(any(feature = "in-memory", feature = "redb"))]
 mod database;
 
-#[cfg(feature = "remote")]
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 pub use client::Client;
 #[cfg(any(feature = "in-memory", feature = "redb"))]
 pub use database::Database;

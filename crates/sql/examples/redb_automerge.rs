@@ -16,6 +16,7 @@ fn main() {
         let database = Database::open(&path).expect("open Redb database");
 
         database
+            .client()
             .translate_and_execute(
                 "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT)",
                 &SqlTranslator,

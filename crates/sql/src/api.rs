@@ -13,7 +13,7 @@ pub use macros::FromRow;
 pub use query::{
     Query, QueryColumn, QueryDelete, QueryError, QueryErrorKind, QueryExpr, QueryExprValue,
     QueryFrom, QueryInsert, QueryParams, QueryResult, QuerySelect, QueryUpdate,
-    QueryUpdateAssignment, Statement,
+    QueryUpdateAssignment, Statement, TranslateError, Translator,
 };
 #[cfg(feature = "server")]
 pub use sql_server::{EngineExecutor, Server};

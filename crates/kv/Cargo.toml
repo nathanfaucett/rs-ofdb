@@ -14,9 +14,9 @@ name = "ofdb_kv"
 [features]
 default = []
 std = []
-remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "dep:tower", "dep:hyper-util"]
-in-memory = ["std", "dep:btree", "dep:kv-store", "dep:uuid", "btree/in-memory"]
-redb = ["std", "dep:btree", "dep:kv-store", "dep:uuid", "dep:btree-redb", "dep:redb"]
+remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "dep:tower", "dep:hyper-util"]
+in-memory = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "btree/in-memory"]
+redb = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "dep:btree-redb", "dep:redb"]
 server = ["remote", "dep:kv-server"]
 sync = ["std", "dep:btree", "dep:kv-sync", "dep:kv-store", "dep:uuid"]
 
@@ -32,7 +32,7 @@ kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", d
 # External dependencies
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
 redb = { version = "4.3", default-features = false, features = ["uuid"], optional = true }
-tokio = { version = "1.0", default-features = false, features = ["net", "time"], optional = true }
+tokio = { version = "1.0", default-features = false, features = ["time"], optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "codegen"], optional = true }
 tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"], optional = true }
@@ -45,7 +45,15 @@ kv-sync = { version = "0.1", path = "../kv-sync", package = "ofdb-kv-sync", defa
 kv-server = { version = "0.1", path = "../kv-server", package = "ofdb-kv-server", default-features = false, features = [] }
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
 tempfile = { version = "3.27", default-features = false, features = [] }
-tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[[test]]
+name = "embedded_client"
+required-features = ["in-memory"]
+
+[[test]]
+name = "embedded_redb_client"
+required-features = ["redb"]
 
 [[test]]
 name = "local_kv"
