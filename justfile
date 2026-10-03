@@ -9,8 +9,6 @@ help:
     @printf "  build-release  Build all workspace crates in release mode\n"
     @printf "  check          Check all workspace crates\n"
     @printf "  test           Run workspace tests\n"
-    @printf "  test-sql            Run SQL behavior tests\n"
-    @printf "  hack-test      Run feature-powerset coverage tests\n"
     @printf "  clippy         Run clippy for all targets and workspace crates\n"
     @printf "  clippy-fix     Run clippy with --fix for all targets and workspace crates\n"
     @printf "  crap           Run CRAP\n"
@@ -32,20 +30,17 @@ check:
 test:
     cargo hack test --feature-powerset --workspace --all-targets
 
-test-sql:
-    cargo test -p ofdb-sql --features sql,redb,in-memory --test local_sql
-
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 clippy-fix:
     cargo clippy --workspace --all-targets --fix --allow-dirty --broken-code -- -D warnings
 
-crap threshold="30":
-    RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --all-targets --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info --threshold {{ threshold }} --fail-above
+crap *args:
+    RUST_MIN_STACK=67108864 cargo hack llvm-cov --workspace --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info  {{ args }}
 
 crap-summary:
-    RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --all-targets --lcov --output-path /tmp/lcov.info && cargo crap --workspace --lcov /tmp/lcov.info --summary
+    just crap --summary
 
 cov:
     RUST_MIN_STACK=67108864 cargo llvm-cov --workspace --open
@@ -58,9 +53,6 @@ fmt-check:
 
 clean:
     cargo clean
-
-wasm:
-    cd ./crates/wasm && wasm-pack build --target web --scope aicacia
 
 doc:
     cargo doc --workspace --no-deps
