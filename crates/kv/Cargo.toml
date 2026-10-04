@@ -28,7 +28,7 @@ kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", d
 kv-server = { version = "0.1", path = "../kv-server", package = "ofdb-kv-server", default-features = false, features = [], optional = true }
 kv-store = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [], optional = true }
 kv-sync = { version = "0.1", path = "../kv-sync", package = "ofdb-kv-sync", default-features = false, features = [], optional = true }
-value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["serde_json"] }
 
 # External dependencies
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
