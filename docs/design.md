@@ -33,8 +33,6 @@ KV is a separate store of opaque byte values under UTF-8 keys. Each key has UUID
 
 ## Facades and CLI
 
-See [the embedded client plan](embedded-client-plan.md) for the settled contract, implementation status, and focused validation.
-
 The public facades are `ofdb-kv` for KV and `ofdb-sql` for SQL. The repository root is workspace-only. Facades live in `crates/sql` and `crates/kv`; the KV implementation lives in `crates/kv-store`. SQL and KV have separate client-only binaries, `sql-cli` and `kv-cli`, and share a publishing approach, not a data model or storage interface.
 
 SQL-specific crate directories use `sql-*`; their Cargo package names use `ofdb-sql-*`. This includes engine, engine-automerge, engine-redb, query, schema, client, server, proto, protocol, sync, value, macros, and test. The `sql-translator` directory keeps its name; its package becomes `ofdb-sql-translator`. Shared B-tree package names use `ofdb-btree*`, without a SQL prefix. KV implementation/support packages use `ofdb-kv-*`, with `ofdb-kv-store` distinct from the public `ofdb-kv` facade. Remove the unused wasm and examples-util crates.

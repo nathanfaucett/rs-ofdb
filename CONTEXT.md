@@ -42,7 +42,7 @@ SQL results and KV scans use JSON. SQL value tags preserve type distinctions; in
 
 Default features are empty. Remote, embedded storage, hosting, and sync dependencies are enabled explicitly. A remote-only build must not include the local engine, Redb, Automerge, or sync implementation. Each query operation must document its atomicity. Clients do not automatically retry requests. Library request deadlines are caller-configurable, with no fixed default. Embedded and remote construction is explicit, not selected through a combined URI constructor. SQL query interfaces support typed statements and SQL-text helpers; remote SQL starts with existing statement execution.
 
-See [the embedded client plan](docs/embedded-client-plan.md) for the settled contract and focused validation. The separate facades, embedded and remote query clients, host entry points, and one-shot CLIs are implemented. KV errors preserve store categories through facade-owned structured errors. Internal path dependencies have registry version requirements, and publishable packages have descriptions. Registry-backed package verification and external-consumer checks remain blocked until prerequisites are available from a registry; no packages have been published.
+The separate facades, embedded and remote query clients, host entry points, and one-shot CLIs are implemented with settled contracts and focused validation. KV errors preserve store categories through facade-owned structured errors. Internal path dependencies have registry version requirements, and publishable packages have descriptions. Registry-backed package verification and external-consumer checks remain blocked until prerequisites are available from a registry; no packages have been published.
 
 ## Engine Transaction
 
