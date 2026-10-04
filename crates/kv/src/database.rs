@@ -8,6 +8,8 @@ use btree::BTree;
 use btree::InMemoryBTree;
 use kv_store::KvStore;
 
+use value::Value;
+
 use crate::Error;
 
 #[derive(Clone)]
@@ -91,7 +93,7 @@ impl Database {
         })
     }
 
-    pub(crate) async fn query_get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub(crate) async fn query_get(&self, key: &str) -> Result<Option<Value>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -104,7 +106,7 @@ impl Database {
     pub(crate) async fn query_set(
         &self,
         key: &str,
-        value: Vec<u8>,
+        value: Value,
         expires_at: Option<i64>,
     ) -> Result<(), Error> {
         match &self.storage {
@@ -128,7 +130,7 @@ impl Database {
         &self,
         start: &str,
         end: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    ) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -141,7 +143,7 @@ impl Database {
     pub(crate) async fn query_scan_prefix(
         &self,
         prefix: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    ) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -151,7 +153,7 @@ impl Database {
         }
     }
 
-    pub(crate) async fn query_scan_all(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub(crate) async fn query_scan_all(&self) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
             #[cfg(feature = "in-memory")]
@@ -247,7 +249,7 @@ async fn read_get<B: BTree<Vec<u8>, Vec<u8>>>(
     store: &KvStore<B>,
     key: &str,
     now: i64,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<Value>, Error> {
     let transaction = store.transaction().await?;
     let result = transaction.get(key, now).await?;
     transaction.rollback().await?;
@@ -257,7 +259,7 @@ async fn read_get<B: BTree<Vec<u8>, Vec<u8>>>(
 async fn write_set<B: BTree<Vec<u8>, Vec<u8>>>(
     store: &KvStore<B>,
     key: &str,
-    value: Vec<u8>,
+    value: Value,
     expires_at: Option<i64>,
 ) -> Result<(), Error> {
     let mut transaction = store.transaction().await?;
@@ -313,7 +315,7 @@ async fn read_scan<B: BTree<Vec<u8>, Vec<u8>>>(
     start: &str,
     end: &str,
     now: i64,
-) -> Result<Vec<(String, Vec<u8>)>, Error> {
+) -> Result<Vec<(String, Value)>, Error> {
     let transaction = store.transaction().await?;
     let result = transaction
         .scan(start.to_owned()..end.to_owned(), now)
@@ -326,7 +328,7 @@ async fn read_prefix<B: BTree<Vec<u8>, Vec<u8>>>(
     store: &KvStore<B>,
     prefix: &str,
     now: i64,
-) -> Result<Vec<(String, Vec<u8>)>, Error> {
+) -> Result<Vec<(String, Value)>, Error> {
     let transaction = store.transaction().await?;
     let result = transaction.scan_prefix(prefix, now).await?;
     transaction.rollback().await?;
@@ -336,7 +338,7 @@ async fn read_prefix<B: BTree<Vec<u8>, Vec<u8>>>(
 async fn read_all<B: BTree<Vec<u8>, Vec<u8>>>(
     store: &KvStore<B>,
     now: i64,
-) -> Result<Vec<(String, Vec<u8>)>, Error> {
+) -> Result<Vec<(String, Value)>, Error> {
     let transaction = store.transaction().await?;
     let result = transaction.scan_all(now).await?;
     transaction.rollback().await?;
@@ -360,6 +362,7 @@ fn current_time_millis() -> i64 {
 #[cfg(all(test, feature = "in-memory"))]
 mod tests {
     use futures::executor::block_on;
+    use value::Value;
 
     use super::Database;
 
@@ -369,18 +372,21 @@ mod tests {
             let database = Database::in_memory();
             let client = database.client();
             client
-                .set("a", vec![1], Some(0))
+                .set("a", Value::Blob(vec![1]), Some(0))
                 .await
                 .expect("set expired value");
             assert_eq!(client.get("a").await.expect("read expired value"), None);
-            client.set("a", vec![1], None).await.expect("clear expiry");
             client
-                .set("ab", vec![2], None)
+                .set("a", Value::Blob(vec![1]), None)
+                .await
+                .expect("clear expiry");
+            client
+                .set("ab", Value::Blob(vec![2]), None)
                 .await
                 .expect("set second value");
             assert_eq!(
                 client.scan("a", "ab").await.expect("exclusive range"),
-                vec![("a".into(), vec![1])]
+                vec![("a".into(), Value::Blob(vec![1]))]
             );
             assert_eq!(
                 client

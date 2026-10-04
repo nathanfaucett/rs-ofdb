@@ -29,7 +29,7 @@ Normal updates use incremental payloads. Full state units are exchanged for init
 
 ## KV store and sync
 
-KV is a separate store of opaque byte values under UTF-8 keys. Each key has UUIDv7 generations with Automerge-backed history and tombstones. Snapshot exchange is explicit through `kv-sync`; transport and peer state belong to its caller. The generation with the greatest UUIDv7 determines the visible state. Same-generation divergent histories are rejected rather than resolved with last-writer-wins. Therefore a mutable authorization record must not be stored as one KV value and assumed to resolve concurrent grant/revoke safely.
+KV is a separate store of shared `ofdb-value::Value` values under UTF-8 keys. Values include primitives, blobs, and nested JSON objects and arrays. Each key has UUIDv7 generations with Automerge-backed history and tombstones. Updates reconcile values inside the Automerge document, so concurrent nested-map/list edits merge. Concurrent edits to one scalar may retain an Automerge conflict, with deterministic visible-value selection. A tombstone wins a concurrent delete/update race; setting a deleted key creates a new generation. Snapshot exchange is explicit through `kv-sync`; transport and peer state belong to its caller. The generation with the greatest UUIDv7 determines visible state. The API currently exposes shared value and JSON types, not every native Automerge object type (for example, collaborative text or counters).
 
 ## Facades and CLI
 

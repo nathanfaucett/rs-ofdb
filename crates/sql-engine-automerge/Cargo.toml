@@ -18,10 +18,10 @@ btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-fe
 btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["std", "in-memory"] }
 sync = { version = "0.1", path = "../sql-sync", package = "ofdb-sql-sync", default-features = false, features = [] }
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["std"] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["std"] }
 
 # external dependencies
-automerge = { version = "0.9", default-features = false, features = [] }
+automerge = { version = "0.10", default-features = false, features = [] }
 async-stream = { version = "0.3", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }

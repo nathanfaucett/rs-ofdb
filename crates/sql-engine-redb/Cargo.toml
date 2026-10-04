@@ -17,7 +17,7 @@ path = "src/lib.rs"
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [] }
 btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [] }
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["std"] }
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["redb", "std"] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["redb", "std"] }
 
 # external dependencies
 async-stream = { version = "0.3", default-features = false, features = [] }

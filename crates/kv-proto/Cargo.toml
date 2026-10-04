@@ -13,6 +13,12 @@ path = "src/lib.rs"
 name = "kv_proto"
 
 [dependencies]
+# Internal dependencies
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
+
+# Value validation
+uuid = { version = "1.0", default-features = false, features = [] }
+
 # gRPC
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 prost-types = { version = "0.14", default-features = false }

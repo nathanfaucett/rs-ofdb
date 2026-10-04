@@ -28,7 +28,7 @@ wasm = [
 [dependencies]
 query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }
 schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["serde_json"] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["serde_json"] }
 
 sqlparser = { version = "0.62", default-features = false, features = [] }
 thiserror = { version = "2.0", default-features = false, features = [] }

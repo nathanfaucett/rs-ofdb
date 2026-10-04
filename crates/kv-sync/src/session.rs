@@ -5,7 +5,7 @@ use crate::{
     Config, Error, KvSnapshot, Message, SyncRole, SyncTransport, decode_frame, encode_frame,
 };
 
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 pub async fn synchronize<B, T>(
     store: &KvStore<B>,
@@ -17,12 +17,16 @@ where
     B: BTree<Vec<u8>, Vec<u8>>,
     T: SyncTransport,
 {
-    let snapshots = export(store).await.map_err(storage_error)?;
     match role {
         SyncRole::Initiator => {
             send(transport, Message::Hello { version: VERSION }, config).await?;
             expect_hello(receive(transport, config).await?)?;
-            send_snapshots(transport, snapshots, config).await?;
+            send_snapshots(
+                transport,
+                export(store).await.map_err(storage_error)?,
+                config,
+            )
+            .await?;
             receive_snapshots(store, transport, config).await?;
             send(transport, Message::Finished, config).await?;
             expect_finished(receive(transport, config).await?)?;
@@ -31,7 +35,12 @@ where
             expect_hello(receive(transport, config).await?)?;
             send(transport, Message::Hello { version: VERSION }, config).await?;
             receive_snapshots(store, transport, config).await?;
-            send_snapshots(transport, snapshots, config).await?;
+            send_snapshots(
+                transport,
+                export(store).await.map_err(storage_error)?,
+                config,
+            )
+            .await?;
             expect_finished(receive(transport, config).await?)?;
             send(transport, Message::Finished, config).await?;
         }
@@ -144,6 +153,7 @@ mod tests {
     use futures::{SinkExt, executor::block_on, join, stream::StreamExt};
     use futures_channel::mpsc;
     use kv::decode_document_id;
+    use value::Value;
 
     use super::*;
 
@@ -182,7 +192,9 @@ mod tests {
         block_on(async {
             let source = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let mut tx = source.transaction().await.unwrap();
-            tx.set("valid", b"value".to_vec(), None).await.unwrap();
+            tx.set("valid", Value::Blob(b"value".to_vec()), None)
+                .await
+                .unwrap();
             let (key, payload) = tx.export_snapshot("valid").await.unwrap().unwrap();
             let snapshot = KvSnapshot { key, payload };
             tx.commit().await.unwrap();
@@ -234,17 +246,29 @@ mod tests {
             let left = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let right = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
             let mut tx = left.transaction().await.unwrap();
-            tx.set("left", b"L".to_vec(), None).await.unwrap();
-            tx.set("expired", b"E".to_vec(), Some(5)).await.unwrap();
+            tx.set("left", Value::Blob(b"L".to_vec()), None)
+                .await
+                .unwrap();
+            tx.set("expired", Value::Blob(b"E".to_vec()), Some(5))
+                .await
+                .unwrap();
             tx.commit().await.unwrap();
 
             let mut tx = right.transaction().await.unwrap();
-            tx.set("right", b"R".to_vec(), None).await.unwrap();
-            tx.set("deleted", b"D".to_vec(), None).await.unwrap();
+            tx.set("right", Value::Blob(b"R".to_vec()), None)
+                .await
+                .unwrap();
+            tx.set("deleted", Value::Blob(b"D".to_vec()), None)
+                .await
+                .unwrap();
             tx.delete("deleted").await.unwrap();
-            tx.set("recreated", b"old".to_vec(), None).await.unwrap();
+            tx.set("recreated", Value::Blob(b"old".to_vec()), None)
+                .await
+                .unwrap();
             tx.delete("recreated").await.unwrap();
-            tx.set("recreated", b"new".to_vec(), None).await.unwrap();
+            tx.set("recreated", Value::Blob(b"new".to_vec()), None)
+                .await
+                .unwrap();
             tx.commit().await.unwrap();
 
             for round in 0..2 {
@@ -276,7 +300,9 @@ mod tests {
                 b.unwrap();
                 if round == 0 {
                     let mut tx = left.transaction().await.unwrap();
-                    tx.set("left", b"updated".to_vec(), None).await.unwrap();
+                    tx.set("left", Value::Blob(b"updated".to_vec()), None)
+                        .await
+                        .unwrap();
                     tx.commit().await.unwrap();
                 }
             }
@@ -284,10 +310,13 @@ mod tests {
             let tx = left.transaction().await.unwrap();
             assert_eq!(
                 tx.get("right", i64::MIN).await.unwrap(),
-                Some(b"R".to_vec())
+                Some(Value::Blob(b"R".to_vec()))
             );
             assert_eq!(tx.get("deleted", 0).await.unwrap(), None);
-            assert_eq!(tx.get("recreated", 0).await.unwrap(), Some(b"new".to_vec()));
+            assert_eq!(
+                tx.get("recreated", 0).await.unwrap(),
+                Some(Value::Blob(b"new".to_vec()))
+            );
             assert_eq!(tx.get("expired", 5).await.unwrap(), None);
             let snapshots = tx.export_snapshots().await.unwrap();
             assert_eq!(snapshots.len(), 5);
@@ -300,10 +329,13 @@ mod tests {
             let tx = right.transaction().await.unwrap();
             assert_eq!(
                 tx.get("left", i64::MIN).await.unwrap(),
-                Some(b"updated".to_vec())
+                Some(Value::Blob(b"updated".to_vec()))
             );
             assert_eq!(tx.get("deleted", 0).await.unwrap(), None);
-            assert_eq!(tx.get("recreated", 0).await.unwrap(), Some(b"new".to_vec()));
+            assert_eq!(
+                tx.get("recreated", 0).await.unwrap(),
+                Some(Value::Blob(b"new".to_vec()))
+            );
             assert_eq!(tx.get("expired", 5).await.unwrap(), None);
             assert_eq!(snapshots, tx.export_snapshots().await.unwrap());
             tx.rollback().await.unwrap();

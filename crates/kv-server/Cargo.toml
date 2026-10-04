@@ -14,13 +14,15 @@ btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-fe
 kv = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [] }
 kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [] }
 
-
 # External dependencies
 tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros", "sync"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen"] }
 
 [dev-dependencies]
+# Shared test values
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
+
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["in-memory"] }
 kv-client = { version = "0.1", path = "../kv-client", package = "ofdb-kv-client", default-features = false, features = [] }

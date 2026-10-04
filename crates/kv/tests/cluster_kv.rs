@@ -12,6 +12,7 @@ use kv_sync::{
 };
 use redb::Database;
 use tokio::sync::mpsc;
+use value::Value;
 
 struct Channel {
     sender: mpsc::UnboundedSender<Vec<u8>>,
@@ -99,19 +100,19 @@ async fn sync_exchanges_offline_writes_and_selects_greatest_generation() {
     );
 
     let mut tx = left.transaction().await.expect("start left transaction");
-    tx.set("left-only", vec![1], None)
+    tx.set("left-only", Value::Blob(vec![1]), None)
         .await
         .expect("set left key");
-    tx.set("shared", vec![2], None)
+    tx.set("shared", Value::Blob(vec![2]), None)
         .await
         .expect("set left shared key");
     tx.commit().await.expect("commit left writes");
 
     let mut tx = right.transaction().await.expect("start right transaction");
-    tx.set("right-only", vec![3], None)
+    tx.set("right-only", Value::Blob(vec![3]), None)
         .await
         .expect("set right key");
-    tx.set("shared", vec![4], None)
+    tx.set("shared", Value::Blob(vec![4]), None)
         .await
         .expect("set right shared key");
     tx.commit().await.expect("commit right writes");
@@ -122,15 +123,15 @@ async fn sync_exchanges_offline_writes_and_selects_greatest_generation() {
         let tx = store.transaction().await.expect("start verification");
         assert_eq!(
             tx.get("left-only", 0).await.expect("read left key"),
-            Some(vec![1])
+            Some(Value::Blob(vec![1]))
         );
         assert_eq!(
             tx.get("right-only", 0).await.expect("read right key"),
-            Some(vec![3])
+            Some(Value::Blob(vec![3]))
         );
         assert_eq!(
             tx.get("shared", 0).await.expect("read winner"),
-            Some(vec![4])
+            Some(Value::Blob(vec![4]))
         );
         tx.rollback().await.expect("finish verification");
     }
@@ -155,7 +156,10 @@ async fn the_greater_generation_wins_in_either_sync_direction() {
             InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
             newer_timestamp_provider,
         );
-        for (store, value) in [(&left, vec![1]), (&right, vec![2])] {
+        for (store, value) in [
+            (&left, Value::Blob(vec![1])),
+            (&right, Value::Blob(vec![2])),
+        ] {
             let mut tx = store.transaction().await.expect("start transaction");
             tx.set("same", value, None).await.expect("set value");
             tx.commit().await.expect("commit value");
@@ -167,7 +171,10 @@ async fn the_greater_generation_wins_in_either_sync_direction() {
         }
         for store in [&left, &right] {
             let tx = store.transaction().await.expect("start verification");
-            assert_eq!(tx.get("same", 0).await.expect("read winner"), Some(vec![2]));
+            assert_eq!(
+                tx.get("same", 0).await.expect("read winner"),
+                Some(Value::Blob(vec![2]))
+            );
             tx.rollback().await.expect("finish verification");
         }
     }
@@ -209,7 +216,9 @@ async fn failed_transport_session_can_be_repaired_by_a_fresh_session() {
         .transaction()
         .await
         .expect("start source transaction");
-    tx.set("repair-me", vec![4], None).await.expect("set key");
+    tx.set("repair-me", Value::Blob(vec![4]), None)
+        .await
+        .expect("set key");
     tx.commit().await.expect("commit source key");
 
     let (left_sender, left_receiver) = mpsc::unbounded_channel();
@@ -261,7 +270,7 @@ async fn failed_transport_session_can_be_repaired_by_a_fresh_session() {
         .rollback()
         .await
         .expect("finish partial-state read");
-    assert!(partial_value.is_none() || partial_value == Some(vec![4]));
+    assert!(partial_value.is_none() || partial_value == Some(Value::Blob(vec![4])));
 
     synchronize_pair(&source, &destination).await;
     let tx = destination
@@ -270,7 +279,7 @@ async fn failed_transport_session_can_be_repaired_by_a_fresh_session() {
         .expect("verify repaired state");
     assert_eq!(
         tx.get("repair-me", 0).await.expect("read repaired value"),
-        Some(vec![4])
+        Some(Value::Blob(vec![4]))
     );
     tx.rollback().await.expect("finish verification");
 }
@@ -289,7 +298,7 @@ async fn delayed_snapshot_cannot_restore_a_deleted_generation() {
         .transaction()
         .await
         .expect("start source transaction");
-    tx.set("key", vec![1], None)
+    tx.set("key", Value::Blob(vec![1]), None)
         .await
         .expect("set original value");
     let stale = tx
@@ -298,7 +307,9 @@ async fn delayed_snapshot_cannot_restore_a_deleted_generation() {
         .expect("export stale snapshot")
         .expect("snapshot exists");
     tx.delete("key").await.expect("delete original value");
-    tx.set("key", vec![2], None).await.expect("recreate key");
+    tx.set("key", Value::Blob(vec![2]), None)
+        .await
+        .expect("recreate key");
     tx.commit().await.expect("commit recreated key");
     synchronize_pair(&source, &destination).await;
 
@@ -308,19 +319,19 @@ async fn delayed_snapshot_cannot_restore_a_deleted_generation() {
         .expect("ignore stale snapshot");
     assert_eq!(
         tx.get("key", 0).await.expect("read current value"),
-        Some(vec![2])
+        Some(Value::Blob(vec![2]))
     );
     tx.rollback().await.expect("finish stale import");
 }
 
 #[tokio::test]
-async fn divergent_same_generation_history_is_rejected_without_partial_import() {
+async fn divergent_same_generation_history_converges() {
     let seed = KvStore::new(
         InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
         test_timestamp_provider,
     );
     let mut tx = seed.transaction().await.expect("start seed transaction");
-    tx.set("fork", vec![0], None)
+    tx.set("fork", Value::Blob(vec![0]), None)
         .await
         .expect("set common value");
     let snapshot = tx
@@ -338,7 +349,10 @@ async fn divergent_same_generation_history_is_rejected_without_partial_import() 
         InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
         test_timestamp_provider,
     );
-    for (store, value) in [(&left, vec![1]), (&right, vec![2])] {
+    for (store, value) in [
+        (&left, Value::Blob(vec![1])),
+        (&right, Value::Blob(vec![2])),
+    ] {
         let mut tx = store.transaction().await.expect("start branch transaction");
         tx.import_snapshot(snapshot.clone())
             .await
@@ -351,39 +365,20 @@ async fn divergent_same_generation_history_is_rejected_without_partial_import() 
         tx.commit().await.expect("commit divergent history");
     }
 
-    let (left_sender, left_receiver) = mpsc::unbounded_channel();
-    let (right_sender, right_receiver) = mpsc::unbounded_channel();
-    let initiator = Channel {
-        sender: left_sender,
-        receiver: right_receiver,
-    };
-    let responder = Channel {
-        sender: right_sender,
-        receiver: left_receiver,
-    };
-    let results = tokio::time::timeout(Duration::from_secs(2), async {
-        join!(
-            run_sync(&left, initiator, SyncRole::Initiator, Config::default()),
-            run_sync(&right, responder, SyncRole::Responder, Config::default())
-        )
-    })
-    .await
-    .expect("fork rejection should finish both sessions");
-    assert!(
-        results.0.is_err(),
-        "initiator should receive peer disconnect"
-    );
-    assert!(matches!(results.1, Err(Error::Storage(_))));
-
-    let tx = right
-        .transaction()
-        .await
-        .expect("check rejected destination");
+    synchronize_pair(&left, &right).await;
+    let left_tx = left.transaction().await.expect("read left merge");
+    let right_tx = right.transaction().await.expect("read right merge");
     assert_eq!(
-        tx.get("fork", 0).await.expect("read destination fork"),
-        Some(vec![2])
+        left_tx.get("fork", 0).await.expect("left value"),
+        right_tx.get("fork", 0).await.expect("right value")
     );
-    tx.rollback().await.expect("finish fork check");
+    assert_eq!(
+        left_tx.export_snapshots().await.expect("left history"),
+        right_tx.export_snapshots().await.expect("right history")
+    );
+    left_tx.rollback().await.expect("finish left read");
+    right_tx.rollback().await.expect("finish right read");
+    synchronize_pair(&right, &left).await;
 }
 
 #[tokio::test]
@@ -396,7 +391,7 @@ async fn invalid_snapshot_batch_is_rejected_without_partial_import() {
         .transaction()
         .await
         .expect("start source transaction");
-    tx.set("valid", vec![1], None)
+    tx.set("valid", Value::Blob(vec![1]), None)
         .await
         .expect("set valid value");
     let (key, payload) = tx
@@ -421,7 +416,7 @@ async fn invalid_snapshot_batch_is_rejected_without_partial_import() {
     let (out_sender, _out_receiver) = mpsc::unbounded_channel();
     peer_sender
         .send(
-            encode_frame(&Message::Hello { version: 1 }, Config::default()).expect("encode hello"),
+            encode_frame(&Message::Hello { version: 2 }, Config::default()).expect("encode hello"),
         )
         .expect("queue hello");
     peer_sender
@@ -473,7 +468,7 @@ async fn frame_limit_rejects_session_without_applying_data() {
         .transaction()
         .await
         .expect("start source transaction");
-    tx.set("limited", vec![1], None)
+    tx.set("limited", Value::Blob(vec![1]), None)
         .await
         .expect("set source value");
     tx.commit().await.expect("commit source value");
@@ -523,14 +518,14 @@ async fn sync_transfers_empty_values_tombstones_and_expired_snapshots() {
     );
 
     let mut tx = left.transaction().await.expect("start source transaction");
-    tx.set("empty", Vec::new(), None)
+    tx.set("empty", Value::Blob(Vec::new()), None)
         .await
         .expect("set empty value");
-    tx.set("deleted", vec![1], None)
+    tx.set("deleted", Value::Blob(vec![1]), None)
         .await
         .expect("set soon-to-be-deleted value");
     tx.delete("deleted").await.expect("delete value");
-    tx.set("expired", vec![2], Some(10))
+    tx.set("expired", Value::Blob(vec![2]), Some(10))
         .await
         .expect("set expired value");
     tx.commit().await.expect("commit source state");
@@ -541,7 +536,7 @@ async fn sync_transfers_empty_values_tombstones_and_expired_snapshots() {
         let tx = store.transaction().await.expect("start verification");
         assert_eq!(
             tx.get("empty", 0).await.expect("read empty value"),
-            Some(vec![])
+            Some(Value::Blob(vec![]))
         );
         assert_eq!(tx.get("deleted", 0).await.expect("read tombstone"), None);
         assert_eq!(
@@ -606,7 +601,9 @@ async fn three_stores_replicate_state_and_tombstones_in_stages() {
     );
 
     let mut tx = a.transaction().await.expect("start A transaction");
-    tx.set("shared", vec![1], None).await.expect("set A value");
+    tx.set("shared", Value::Blob(vec![1]), None)
+        .await
+        .expect("set A value");
     tx.commit().await.expect("commit A value");
     synchronize_pair(&a, &b).await;
     synchronize_pair(&b, &c).await;
@@ -648,7 +645,7 @@ async fn redb_replica_restarts_and_syncs_again_through_grpc() {
     let (replica_client, replica_shutdown, replica_server) =
         start_client_server(redb_backend).await;
     source_client
-        .set("durable".into(), vec![6], None)
+        .set("durable".into(), Value::Blob(vec![6]), None)
         .await
         .expect("write source value");
     synchronize_pair(&source, &redb_store).await;
@@ -657,7 +654,7 @@ async fn redb_replica_restarts_and_syncs_again_through_grpc() {
             .get("durable".into())
             .await
             .expect("read synced value"),
-        Some(vec![6])
+        Some(Value::Blob(vec![6]))
     );
 
     replica_shutdown
@@ -681,7 +678,7 @@ async fn redb_replica_restarts_and_syncs_again_through_grpc() {
             .get("durable".into())
             .await
             .expect("read after restart"),
-        Some(vec![6])
+        Some(Value::Blob(vec![6]))
     );
     source_client
         .delete("durable".into())
@@ -724,7 +721,7 @@ async fn client_writes_replicate_to_peer_client() {
     let (right_client, right_shutdown, right_server) = start_client_server(right_backend).await;
 
     left_client
-        .set("replicated".into(), vec![7, 8], None)
+        .set("replicated".into(), Value::Blob(vec![7, 8]), None)
         .await
         .expect("write through left client");
     synchronize_pair(&left_store, &right_store).await;
@@ -733,14 +730,14 @@ async fn client_writes_replicate_to_peer_client() {
             .get("replicated".into())
             .await
             .expect("read replicated value"),
-        Some(vec![7, 8])
+        Some(Value::Blob(vec![7, 8]))
     );
     assert_eq!(
         right_client
             .scan_prefix("rep".into())
             .await
             .expect("scan replicated prefix"),
-        vec![("replicated".into(), vec![7, 8])]
+        vec![("replicated".into(), Value::Blob(vec![7, 8]))]
     );
 
     right_client
@@ -760,4 +757,72 @@ async fn client_writes_replicate_to_peer_client() {
     right_shutdown.send(()).expect("right server is running");
     stop_server(left_server).await;
     stop_server(right_server).await;
+}
+
+#[tokio::test]
+async fn repeated_sessions_merge_nested_maps_lists_and_delete_update_races() {
+    use value::{JsonNumber, JsonValue};
+
+    fn state(a: i64, b: i64) -> Value {
+        let number = |value| JsonValue::Number(JsonNumber::I64(value));
+        Value::Json(JsonValue::Object(
+            [
+                (
+                    "nested".into(),
+                    JsonValue::Object([("a".into(), number(a)), ("b".into(), number(b))].into()),
+                ),
+                ("list".into(), JsonValue::Array(vec![number(a), number(b)])),
+            ]
+            .into(),
+        ))
+    }
+    let left = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+    let right = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+    let mut tx = left.transaction().await.expect("start seed write");
+    tx.set("key", state(0, 0), None)
+        .await
+        .expect("write seed map");
+    tx.commit().await.expect("commit seed");
+    synchronize_pair(&left, &right).await;
+    for round in 1..=3 {
+        for (store, value) in [
+            (&left, state(round, round - 1)),
+            (&right, state(round - 1, round)),
+        ] {
+            let mut tx = store.transaction().await.expect("start branch write");
+            tx.set("key", value, None).await.expect("edit branch");
+            tx.commit().await.expect("commit branch");
+        }
+        if round % 2 == 0 {
+            synchronize_pair(&right, &left).await;
+        } else {
+            synchronize_pair(&left, &right).await;
+        }
+        for store in [&left, &right] {
+            let tx = store.transaction().await.expect("verify merged map");
+            assert_eq!(
+                tx.get("key", 0).await.expect("read map"),
+                Some(state(round, round))
+            );
+            tx.rollback().await.expect("finish verification");
+        }
+        synchronize_pair(&left, &right).await;
+    }
+    let mut tx = left.transaction().await.expect("start delete");
+    tx.delete("key").await.expect("delete generation");
+    tx.commit().await.expect("commit deletion");
+    let mut tx = right.transaction().await.expect("start concurrent update");
+    tx.set("key", state(4, 4), Some(100))
+        .await
+        .expect("edit deleted generation offline");
+    tx.commit().await.expect("commit concurrent update");
+    for _ in 0..2 {
+        synchronize_pair(&right, &left).await;
+        for store in [&left, &right] {
+            let tx = store.transaction().await.expect("verify delete wins");
+            assert_eq!(tx.get("key", 0).await.expect("read deleted key"), None);
+            assert!(tx.scan_all(0).await.expect("scan deleted key").is_empty());
+            tx.rollback().await.expect("finish deleted read");
+        }
+    }
 }

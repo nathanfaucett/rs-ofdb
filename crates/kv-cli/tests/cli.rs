@@ -41,10 +41,10 @@ fn help_excludes_hosting_and_sync_commands() {
 }
 
 #[test]
-fn local_cli_preserves_file_bytes_and_emits_json_scans() {
+fn local_cli_preserves_tagged_file_values_and_emits_json_scans() {
     let database = temporary_path("store.redb");
     let input = temporary_path("value.bin");
-    let value = [0, 255, 10];
+    let value = br#"{"type":"blob","value":"AP8K"}"#;
     std::fs::write(&input, value).expect("write binary test value");
     let database_arg = database.to_str().expect("database path is UTF-8");
     let input_arg = input.to_str().expect("input path is UTF-8");
@@ -70,7 +70,10 @@ fn local_cli_preserves_file_bytes_and_emits_json_scans() {
         "{}",
         String::from_utf8_lossy(&get.stderr)
     );
-    assert_eq!(get.stdout, value);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&get.stdout).expect("tagged output"),
+        serde_json::from_slice::<serde_json::Value>(value).expect("tagged input")
+    );
 
     let scan = run(&["--database", database_arg, "scan-all"]);
     assert!(
@@ -80,7 +83,10 @@ fn local_cli_preserves_file_bytes_and_emits_json_scans() {
     );
     let entries: serde_json::Value = serde_json::from_slice(&scan.stdout).expect("valid scan JSON");
     assert_eq!(entries[0]["key"], "binary");
-    assert_eq!(entries[0]["value"], "AP8K");
+    assert_eq!(
+        entries[0]["value"],
+        serde_json::json!({"type":"blob","value":"AP8K"})
+    );
 
     let delete = run(&["--database", database_arg, "delete", "binary"]);
     assert!(delete.status.success());
@@ -125,7 +131,7 @@ async fn remote_cli_executes_queries_through_the_facade() {
             "set",
             "remote-key",
             "--value",
-            "remote",
+            r#"{"type":"text","value":"remote"}"#,
         ])
     })
     .await
@@ -141,9 +147,52 @@ async fn remote_cli_executes_queries_through_the_facade() {
         .expect("connect to hosted database");
     assert_eq!(
         client.get("remote-key").await.expect("read hosted value"),
-        Some(b"remote".to_vec())
+        Some(ofdb_kv::Value::Text("remote".into()))
     );
 
     shutdown.send(()).expect("server awaits shutdown");
     server.await.expect("server task completes");
+}
+
+#[test]
+fn cli_round_trips_explicit_types_and_rejects_untagged_input_before_open() {
+    let database = temporary_path("typed.redb");
+    let path = database.to_str().expect("UTF-8 test path");
+    for invalid in ["text", "42", r#"{"untagged":true}"#] {
+        let output = run(&["--database", path, "set", "key", "--value", invalid]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(!database.exists(), "invalid input must not create storage");
+    }
+    for input in [
+        r#"{"type":"null"}"#,
+        r#"{"type":"type","value":"Json"}"#,
+        r#"{"type":"uuid","value":"00000000-0000-0000-0000-000000000000"}"#,
+        r#"{"type":"bool","value":true}"#,
+        r#"{"type":"integer","value":"-9223372036854775808"}"#,
+        r#"{"type":"float","value":"7ff8000000000042"}"#,
+        r#"{"type":"float","value":"8000000000000000"}"#,
+        r#"{"type":"text","value":"{not guessed as JSON}"}"#,
+        r#"{"type":"blob","value":"AP8="}"#,
+        r#"{"type":"json","value":{"type":"object","value":{"$number":{"type":"array","value":[{"type":"u64","value":"18446744073709551615"},{"type":"f64","value":"7ff8000000000042"}]}}}}"#,
+    ] {
+        let set = run(&["--database", path, "set", "key", "--value", input]);
+        assert!(
+            set.status.success(),
+            "{}",
+            String::from_utf8_lossy(&set.stderr)
+        );
+        assert!(set.stdout.is_empty());
+        let get = run(&["--database", path, "get", "key"]);
+        assert!(
+            get.status.success(),
+            "{}",
+            String::from_utf8_lossy(&get.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&get.stdout).expect("typed output"),
+            serde_json::from_str::<serde_json::Value>(input).expect("typed input")
+        );
+    }
+    std::fs::remove_file(database).expect("remove typed test database");
 }

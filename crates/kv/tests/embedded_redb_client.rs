@@ -1,5 +1,6 @@
 use futures::executor::block_on;
 use ofdb_kv::Database;
+use value::Value;
 
 #[test]
 fn redb_client_shares_storage_and_survives_database_drop() {
@@ -11,7 +12,7 @@ fn redb_client_shares_storage_and_survives_database_drop() {
         let shared = database.client();
         block_on(async {
             client
-                .set("binary", vec![0, 255], None)
+                .set("binary", Value::Blob(vec![0, 255]), None)
                 .await
                 .expect("write through client");
             assert_eq!(
@@ -19,7 +20,7 @@ fn redb_client_shares_storage_and_survives_database_drop() {
                     .get("binary")
                     .await
                     .expect("database reads client write"),
-                Some(vec![0, 255])
+                Some(Value::Blob(vec![0, 255]))
             );
         });
         client
@@ -30,7 +31,7 @@ fn redb_client_shares_storage_and_survives_database_drop() {
                 .get("binary")
                 .await
                 .expect("client works after database drop"),
-            Some(vec![0, 255])
+            Some(Value::Blob(vec![0, 255]))
         );
     });
     drop(client);
@@ -43,7 +44,7 @@ fn redb_client_shares_storage_and_survives_database_drop() {
                 .get("binary")
                 .await
                 .expect("read persisted value"),
-            Some(vec![0, 255])
+            Some(Value::Blob(vec![0, 255]))
         );
     });
 }

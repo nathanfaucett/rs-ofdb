@@ -8,6 +8,8 @@ use btree_automerge::{
 use futures::{StreamExt, pin_mut};
 use uuid::Uuid;
 
+use value::Value;
+
 use crate::{
     decode_document_id, encode_document_id,
     value_document::{new_document, read_document, write_live, write_tombstone},
@@ -59,7 +61,7 @@ impl<T> KvTransaction<T>
 where
     T: BTreeTransaction<Vec<u8>, Vec<u8>>,
 {
-    pub async fn get(&self, key: &str, now: i64) -> BTreeResult<Option<Vec<u8>>> {
+    pub async fn get(&self, key: &str, now: i64) -> BTreeResult<Option<Value>> {
         let Some((_, document)) = self.latest(key).await? else {
             return Ok(None);
         };
@@ -74,7 +76,7 @@ where
         &self,
         range: std::ops::Range<String>,
         now: i64,
-    ) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+    ) -> BTreeResult<Vec<(String, Value)>> {
         if range.start >= range.end {
             return Ok(Vec::new());
         }
@@ -88,7 +90,7 @@ where
         .await
     }
 
-    pub async fn scan_prefix(&self, prefix: &str, now: i64) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+    pub async fn scan_prefix(&self, prefix: &str, now: i64) -> BTreeResult<Vec<(String, Value)>> {
         let start = encoded_key_prefix(prefix);
         let end = prefix_end(start.clone());
         let bounds = match end {
@@ -102,7 +104,7 @@ where
         &self,
         bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>),
         now: i64,
-    ) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+    ) -> BTreeResult<Vec<(String, Value)>> {
         let documents = self.inner.range(bounds);
         pin_mut!(documents);
         let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
@@ -122,7 +124,7 @@ where
             })
     }
 
-    pub async fn scan_all(&self, now: i64) -> BTreeResult<Vec<(String, Vec<u8>)>> {
+    pub async fn scan_all(&self, now: i64) -> BTreeResult<Vec<(String, Value)>> {
         let documents = self.inner.range(..);
         pin_mut!(documents);
         let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
@@ -145,7 +147,7 @@ where
     pub async fn set(
         &mut self,
         key: &str,
-        value: Vec<u8>,
+        value: Value,
         expires_at: Option<i64>,
     ) -> BTreeResult<()> {
         let latest = self.latest(key).await?;
@@ -233,6 +235,7 @@ where
         let mut incoming = validate_snapshot(&key, &payload)?;
         let (logical_key, generation) = decode_document_id(&key.id)?;
         if let Some((id, mut current)) = self.latest(&logical_key).await? {
+            read_document(&current)?;
             let (_, current_generation) = decode_document_id(&id)?;
             if generation < current_generation {
                 return Ok(());
@@ -246,12 +249,17 @@ where
                 {
                     return Ok(());
                 }
-                if !current_heads
+                if current_heads
                     .iter()
                     .all(|head| incoming.get_change_by_hash(head).is_some())
                 {
-                    return Err(BTreeError::InvalidDocument);
+                    self.inner.insert(id, incoming).await?;
+                    return Ok(());
                 }
+                current.merge(&mut incoming).map_err(BTreeError::custom)?;
+                read_document(&current)?;
+                self.inner.insert(id, current).await?;
+                return Ok(());
             }
             self.remove_key_generations(&logical_key).await?;
         }
@@ -365,6 +373,7 @@ mod tests {
     use btree::{BTreeRead, InMemoryBTree};
     use btree_automerge::{DocumentChangeKey, DocumentType};
     use futures::{StreamExt, executor::block_on};
+    use value::Value;
 
     fn test_timestamp_provider() -> uuid::Timestamp {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -384,8 +393,8 @@ mod tests {
             let store = KvStore::new(backend, test_timestamp_provider);
 
             let mut tx = store.transaction().await.unwrap();
-            tx.set("k", vec![1], None).await.unwrap();
-            assert_eq!(tx.get("k", 0).await.unwrap(), Some(vec![1]));
+            tx.set("k", Value::Blob(vec![1]), None).await.unwrap();
+            assert_eq!(tx.get("k", 0).await.unwrap(), Some(Value::Blob(vec![1])));
             tx.commit().await.unwrap();
 
             let mut tx = store.transaction().await.unwrap();
@@ -394,8 +403,8 @@ mod tests {
             tx.commit().await.unwrap();
 
             let mut tx = store.transaction().await.unwrap();
-            tx.set("k", vec![2], None).await.unwrap();
-            assert_eq!(tx.get("k", 0).await.unwrap(), Some(vec![2]));
+            tx.set("k", Value::Blob(vec![2]), None).await.unwrap();
+            assert_eq!(tx.get("k", 0).await.unwrap(), Some(Value::Blob(vec![2])));
             tx.rollback().await.unwrap();
 
             let tx = store.transaction().await.unwrap();
@@ -410,10 +419,10 @@ mod tests {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();
             let store = KvStore::new(backend.clone(), test_timestamp_provider);
             let mut tx = store.transaction().await.unwrap();
-            tx.set("key", vec![1], None).await.unwrap();
+            tx.set("key", Value::Blob(vec![1]), None).await.unwrap();
             tx.commit().await.unwrap();
             let mut tx = store.transaction().await.unwrap();
-            tx.set("key", vec![2], Some(9)).await.unwrap();
+            tx.set("key", Value::Blob(vec![2]), Some(9)).await.unwrap();
             tx.commit().await.unwrap();
 
             let entries = backend.range(..).collect::<Vec<_>>().await;
@@ -431,14 +440,14 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_divergent_histories_for_the_same_generation() {
+    fn import_merges_divergent_histories_for_the_same_generation() {
         block_on(async {
             let base = KvStore::new(
                 InMemoryBTree::<Vec<u8>, Vec<u8>>::new(),
                 test_timestamp_provider,
             );
             let mut tx = base.transaction().await.unwrap();
-            tx.set("key", vec![0], None).await.unwrap();
+            tx.set("key", Value::Blob(vec![0]), None).await.unwrap();
             let initial = tx.export_snapshot("key").await.unwrap().unwrap();
             tx.commit().await.unwrap();
 
@@ -457,12 +466,12 @@ mod tests {
             }
 
             let mut tx = left.transaction().await.unwrap();
-            tx.set("key", vec![1], None).await.unwrap();
+            tx.set("key", Value::Blob(vec![1]), None).await.unwrap();
             let left_branch = tx.export_snapshot("key").await.unwrap().unwrap();
             tx.commit().await.unwrap();
 
             let mut tx = right.transaction().await.unwrap();
-            tx.set("key", vec![2], None).await.unwrap();
+            tx.set("key", Value::Blob(vec![2]), None).await.unwrap();
             let right_branch = tx.export_snapshot("key").await.unwrap().unwrap();
             tx.commit().await.unwrap();
 
@@ -472,7 +481,9 @@ mod tests {
             );
             let mut tx = destination.transaction().await.unwrap();
             tx.import_snapshot(left_branch).await.unwrap();
-            assert!(tx.import_snapshot(right_branch).await.is_err());
+            tx.import_snapshot(right_branch)
+                .await
+                .expect("merge concurrent branch");
             tx.rollback().await.unwrap();
         });
     }
@@ -485,44 +496,54 @@ mod tests {
                 test_timestamp_provider,
             );
             let mut tx = store.transaction().await.unwrap();
-            tx.set("test:1234", vec![1], None).await.unwrap();
-            tx.set("test:", vec![2], None).await.unwrap();
-            tx.set("test;1234", vec![3], None).await.unwrap();
-            tx.set("prefix|get|5", vec![4], None).await.unwrap();
-            tx.set("prefix|get|expired", vec![5], Some(10))
+            tx.set("test:1234", Value::Blob(vec![1]), None)
                 .await
                 .unwrap();
-            tx.set("taco-1", vec![6], None).await.unwrap();
-            tx.set("taco.1", vec![7], None).await.unwrap();
-            tx.set("雪:key", vec![8], None).await.unwrap();
-            tx.set("雪ier", vec![9], None).await.unwrap();
-            tx.set("nul\0:key", vec![10], None).await.unwrap();
-            tx.set("nul\0;key", vec![11], None).await.unwrap();
+            tx.set("test:", Value::Blob(vec![2]), None).await.unwrap();
+            tx.set("test;1234", Value::Blob(vec![3]), None)
+                .await
+                .unwrap();
+            tx.set("prefix|get|5", Value::Blob(vec![4]), None)
+                .await
+                .unwrap();
+            tx.set("prefix|get|expired", Value::Blob(vec![5]), Some(10))
+                .await
+                .unwrap();
+            tx.set("taco-1", Value::Blob(vec![6]), None).await.unwrap();
+            tx.set("taco.1", Value::Blob(vec![7]), None).await.unwrap();
+            tx.set("雪:key", Value::Blob(vec![8]), None).await.unwrap();
+            tx.set("雪ier", Value::Blob(vec![9]), None).await.unwrap();
+            tx.set("nul\0:key", Value::Blob(vec![10]), None)
+                .await
+                .unwrap();
+            tx.set("nul\0;key", Value::Blob(vec![11]), None)
+                .await
+                .unwrap();
             tx.delete("test:").await.unwrap();
 
             assert_eq!(
                 tx.scan_prefix("test:", 9).await.unwrap(),
-                vec![("test:1234".into(), vec![1])]
+                vec![("test:1234".into(), Value::Blob(vec![1]))]
             );
             assert_eq!(
                 tx.scan_prefix("prefix|get|", 10).await.unwrap(),
-                vec![("prefix|get|5".into(), vec![4])]
+                vec![("prefix|get|5".into(), Value::Blob(vec![4]))]
             );
             assert_eq!(
                 tx.scan_prefix("prefix", 10).await.unwrap(),
-                vec![("prefix|get|5".into(), vec![4])]
+                vec![("prefix|get|5".into(), Value::Blob(vec![4]))]
             );
             assert_eq!(
                 tx.scan_prefix("taco-", 9).await.unwrap(),
-                vec![("taco-1".into(), vec![6])]
+                vec![("taco-1".into(), Value::Blob(vec![6]))]
             );
             assert_eq!(
                 tx.scan_prefix("雪:", 9).await.unwrap(),
-                vec![("雪:key".into(), vec![8])]
+                vec![("雪:key".into(), Value::Blob(vec![8]))]
             );
             assert_eq!(
                 tx.scan_prefix("nul\0:", 9).await.unwrap(),
-                vec![("nul\0:key".into(), vec![10])]
+                vec![("nul\0:key".into(), Value::Blob(vec![10]))]
             );
             assert!(tx.scan_prefix("missing", 9).await.unwrap().is_empty());
             tx.rollback().await.unwrap();
@@ -535,23 +556,26 @@ mod tests {
             let backend = InMemoryBTree::<Vec<u8>, Vec<u8>>::new();
             let store = KvStore::new(backend, test_timestamp_provider);
             let mut tx = store.transaction().await.unwrap();
-            tx.set("a", vec![1], Some(10)).await.unwrap();
-            tx.set("ab", vec![2], None).await.unwrap();
-            tx.set("b", vec![3], None).await.unwrap();
-            assert_eq!(tx.get("a", 9).await.unwrap(), Some(vec![1]));
-            assert_eq!(tx.get("ab", 9).await.unwrap(), Some(vec![2]));
+            tx.set("a", Value::Blob(vec![1]), Some(10)).await.unwrap();
+            tx.set("ab", Value::Blob(vec![2]), None).await.unwrap();
+            tx.set("b", Value::Blob(vec![3]), None).await.unwrap();
+            assert_eq!(tx.get("a", 9).await.unwrap(), Some(Value::Blob(vec![1])));
+            assert_eq!(tx.get("ab", 9).await.unwrap(), Some(Value::Blob(vec![2])));
             assert_eq!(tx.get("a", 10).await.unwrap(), None);
             assert_eq!(
                 tx.scan_all(9).await.unwrap(),
                 vec![
-                    ("a".into(), vec![1]),
-                    ("ab".into(), vec![2]),
-                    ("b".into(), vec![3])
+                    ("a".into(), Value::Blob(vec![1])),
+                    ("ab".into(), Value::Blob(vec![2])),
+                    ("b".into(), Value::Blob(vec![3]))
                 ]
             );
             assert_eq!(
                 tx.scan("a".to_string().."b".to_string(), 9).await.unwrap(),
-                vec![("a".into(), vec![1]), ("ab".into(), vec![2])]
+                vec![
+                    ("a".into(), Value::Blob(vec![1])),
+                    ("ab".into(), Value::Blob(vec![2]))
+                ]
             );
             assert!(
                 tx.scan("a".to_string().."a".to_string(), 0)

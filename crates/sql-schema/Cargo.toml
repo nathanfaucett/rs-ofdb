@@ -23,7 +23,7 @@ wasm = ["dep:tsify", "dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
 
 [dependencies]
 # internal dependencies
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = [] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
 
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 

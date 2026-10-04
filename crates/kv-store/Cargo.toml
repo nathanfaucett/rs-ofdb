@@ -12,10 +12,11 @@ rust-version.workspace = true
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
 btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["std", "automerge"] }
 
 # External dependencies
-automerge = { version = "0.9", default-features = false, features = [] }
-
+automerge = { version = "0.10", default-features = false, features = [] }
+autosurgeon = { version = "0.12", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
 

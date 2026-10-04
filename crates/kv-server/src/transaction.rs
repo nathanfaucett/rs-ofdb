@@ -94,11 +94,17 @@ where
                 .get(&request.key, current_time_millis()?)
                 .await
                 .map_err(status_from_error)?;
-            return Ok(Outcome::Got(GetResponse { value }));
+            return Ok(Outcome::Got(GetResponse {
+                value: value.map(kv_proto::value_to_proto),
+            }));
         }
         Command::Set(request) => {
             transaction
-                .set(&request.key, request.value, request.expires_at)
+                .set(
+                    &request.key,
+                    kv_proto::required_value(request.value)?,
+                    request.expires_at,
+                )
                 .await
                 .map_err(status_from_error)?;
             return Ok(Outcome::Completed(()));
@@ -129,7 +135,10 @@ where
     Ok(Outcome::Scanned(ScanResponse {
         entries: entries
             .into_iter()
-            .map(|(key, value)| ScanEntry { key, value })
+            .map(|(key, value)| ScanEntry {
+                key,
+                value: Some(kv_proto::value_to_proto(value)),
+            })
             .collect(),
     }))
 }

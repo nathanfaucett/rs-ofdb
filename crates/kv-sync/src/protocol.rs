@@ -8,7 +8,7 @@ pub struct KvSnapshot {
     pub key: DocumentChangeKey,
     pub payload: Vec<u8>,
 }
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 pub trait SyncTransport {
     type Error;

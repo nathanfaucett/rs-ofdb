@@ -4,6 +4,7 @@ use btree::{BTree, InMemoryBTree};
 use btree_redb::{Bytes, RedbByteBTree, table_definition};
 use kv_store::KvStore;
 use redb::Database;
+use value::Value;
 
 const TABLE: &str = "local-kv-test";
 
@@ -30,42 +31,44 @@ where
         .await
         .expect("start deterministic transaction");
 
-    tx.set("test:1234", vec![1], None)
+    tx.set("test:1234", Value::Blob(vec![1]), None)
         .await
         .expect("set test key");
-    tx.set("testX", vec![2], None)
+    tx.set("testX", Value::Blob(vec![2]), None)
         .await
         .expect("set adjacent key");
-    tx.set("prefix|get|5", vec![3], None)
+    tx.set("prefix|get|5", Value::Blob(vec![3]), None)
         .await
         .expect("set delimited prefix key");
-    tx.set("prefixX", vec![4], None)
+    tx.set("prefixX", Value::Blob(vec![4]), None)
         .await
         .expect("set adjacent prefix key");
-    tx.set("taco-1", vec![5], None).await.expect("set taco key");
-    tx.set("雪\0:key", vec![6], None)
+    tx.set("taco-1", Value::Blob(vec![5]), None)
+        .await
+        .expect("set taco key");
+    tx.set("雪\0:key", Value::Blob(vec![6]), None)
         .await
         .expect("set Unicode key with NUL");
-    tx.set("literal*key", vec![7], None)
+    tx.set("literal*key", Value::Blob(vec![7]), None)
         .await
         .expect("set literal star key");
-    tx.set("empty-value", vec![99], None)
+    tx.set("empty-value", Value::Blob(vec![99]), None)
         .await
         .expect("set initial value");
-    tx.set("empty-value", Vec::new(), None)
+    tx.set("empty-value", Value::Blob(Vec::new()), None)
         .await
         .expect("overwrite with empty value");
-    tx.set("expires", vec![8], Some(10))
+    tx.set("expires", Value::Blob(vec![8]), Some(10))
         .await
         .expect("set expiring value");
-    tx.set("deleted", vec![9], None)
+    tx.set("deleted", Value::Blob(vec![9]), None)
         .await
         .expect("set soon-to-be-deleted key");
     tx.delete("deleted").await.expect("delete key");
     tx.delete("deleted")
         .await
         .expect("delete key a second time");
-    tx.set("recreated", vec![10], None)
+    tx.set("recreated", Value::Blob(vec![10]), None)
         .await
         .expect("set old generation");
     let old = tx
@@ -74,7 +77,7 @@ where
         .expect("export old generation")
         .expect("old generation exists");
     tx.delete("recreated").await.expect("delete old generation");
-    tx.set("recreated", vec![11], None)
+    tx.set("recreated", Value::Blob(vec![11]), None)
         .await
         .expect("create new generation");
     let new = tx
@@ -97,16 +100,16 @@ where
     assert_eq!(tx.get("missing", 0).await.expect("get missing"), None);
     assert_eq!(
         tx.get("empty-value", 0).await.expect("get empty"),
-        Some(vec![])
+        Some(Value::Blob(vec![]))
     );
     assert_eq!(
         tx.get("recreated", 0).await.expect("get recreated"),
-        Some(vec![11])
+        Some(Value::Blob(vec![11]))
     );
     assert_eq!(tx.get("deleted", 0).await.expect("get deleted"), None);
     assert_eq!(
         tx.get("expires", 9).await.expect("get before expiry"),
-        Some(vec![8])
+        Some(Value::Blob(vec![8]))
     );
     assert_eq!(tx.get("expires", 10).await.expect("get at expiry"), None);
 
@@ -115,8 +118,8 @@ where
             .await
             .expect("scan range"),
         vec![
-            ("prefixX".into(), vec![4]),
-            ("prefix|get|5".into(), vec![3]),
+            ("prefixX".into(), Value::Blob(vec![4])),
+            ("prefix|get|5".into(), Value::Blob(vec![3])),
         ]
     );
     assert!(
@@ -133,29 +136,29 @@ where
     );
     assert_eq!(
         tx.scan_prefix("test:", 0).await.expect("scan test prefix"),
-        vec![("test:1234".into(), vec![1])]
+        vec![("test:1234".into(), Value::Blob(vec![1]))]
     );
     assert_eq!(
         tx.scan_prefix("prefix|get|", 0)
             .await
             .expect("scan delimited prefix"),
-        vec![("prefix|get|5".into(), vec![3])]
+        vec![("prefix|get|5".into(), Value::Blob(vec![3]))]
     );
     assert_eq!(
         tx.scan_prefix("taco-", 0).await.expect("scan taco prefix"),
-        vec![("taco-1".into(), vec![5])]
+        vec![("taco-1".into(), Value::Blob(vec![5]))]
     );
     assert_eq!(
         tx.scan_prefix("雪\0:", 0)
             .await
             .expect("scan Unicode prefix"),
-        vec![("雪\0:key".into(), vec![6])]
+        vec![("雪\0:key".into(), Value::Blob(vec![6]))]
     );
     assert_eq!(
         tx.scan_prefix("literal*", 0)
             .await
             .expect("scan literal star prefix"),
-        vec![("literal*key".into(), vec![7])]
+        vec![("literal*key".into(), Value::Blob(vec![7]))]
     );
     assert_eq!(
         tx.scan_prefix("", 0).await.expect("scan empty prefix"),
@@ -177,12 +180,12 @@ where
         tx.get("test:1234", 0).await.expect("read rolled back key"),
         None
     );
-    tx.set("committed", vec![12], None)
+    tx.set("committed", Value::Blob(vec![12]), None)
         .await
         .expect("set committed value");
     assert_eq!(
         tx.get("committed", 0).await.expect("read pending value"),
-        Some(vec![12])
+        Some(Value::Blob(vec![12]))
     );
     tx.commit().await.expect("commit value");
 
@@ -192,9 +195,9 @@ where
         .expect("start commit verification");
     assert_eq!(
         tx.get("committed", 0).await.expect("read committed value"),
-        Some(vec![12])
+        Some(Value::Blob(vec![12]))
     );
-    tx.set("rolled-back", vec![13], None)
+    tx.set("rolled-back", Value::Blob(vec![13]), None)
         .await
         .expect("set value to roll back");
     tx.rollback().await.expect("roll back value");

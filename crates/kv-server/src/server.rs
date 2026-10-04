@@ -85,7 +85,9 @@ where
         let tx = self.store.transaction().await.map_err(status_from_error)?;
         let value = tx.get(&key, now).await.map_err(status_from_error)?;
 
-        Ok(Response::new(GetResponse { value }))
+        Ok(Response::new(GetResponse {
+            value: value.map(kv_proto::value_to_proto),
+        }))
     }
 
     async fn set(
@@ -94,7 +96,7 @@ where
     ) -> Result<Response<proto::kvdb::SetResponse>, Status> {
         let request = request.into_inner();
         let key = request.key;
-        let value = request.value;
+        let value = kv_proto::required_value(request.value)?;
         let expires_at = request.expires_at;
 
         let mut tx = self.store.transaction().await.map_err(status_from_error)?;
@@ -134,7 +136,10 @@ where
 
         let entries = entries
             .into_iter()
-            .map(|(key, value)| ScanEntry { key, value })
+            .map(|(key, value)| ScanEntry {
+                key,
+                value: Some(kv_proto::value_to_proto(value)),
+            })
             .collect();
 
         Ok(Response::new(ScanResponse { entries }))
@@ -157,7 +162,10 @@ where
 
         let entries = entries
             .into_iter()
-            .map(|(key, value)| ScanEntry { key, value })
+            .map(|(key, value)| ScanEntry {
+                key,
+                value: Some(kv_proto::value_to_proto(value)),
+            })
             .collect();
 
         Ok(Response::new(ScanResponse { entries }))
@@ -175,7 +183,10 @@ where
 
         let entries = entries
             .into_iter()
-            .map(|(key, value)| ScanEntry { key, value })
+            .map(|(key, value)| ScanEntry {
+                key,
+                value: Some(kv_proto::value_to_proto(value)),
+            })
             .collect();
 
         Ok(Response::new(ScanAllResponse { entries }))

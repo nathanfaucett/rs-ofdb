@@ -34,7 +34,7 @@ query = { version = "0.1", package = "ofdb-sql-query", path = "../sql-query", de
 schema = { version = "0.1", package = "ofdb-sql-schema", path = "../sql-schema", default-features = false, features = [] }
 sql-translator = { version = "0.1", package = "ofdb-sql-translator", path = "../sql-translator", default-features = false, features = [], optional = true }
 sync = { version = "0.1", package = "ofdb-sql-sync", path = "../sql-sync", default-features = false, features = [], optional = true }
-value = { version = "0.1", package = "ofdb-sql-value", path = "../sql-value", default-features = false, features = [] }
+value = { version = "0.1", package = "ofdb-value", path = "../value", default-features = false, features = [] }
 sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [], optional = true }
 
 # External dependencies

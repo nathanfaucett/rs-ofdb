@@ -5,7 +5,7 @@
 It provides two distinct, self-contained database models:
 
 - [**`ofdb-sql`**](crates/sql/README.md): A relational SQL database engine with schema catalogs, typed statement execution, secondary indexes, and row-level CRDT synchronization.
-- [**`ofdb-kv`**](crates/kv/README.md): A key-value store with Automerge-backed history, UUIDv7 key generations, millisecond expiry, and deterministic conflict detection.
+- [**`ofdb-kv`**](crates/kv/README.md): A key-value store for shared typed values, with Automerge-backed history, UUIDv7 key generations, and millisecond expiry.
 
 ---
 
@@ -13,7 +13,7 @@ It provides two distinct, self-contained database models:
 
 In traditional client-server architectures, applications require continuous internet connectivity to access or mutate database state. When connectivity drops, operations block or fail.
 
-`ofdb` is built around the **Local-First principle**:
+`ofdb` is built around the **Local-First principle**. KV currently supports the shared value model, including nested JSON objects and arrays. It does not expose every native Automerge object type, such as collaborative text or counters:
 
 1. **Zero-Latency Local Operations**: All reads and writes hit local embedded storage ([Redb](crates/btree-redb) or in-memory) with ACID guarantees. Applications remain fully functional offline.
 2. **Conflict-Free Convergence**: Individual rows (in SQL) and key generations (in KV) are tracked using [Automerge](https://automerge.org/) CRDT documents. Concurrent offline edits merge deterministically without requiring a central coordinator.
@@ -24,14 +24,14 @@ In traditional client-server architectures, applications require continuous inte
 
 ## When to Use `ofdb-sql` vs `ofdb-kv`
 
-| Capability              | `ofdb-sql`                                                                                   | `ofdb-kv`                                                                                                               |
-| :---------------------- | :------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------- |
-| **Data Model**          | Relational tables, columns, typed values (`UUID`, `TEXT`, `INTEGER`, `BLOB`, `JSON`, etc.)   | Opaque byte buffers (`Vec<u8>`) keyed by UTF-8 strings                                                                  |
-| **Queries**             | SQL-text (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `JOIN`) and typed statement trees          | Key operations (`get`, `set`, `delete`, `scan`, `scan_prefix`, `scan_all`)                                              |
-| **Indexes**             | Primary keys (UUIDv7) and secondary unique/non-unique indexes                                | Ordered UTF-8 key prefixes and ranges                                                                                   |
-| **Conflict Resolution** | Per-column CRDT resolution via Automerge; greatest UUIDv7 selects visible schema definitions | Greatest UUIDv7 generation determines visible value; divergent histories in the same generation are explicitly rejected |
-| **TTL / Expiry**        | Not applicable (handled in application logic)                                                | Optional absolute millisecond deadline (`expires_at`)                                                                   |
-| **Use Cases**           | Structured applications, document & user records, multi-table relationship graphs            | Caches, blobs, session states, configuration stores, high-throughput key lookups                                        |
+| Capability              | `ofdb-sql`                                                                                   | `ofdb-kv`                                                                                                                                     |
+| :---------------------- | :------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Data Model**          | Relational tables, columns, typed values (`UUID`, `TEXT`, `INTEGER`, `BLOB`, `JSON`, etc.)   | Shared `Value` types, including primitives, blobs, and nested JSON objects/arrays, keyed by UTF-8 strings                                     |
+| **Queries**             | SQL-text (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `JOIN`) and typed statement trees          | Key operations (`get`, `set`, `delete`, `scan`, `scan_prefix`, `scan_all`)                                                                    |
+| **Indexes**             | Primary keys (UUIDv7) and secondary unique/non-unique indexes                                | Ordered UTF-8 key prefixes and ranges                                                                                                         |
+| **Conflict Resolution** | Per-column CRDT resolution via Automerge; greatest UUIDv7 selects visible schema definitions | Nested values reconcile through Automerge; concurrent edits merge, tombstones win delete/update races; greatest UUIDv7 selects the generation |
+| **TTL / Expiry**        | Not applicable (handled in application logic)                                                | Optional absolute millisecond deadline (`expires_at`)                                                                                         |
+| **Use Cases**           | Structured applications, document & user records, multi-table relationship graphs            | Caches, blobs, session states, configuration stores, high-throughput key lookups                                                              |
 
 ---
 
@@ -137,18 +137,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = Database::open("kv_data.db")?;
     let client = database.client();
 
-    // Set a value with optional millisecond expiration
-    client.set("config:theme", b"dark".to_vec(), None).await?;
+    use ofdb_kv::{JsonValue, Value};
 
-    // Retrieve a value
-    if let Some(theme) = client.get("config:theme").await? {
-        println!("Theme: {}", String::from_utf8_lossy(&theme));
-    }
+    let theme = Value::Json(JsonValue::Object(
+        [("mode".to_owned(), JsonValue::String("dark".to_owned()))].into(),
+    ));
+    client.set("config:theme", theme, None).await?;
 
-    // Prefix scans
+    // Nested JSON values retain their types when read.
+    let theme = client.get("config:theme").await?;
+    println!("{theme:?}");
+
+    // Prefix scans return the same typed values.
     let entries = client.scan_prefix("config:").await?;
     for (key, val) in entries {
-        println!("{key} => {}", String::from_utf8_lossy(&val));
+        println!("{key} => {val:?}");
     }
 
     Ok(())
@@ -262,7 +265,7 @@ crates/
 ├── sql-sync/              # Transport-neutral replication protocols (SyncMessage)
 ├── sql-test/              # Cluster, chaos, and offline test harnesses
 ├── sql-translator/        # SQL text-to-statement parser & translator
-├── sql-value/             # Runtime Value types (UUID, JSON, Blobs, Decimals)
+├── value/                 # Shared runtime Value types (UUID, JSON, Blobs, Decimals)
 ├── kv/                    # Public KV facade (Database, Client, Transaction)
 ├── kv-cli/                # One-shot KV CLI executable
 ├── kv-client/             # gRPC client for remote KV hosts

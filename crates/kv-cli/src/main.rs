@@ -5,13 +5,14 @@ use std::{
     time::Duration,
 };
 
-#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb", test))]
-use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgGroup, Parser, Subcommand};
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 use ofdb_kv::Client;
 #[cfg(any(feature = "in-memory", feature = "redb"))]
 use ofdb_kv::Database;
+use ofdb_kv::parse_value;
+#[cfg(any(feature = "remote", feature = "in-memory", feature = "redb", test))]
+use ofdb_kv::{Value, encode_value};
 
 #[derive(Debug, Parser)]
 #[command(name = "kv-cli", version, about = "Query an ofdb KV store")]
@@ -61,7 +62,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
-    let _input = match &args.command {
+    let _bytes = match &args.command {
         Command::Set {
             value: _,
             file: Some(path),
@@ -70,6 +71,23 @@ async fn main() -> ExitCode {
             Ok(bytes) => Some(bytes),
             Err(error) => return fail(1, error.to_string()),
         },
+        _ => None,
+    };
+
+    let _input = match &args.command {
+        Command::Set { value, .. } => {
+            let bytes = _bytes
+                .as_deref()
+                .or_else(|| value.as_deref().map(str::as_bytes))
+                .expect("clap requires set input");
+            let parsed = serde_json::from_slice(bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|json| parse_value(&json));
+            match parsed {
+                Ok(value) => Some(value),
+                Err(error) => return fail(2, error),
+            }
+        }
         _ => None,
     };
 
@@ -154,25 +172,25 @@ fn read_input(path: &PathBuf) -> io::Result<Vec<u8>> {
 async fn execute_client(
     client: &Client,
     command: &Command,
-    input: Option<Vec<u8>>,
+    input: Option<Value>,
 ) -> Result<Option<Vec<u8>>, String> {
     match command {
         Command::Get { key } => client
             .get(key)
             .await
             .map_err(|error| error.to_string())?
-            .map(Some)
-            .ok_or_else(|| format!("key not found: {key}")),
+            .map(|value| {
+                serde_json::to_vec(&encode_value(value))
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            })
+            .ok_or_else(|| format!("key not found: {key}"))?,
         Command::Set {
-            key,
-            value,
-            expires_at,
-            ..
+            key, expires_at, ..
         } => {
-            let bytes =
-                input.unwrap_or_else(|| value.as_deref().unwrap_or_default().as_bytes().to_vec());
+            let value = input.expect("set input was parsed before connection");
             client
-                .set(key, bytes, *expires_at)
+                .set(key, value, *expires_at)
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(None)
@@ -201,10 +219,10 @@ async fn execute_client(
 }
 
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb", test))]
-fn json_scan(entries: Vec<(String, Vec<u8>)>) -> Result<Option<Vec<u8>>, String> {
+fn json_scan(entries: Vec<(String, Value)>) -> Result<Option<Vec<u8>>, String> {
     let entries = entries
         .into_iter()
-        .map(|(key, value)| serde_json::json!({ "key": key, "value": STANDARD.encode(value) }))
+        .map(|(key, value)| serde_json::json!({ "key": key, "value": encode_value(value) }))
         .collect::<Vec<_>>();
     serde_json::to_vec(&entries)
         .map(Some)
@@ -219,8 +237,8 @@ fn fail(code: u8, message: String) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{Args, json_scan};
-    use base64::{Engine, engine::general_purpose::STANDARD};
     use clap::Parser;
+    use ofdb_kv::Value;
 
     #[test]
     fn cli_requires_one_target_and_set_input() {
@@ -237,16 +255,22 @@ mod tests {
     }
 
     #[test]
-    fn scans_emit_ordered_json_with_base64_values() {
+    fn scans_emit_ordered_tagged_json() {
         let bytes = json_scan(vec![
-            ("a".to_owned(), vec![0, 255]),
-            ("b".to_owned(), Vec::new()),
+            ("a".to_owned(), Value::Blob(vec![0, 255])),
+            ("b".to_owned(), Value::Blob(Vec::new())),
         ])
         .expect("encode scan")
         .expect("scan always has output");
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
         assert_eq!(json[0]["key"], "a");
-        assert_eq!(json[0]["value"], STANDARD.encode([0, 255]));
-        assert_eq!(json[1]["value"], "");
+        assert_eq!(
+            json[0]["value"],
+            serde_json::json!({"type":"blob","value":"AP8="})
+        );
+        assert_eq!(
+            json[1]["value"],
+            serde_json::json!({"type":"blob","value":""})
+        );
     }
 }

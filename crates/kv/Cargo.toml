@@ -24,14 +24,17 @@ sync = ["std", "dep:btree", "dep:kv-sync", "dep:kv-store", "dep:uuid"]
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"], optional = true }
 btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [], optional = true }
+kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [], optional = true }
 kv-server = { version = "0.1", path = "../kv-server", package = "ofdb-kv-server", default-features = false, features = [], optional = true }
 kv-store = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [], optional = true }
 kv-sync = { version = "0.1", path = "../kv-sync", package = "ofdb-kv-sync", default-features = false, features = [], optional = true }
-kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [], optional = true }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
 
 # External dependencies
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
 redb = { version = "4.3", default-features = false, features = ["uuid"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 tokio = { version = "1.0", default-features = false, features = ["time"], optional = true }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"], optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "codegen"], optional = true }

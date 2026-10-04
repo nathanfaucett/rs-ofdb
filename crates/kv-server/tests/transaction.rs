@@ -18,6 +18,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Streaming, transport::Channel};
+use value::Value;
 
 struct Host {
     store: KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>>,
@@ -110,7 +111,7 @@ async fn command(
 fn set(key: &str, value: &[u8], expires_at: Option<i64>) -> Command {
     Command::Set(SetRequest {
         key: key.into(),
-        value: value.into(),
+        value: Some(kv_proto::value_to_proto(Value::Blob(value.to_vec()))),
         expires_at,
     })
 }
@@ -137,7 +138,7 @@ async fn transaction_reads_writes_scans_and_commits() {
         )
         .await,
         Outcome::Got(kv_proto::kvdb::GetResponse {
-            value: Some(b"one".to_vec())
+            value: Some(kv_proto::value_to_proto(Value::Blob(b"one".to_vec())))
         })
     );
     assert_eq!(
@@ -176,7 +177,7 @@ async fn transaction_reads_writes_scans_and_commits() {
                 .collect::<Vec<_>>(),
             keys
         );
-        assert!(response.entries.iter().all(|entry| !entry.value.is_empty()));
+        assert!(response.entries.iter().all(|entry| entry.value.is_some()));
     }
     assert_eq!(
         command(
@@ -201,7 +202,7 @@ async fn transaction_reads_writes_scans_and_commits() {
     assert_eq!(tx.get("a", 0).await.expect("read must succeed"), None);
     assert_eq!(
         tx.get("b", 0).await.expect("read must succeed"),
-        Some(b"two".to_vec())
+        Some(Value::Blob(b"two".to_vec()))
     );
     tx.rollback().await.expect("verification must roll back");
     host.stop().await;
@@ -290,7 +291,7 @@ async fn operation_error_preserves_category_and_transaction_remains_usable() {
         response.entries,
         vec![ScanEntry {
             key: "valid".into(),
-            value: b"value".to_vec()
+            value: Some(kv_proto::value_to_proto(Value::Blob(b"value".to_vec())))
         }]
     );
     assert_eq!(

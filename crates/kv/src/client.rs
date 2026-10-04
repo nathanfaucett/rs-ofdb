@@ -1,4 +1,6 @@
 use core::future::Future;
+#[cfg(feature = "remote")]
+use std::path::Path;
 use std::time::Duration;
 
 #[cfg(feature = "remote")]
@@ -7,9 +9,9 @@ use kv_proto::kvdb::{
     kv_service_client::KvServiceClient,
 };
 #[cfg(feature = "remote")]
-use std::path::Path;
-#[cfg(feature = "remote")]
 use tonic::transport::{Channel, Endpoint};
+
+use value::Value;
 
 use crate::Error;
 
@@ -157,7 +159,7 @@ impl Client {
         })
     }
 
-    pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn get(&self, key: &str) -> Result<Option<Value>, Error> {
         self.request(async {
             match &self.backend {
                 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -170,7 +172,7 @@ impl Client {
                         })
                         .await
                         .map_err(map_status)?;
-                    Ok(response.into_inner().value)
+                    kv_proto::optional_value(response.into_inner().value).map_err(map_status)
                 }
             }
         })
@@ -180,9 +182,10 @@ impl Client {
     pub async fn set(
         &self,
         key: &str,
-        value: Vec<u8>,
+        value: impl Into<Value>,
         expires_at: Option<i64>,
     ) -> Result<(), Error> {
+        let value = value.into();
         self.request(async {
             match &self.backend {
                 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -192,7 +195,7 @@ impl Client {
                     KvServiceClient::new(channel.clone())
                         .set(SetRequest {
                             key: key.to_owned(),
-                            value,
+                            value: Some(kv_proto::value_to_proto(value)),
                             expires_at,
                         })
                         .await
@@ -224,7 +227,7 @@ impl Client {
         .await
     }
 
-    pub async fn scan(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan(&self, start: &str, end: &str) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
                 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -238,19 +241,14 @@ impl Client {
                         })
                         .await
                         .map_err(map_status)?;
-                    Ok(response
-                        .into_inner()
-                        .entries
-                        .into_iter()
-                        .map(|entry| (entry.key, entry.value))
-                        .collect())
+                    kv_proto::scan_entries(response.into_inner().entries).map_err(map_status)
                 }
             }
         })
         .await
     }
 
-    pub async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
                 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -263,19 +261,14 @@ impl Client {
                         })
                         .await
                         .map_err(map_status)?;
-                    Ok(response
-                        .into_inner()
-                        .entries
-                        .into_iter()
-                        .map(|entry| (entry.key, entry.value))
-                        .collect())
+                    kv_proto::scan_entries(response.into_inner().entries).map_err(map_status)
                 }
             }
         })
         .await
     }
 
-    pub async fn scan_all(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan_all(&self) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
                 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -286,12 +279,7 @@ impl Client {
                         .scan_all(ScanAllRequest {})
                         .await
                         .map_err(map_status)?;
-                    Ok(response
-                        .into_inner()
-                        .entries
-                        .into_iter()
-                        .map(|entry| (entry.key, entry.value))
-                        .collect())
+                    kv_proto::scan_entries(response.into_inner().entries).map_err(map_status)
                 }
             }
         })

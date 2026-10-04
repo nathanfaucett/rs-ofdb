@@ -11,6 +11,7 @@ use kv_common::{start_client_server, stop_server};
 use kv_server::Server;
 use kv_store::KvStore;
 use redb::Database;
+use value::Value;
 
 fn test_timestamp_provider() -> uuid::Timestamp {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -35,39 +36,39 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
         None
     );
     client
-        .set("empty".into(), Vec::new(), None)
+        .set("empty".into(), Value::Blob(Vec::new()), None)
         .await
         .expect("set empty value");
     assert_eq!(
         client.get("empty".into()).await.expect("get empty value"),
-        Some(Vec::new())
+        Some(Value::Blob(Vec::new()))
     );
     client
-        .set("test:1234".into(), vec![1, 2], None)
+        .set("test:1234".into(), Value::Blob(vec![1, 2]), None)
         .await
         .expect("set prefixed value");
     client
-        .set("prefix|get|5".into(), vec![3], None)
+        .set("prefix|get|5".into(), Value::Blob(vec![3]), None)
         .await
         .expect("set delimited prefix value");
     client
-        .set("雪\0:key".into(), vec![4], None)
+        .set("雪\0:key".into(), Value::Blob(vec![4]), None)
         .await
         .expect("set Unicode key with NUL");
     client
-        .set("expired".into(), vec![5], Some(1))
+        .set("expired".into(), Value::Blob(vec![5]), Some(1))
         .await
         .expect("set expired value");
     client
-        .set("future".into(), vec![6], Some(i64::MAX))
+        .set("future".into(), Value::Blob(vec![6]), Some(i64::MAX))
         .await
         .expect("set far-future value");
     client
-        .set("remove-expiry".into(), vec![7], Some(1))
+        .set("remove-expiry".into(), Value::Blob(vec![7]), Some(1))
         .await
         .expect("set expiring value");
     client
-        .set("remove-expiry".into(), vec![8], None)
+        .set("remove-expiry".into(), Value::Blob(vec![8]), None)
         .await
         .expect("remove expiry");
 
@@ -76,21 +77,21 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
             .scan_prefix("test:".into())
             .await
             .expect("scan literal prefix"),
-        vec![("test:1234".into(), vec![1, 2])]
+        vec![("test:1234".into(), Value::Blob(vec![1, 2]))]
     );
     assert_eq!(
         client
             .scan_prefix("prefix|get|".into())
             .await
             .expect("scan delimited prefix"),
-        vec![("prefix|get|5".into(), vec![3])]
+        vec![("prefix|get|5".into(), Value::Blob(vec![3]))]
     );
     assert_eq!(
         client
             .get("雪\0:key".into())
             .await
             .expect("get Unicode key"),
-        Some(vec![4])
+        Some(Value::Blob(vec![4]))
     );
     assert_eq!(
         client.get("expired".into()).await.expect("get expired key"),
@@ -112,31 +113,34 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
     );
     assert_eq!(
         client.get("future".into()).await.expect("get future key"),
-        Some(vec![6])
+        Some(Value::Blob(vec![6]))
     );
     assert_eq!(
         client
             .get("remove-expiry".into())
             .await
             .expect("get key with removed expiry"),
-        Some(vec![8])
+        Some(Value::Blob(vec![8]))
     );
     assert_eq!(
         client
             .scan("empty".into(), "prefix".into())
             .await
             .expect("scan range"),
-        vec![("empty".into(), Vec::new()), ("future".into(), vec![6])]
+        vec![
+            ("empty".into(), Value::Blob(Vec::new())),
+            ("future".into(), Value::Blob(vec![6]))
+        ]
     );
     assert_eq!(
         client.scan_all().await.expect("scan all"),
         vec![
-            ("empty".into(), Vec::new()),
-            ("future".into(), vec![6]),
-            ("prefix|get|5".into(), vec![3]),
-            ("remove-expiry".into(), vec![8]),
-            ("test:1234".into(), vec![1, 2]),
-            ("雪\0:key".into(), vec![4]),
+            ("empty".into(), Value::Blob(Vec::new())),
+            ("future".into(), Value::Blob(vec![6])),
+            ("prefix|get|5".into(), Value::Blob(vec![3])),
+            ("remove-expiry".into(), Value::Blob(vec![8])),
+            ("test:1234".into(), Value::Blob(vec![1, 2])),
+            ("雪\0:key".into(), Value::Blob(vec![4])),
         ]
     );
 
@@ -149,7 +153,7 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
         None
     );
     client
-        .set("test:1234".into(), vec![10], None)
+        .set("test:1234".into(), Value::Blob(vec![10]), None)
         .await
         .expect("recreate deleted key");
     assert_eq!(
@@ -157,9 +161,77 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
             .get("test:1234".into())
             .await
             .expect("get recreated key"),
-        Some(vec![10])
+        Some(Value::Blob(vec![10]))
     );
 
+    let values = [
+        Value::Null,
+        Value::Type(value::ValueType::Blob),
+        Value::Uuid(uuid::Uuid::nil()),
+        Value::Bool(true),
+        Value::Integer(i64::MAX),
+        Value::Float(-0.0),
+        Value::Float(f64::from_bits(0x7ff8000000000042)),
+        Value::Text("text".into()),
+        Value::Blob(vec![0, 255]),
+        Value::Json(value::JsonValue::Object(
+            [(
+                "nested".into(),
+                value::JsonValue::Array(vec![
+                    value::JsonValue::Number(value::JsonNumber::U64(u64::MAX)),
+                    value::JsonValue::Number(value::JsonNumber::F64(f64::from_bits(
+                        0x7ff8000000000042,
+                    ))),
+                ]),
+            )]
+            .into(),
+        )),
+    ];
+    for (index, value) in values.iter().enumerate() {
+        let key = format!("typed:{index:02}");
+        client
+            .set(key.clone(), value.clone(), None)
+            .await
+            .expect("low-level typed set");
+        let actual = client
+            .get(key)
+            .await
+            .expect("low-level typed get")
+            .expect("typed value exists");
+        assert_eq!(
+            ofdb_kv::encode_value(actual),
+            ofdb_kv::encode_value(value.clone())
+        );
+    }
+    let expected = values
+        .into_iter()
+        .map(ofdb_kv::encode_value)
+        .collect::<Vec<_>>();
+    for entries in [
+        client
+            .scan("typed:".into(), "typed;".into())
+            .await
+            .expect("low-level typed range"),
+        client
+            .scan_prefix("typed:".into())
+            .await
+            .expect("low-level typed prefix"),
+        client
+            .scan_all()
+            .await
+            .expect("low-level typed all")
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("typed:"))
+            .collect(),
+    ] {
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|(_, value)| ofdb_kv::encode_value(value))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
     shutdown.send(()).expect("server is awaiting shutdown");
     stop_server(server).await;
 }
@@ -174,7 +246,7 @@ async fn remote_expiry_transition_and_stopped_server_fail_within_bounds() {
         .as_millis() as i64
         + 250;
     client
-        .set("short-lived".into(), vec![1], Some(expiry))
+        .set("short-lived".into(), Value::Blob(vec![1]), Some(expiry))
         .await
         .expect("set short-lived value");
     assert_eq!(
@@ -182,7 +254,7 @@ async fn remote_expiry_transition_and_stopped_server_fail_within_bounds() {
             .get("short-lived".into())
             .await
             .expect("read live value"),
-        Some(vec![1])
+        Some(Value::Blob(vec![1]))
     );
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -223,11 +295,11 @@ async fn redb_values_and_deletions_survive_server_restart() {
     let (client, shutdown, server) =
         start_client_server(RedbByteBTree::new(database.clone(), TABLE)).await;
     client
-        .set("persisted".into(), vec![3, 4], None)
+        .set("persisted".into(), Value::Blob(vec![3, 4]), None)
         .await
         .expect("set persisted value");
     client
-        .set("deleted".into(), vec![5], None)
+        .set("deleted".into(), Value::Blob(vec![5]), None)
         .await
         .expect("set value to delete");
     client
@@ -250,7 +322,7 @@ async fn redb_values_and_deletions_survive_server_restart() {
             .get("persisted".into())
             .await
             .expect("read persisted value"),
-        Some(vec![3, 4])
+        Some(Value::Blob(vec![3, 4]))
     );
     assert_eq!(
         client
@@ -302,7 +374,7 @@ async fn unix_client_server_supports_get_set_and_prefix_scan() {
     .expect("Unix KV server should become ready");
 
     client
-        .set("unix:key".into(), vec![9], None)
+        .set("unix:key".into(), Value::Blob(vec![9]), None)
         .await
         .expect("set value over Unix socket");
     assert_eq!(
@@ -310,14 +382,14 @@ async fn unix_client_server_supports_get_set_and_prefix_scan() {
             .get("unix:key".into())
             .await
             .expect("get value over Unix socket"),
-        Some(vec![9])
+        Some(Value::Blob(vec![9]))
     );
     assert_eq!(
         client
             .scan_prefix("unix:".into())
             .await
             .expect("scan prefix over Unix socket"),
-        vec![("unix:key".into(), vec![9])]
+        vec![("unix:key".into(), Value::Blob(vec![9]))]
     );
 
     shutdown.send(()).expect("server is awaiting shutdown");

@@ -23,7 +23,6 @@ remote = ["ofdb-kv/remote"]
 ofdb-kv = { version = "0.1", package = "ofdb-kv", path = "../kv", default-features = false, features = [] }
 
 # External dependencies
-base64 = { version = "0.22", default-features = false, features = ["std"] }
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 tokio = { version = "1.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }

@@ -23,3 +23,7 @@ pub use transaction::Transaction;
 mod error_tests;
 #[cfg(feature = "server")]
 pub use kv_server::Server;
+
+pub use value::{JsonNumber, JsonValue, Value, ValueType};
+mod value_codec;
+pub use value_codec::{encode_value, parse_value};

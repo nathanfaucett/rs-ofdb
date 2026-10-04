@@ -18,7 +18,7 @@ engine-automerge = { version = "0.1", path = "../sql-engine-automerge", package 
 engine-redb = { version = "0.1", path = "../sql-engine-redb", package = "ofdb-sql-engine-redb", default-features = false, features = [] }
 sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = ["std"] }
 sync = { version = "0.1", path = "../sql-sync", package = "ofdb-sql-sync", default-features = false, features = [] }
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false, features = ["std"] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["std"] }
 
 # External dependencies
 futures = { version = "0.3", default-features = false, features = ["async-await", "executor", "std"] }

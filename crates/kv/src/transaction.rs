@@ -12,6 +12,8 @@ use kv_store::KvTransaction;
 #[cfg(feature = "remote")]
 use tokio::sync::mpsc;
 
+use value::Value;
+
 use crate::Error;
 
 pub struct Transaction {
@@ -69,7 +71,7 @@ impl Transaction {
         })
     }
 
-    pub async fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    pub async fn get(&mut self, key: &str) -> Result<Option<Value>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
                 #[cfg(feature = "in-memory")]
@@ -86,9 +88,10 @@ impl Transaction {
     pub async fn set(
         &mut self,
         key: &str,
-        value: Vec<u8>,
+        value: impl Into<Value>,
         expires_at: Option<i64>,
     ) -> Result<(), Error> {
+        let value = value.into();
         Self::run(self.request_deadline, async {
             match &mut self.backend {
                 #[cfg(feature = "in-memory")]
@@ -116,7 +119,7 @@ impl Transaction {
         .await
     }
 
-    pub async fn scan(&mut self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan(&mut self, start: &str, end: &str) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
                 #[cfg(feature = "in-memory")]
@@ -136,7 +139,7 @@ impl Transaction {
         .await
     }
 
-    pub async fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
                 #[cfg(feature = "in-memory")]
@@ -156,7 +159,7 @@ impl Transaction {
         .await
     }
 
-    pub async fn scan_all(&mut self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    pub async fn scan_all(&mut self) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
                 #[cfg(feature = "in-memory")]
@@ -238,27 +241,24 @@ impl RemoteTransaction {
         Ok(transaction)
     }
 
-    async fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+    async fn get(&mut self, key: &str) -> Result<Option<Value>, Error> {
         match self
             .exchange(Command::Get(GetRequest {
                 key: key.to_owned(),
             }))
             .await?
         {
-            Outcome::Got(response) => Ok(response.value),
+            Outcome::Got(response) => {
+                kv_proto::optional_value(response.value).map_err(crate::client::map_status)
+            }
             _ => Err(protocol_error("expected get response")),
         }
     }
 
-    async fn set(
-        &mut self,
-        key: &str,
-        value: Vec<u8>,
-        expires_at: Option<i64>,
-    ) -> Result<(), Error> {
+    async fn set(&mut self, key: &str, value: Value, expires_at: Option<i64>) -> Result<(), Error> {
         self.exchange(Command::Set(SetRequest {
             key: key.to_owned(),
-            value,
+            value: Some(kv_proto::value_to_proto(value)),
             expires_at,
         }))
         .await?;
@@ -273,7 +273,7 @@ impl RemoteTransaction {
         Ok(())
     }
 
-    async fn scan(&mut self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    async fn scan(&mut self, start: &str, end: &str) -> Result<Vec<(String, Value)>, Error> {
         self.scan_result(Command::Scan(ScanRequest {
             start: start.into(),
             end: end.into(),
@@ -281,24 +281,22 @@ impl RemoteTransaction {
         .await
     }
 
-    async fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    async fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, Value)>, Error> {
         self.scan_result(Command::ScanPrefix(ScanPrefixRequest {
             prefix: prefix.into(),
         }))
         .await
     }
 
-    async fn scan_all(&mut self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    async fn scan_all(&mut self) -> Result<Vec<(String, Value)>, Error> {
         self.scan_result(Command::ScanAll(ScanAllRequest {})).await
     }
 
-    async fn scan_result(&mut self, command: Command) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    async fn scan_result(&mut self, command: Command) -> Result<Vec<(String, Value)>, Error> {
         match self.exchange(command).await? {
-            Outcome::Scanned(response) => Ok(response
-                .entries
-                .into_iter()
-                .map(|entry| (entry.key, entry.value))
-                .collect()),
+            Outcome::Scanned(response) => {
+                kv_proto::scan_entries(response.entries).map_err(crate::client::map_status)
+            }
             _ => Err(protocol_error("expected scan response")),
         }
     }

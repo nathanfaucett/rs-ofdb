@@ -3,6 +3,7 @@ use kv_proto::kvdb::{
     kv_service_client::KvServiceClient,
 };
 use tonic::{transport::Channel, transport::Endpoint};
+use value::Value;
 
 #[derive(Clone, Debug)]
 enum Connector {
@@ -31,24 +32,24 @@ impl Client {
         })
     }
 
-    pub async fn get(&self, key: String) -> Result<Option<Vec<u8>>, tonic::Status> {
+    pub async fn get(&self, key: String) -> Result<Option<Value>, tonic::Status> {
         let mut client = KvServiceClient::new(self.channel());
         let request = GetRequest { key };
         let response = client.get(request).await?;
         let inner = response.into_inner();
-        Ok(inner.value)
+        kv_proto::optional_value(inner.value)
     }
 
     pub async fn set(
         &self,
         key: String,
-        value: Vec<u8>,
+        value: Value,
         expires_at: Option<i64>,
     ) -> Result<(), tonic::Status> {
         let mut client = KvServiceClient::new(self.channel());
         let request = SetRequest {
             key,
-            value,
+            value: Some(kv_proto::value_to_proto(value)),
             expires_at,
         };
         client.set(request).await?;
@@ -66,45 +67,27 @@ impl Client {
         &self,
         start: String,
         end: String,
-    ) -> Result<Vec<(String, Vec<u8>)>, tonic::Status> {
+    ) -> Result<Vec<(String, Value)>, tonic::Status> {
         let mut client = KvServiceClient::new(self.channel());
         let request = ScanRequest { start, end };
         let response = client.scan(request).await?;
         let inner = response.into_inner();
-        let entries = inner
-            .entries
-            .into_iter()
-            .map(|e| (e.key, e.value))
-            .collect();
-        Ok(entries)
+        kv_proto::scan_entries(inner.entries)
     }
 
-    pub async fn scan_prefix(
-        &self,
-        prefix: String,
-    ) -> Result<Vec<(String, Vec<u8>)>, tonic::Status> {
+    pub async fn scan_prefix(&self, prefix: String) -> Result<Vec<(String, Value)>, tonic::Status> {
         let mut client = KvServiceClient::new(self.channel());
         let request = ScanPrefixRequest { prefix };
         let response = client.scan_prefix(request).await?;
-        Ok(response
-            .into_inner()
-            .entries
-            .into_iter()
-            .map(|entry| (entry.key, entry.value))
-            .collect())
+        kv_proto::scan_entries(response.into_inner().entries)
     }
 
-    pub async fn scan_all(&self) -> Result<Vec<(String, Vec<u8>)>, tonic::Status> {
+    pub async fn scan_all(&self) -> Result<Vec<(String, Value)>, tonic::Status> {
         let mut client = KvServiceClient::new(self.channel());
         let request = ScanAllRequest {};
         let response = client.scan_all(request).await?;
         let inner = response.into_inner();
-        let entries = inner
-            .entries
-            .into_iter()
-            .map(|e| (e.key, e.value))
-            .collect();
-        Ok(entries)
+        kv_proto::scan_entries(inner.entries)
     }
 
     fn channel(&self) -> Channel {

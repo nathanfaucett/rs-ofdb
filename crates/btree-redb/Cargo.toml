@@ -19,7 +19,7 @@ default = []
 [dependencies]
 # internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false }
-value = { version = "0.1", path = "../sql-value", package = "ofdb-sql-value", default-features = false }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false }
 
 async-stream = { version = "0.3", default-features = false, features = [] }
 

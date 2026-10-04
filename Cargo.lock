@@ -166,33 +166,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "automerge"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "629a51c7c6f21ab08059e237b3dfc87d16b2846605ee5b3e4ddcd397bbce264b"
-dependencies = [
- "cfg-if",
- "flate2",
- "getrandom 0.4.2",
- "hex",
- "hexane",
- "itertools",
- "js-sys",
- "leb128",
- "rand",
- "rustc-hash",
- "serde",
- "sha2 0.11.0",
- "smol_str",
- "thiserror 2.0.18",
- "tinyvec",
- "tracing",
- "unicode-segmentation",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
-name = "automerge"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09b78abcbba93428b9465b26cb2816a5b4654cce507f099a84a8c1b311cb3633"
@@ -224,7 +197,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b3e9830fb43a71ecbcce339e6ccb0bde5456a3f18d5b810a744870e4a50d832"
 dependencies = [
- "automerge 0.10.0",
+ "automerge",
  "autosurgeon-derive",
  "similar",
  "thiserror 1.0.69",
@@ -2447,7 +2420,7 @@ version = "0.1.0"
 dependencies = [
  "async-lock",
  "async-stream",
- "automerge 0.9.0",
+ "automerge",
  "base64 0.21.7",
  "futures",
  "ofdb-btree",
@@ -2465,7 +2438,7 @@ dependencies = [
  "dashmap",
  "futures",
  "ofdb-btree",
- "ofdb-sql-value",
+ "ofdb-value",
  "redb",
  "serde",
  "thiserror 2.0.18",
@@ -2476,6 +2449,7 @@ dependencies = [
 name = "ofdb-kv"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "hyper-util",
  "ofdb-btree",
@@ -2485,7 +2459,9 @@ dependencies = [
  "ofdb-kv-server",
  "ofdb-kv-store",
  "ofdb-kv-sync",
+ "ofdb-value",
  "redb",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2498,7 +2474,6 @@ dependencies = [
 name = "ofdb-kv-cli"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "clap",
  "ofdb-kv",
  "serde_json",
@@ -2511,6 +2486,7 @@ version = "0.1.0"
 dependencies = [
  "hyper-util",
  "ofdb-kv-proto",
+ "ofdb-value",
  "tokio",
  "tonic",
  "tower",
@@ -2520,11 +2496,13 @@ dependencies = [
 name = "ofdb-kv-proto"
 version = "0.1.0"
 dependencies = [
+ "ofdb-value",
  "prost",
  "prost-types",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "uuid",
 ]
 
 [[package]]
@@ -2535,6 +2513,7 @@ dependencies = [
  "ofdb-kv-client",
  "ofdb-kv-proto",
  "ofdb-kv-store",
+ "ofdb-value",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -2546,11 +2525,13 @@ name = "ofdb-kv-store"
 version = "0.1.0"
 dependencies = [
  "async-stream",
- "automerge 0.9.0",
+ "automerge",
+ "autosurgeon",
  "futures",
  "ofdb-btree",
  "ofdb-btree-automerge",
  "ofdb-btree-redb",
+ "ofdb-value",
  "redb",
  "uuid",
 ]
@@ -2565,6 +2546,7 @@ dependencies = [
  "ofdb-btree-automerge",
  "ofdb-btree-redb",
  "ofdb-kv-store",
+ "ofdb-value",
  "postcard",
  "redb",
  "serde",
@@ -2589,7 +2571,7 @@ dependencies = [
  "ofdb-sql-sync",
  "ofdb-sql-test",
  "ofdb-sql-translator",
- "ofdb-sql-value",
+ "ofdb-value",
  "redb",
  "tempfile",
  "tokio",
@@ -2631,7 +2613,7 @@ dependencies = [
  "ofdb-btree",
  "ofdb-sql-query",
  "ofdb-sql-schema",
- "ofdb-sql-value",
+ "ofdb-value",
  "postcard",
  "serde",
  "serde-wasm-bindgen",
@@ -2648,7 +2630,7 @@ name = "ofdb-sql-engine-automerge"
 version = "0.1.0"
 dependencies = [
  "async-stream",
- "automerge 0.9.0",
+ "automerge",
  "futures",
  "ofdb-btree",
  "ofdb-btree-automerge",
@@ -2658,7 +2640,7 @@ dependencies = [
  "ofdb-sql-schema",
  "ofdb-sql-sync",
  "ofdb-sql-translator",
- "ofdb-sql-value",
+ "ofdb-value",
  "postcard",
  "redb",
  "serde",
@@ -2674,7 +2656,7 @@ dependencies = [
  "ofdb-btree",
  "ofdb-btree-redb",
  "ofdb-sql-engine",
- "ofdb-sql-value",
+ "ofdb-value",
  "redb",
  "uuid",
 ]
@@ -2708,7 +2690,7 @@ dependencies = [
  "ofdb-sql-proto",
  "ofdb-sql-query",
  "ofdb-sql-schema",
- "ofdb-sql-value",
+ "ofdb-value",
  "uuid",
 ]
 
@@ -2717,7 +2699,7 @@ name = "ofdb-sql-query"
 version = "0.1.0"
 dependencies = [
  "ofdb-sql-schema",
- "ofdb-sql-value",
+ "ofdb-value",
  "serde",
  "serde-wasm-bindgen",
  "thiserror 2.0.18",
@@ -2730,7 +2712,7 @@ dependencies = [
 name = "ofdb-sql-schema"
 version = "0.1.0"
 dependencies = [
- "ofdb-sql-value",
+ "ofdb-value",
  "serde",
  "serde-wasm-bindgen",
  "tsify",
@@ -2748,7 +2730,7 @@ dependencies = [
  "ofdb-sql-protocol",
  "ofdb-sql-query",
  "ofdb-sql-schema",
- "ofdb-sql-value",
+ "ofdb-value",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -2763,7 +2745,7 @@ dependencies = [
  "ofdb-sql-engine",
  "ofdb-sql-schema",
  "ofdb-sql-translator",
- "ofdb-sql-value",
+ "ofdb-value",
  "postcard",
  "serde",
  "sha2 0.10.9",
@@ -2782,7 +2764,7 @@ dependencies = [
  "ofdb-sql-engine-redb",
  "ofdb-sql-sync",
  "ofdb-sql-translator",
- "ofdb-sql-value",
+ "ofdb-value",
  "rand",
  "redb",
  "thiserror 2.0.18",
@@ -2795,7 +2777,7 @@ dependencies = [
  "futures",
  "ofdb-sql-query",
  "ofdb-sql-schema",
- "ofdb-sql-value",
+ "ofdb-value",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -2807,10 +2789,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "ofdb-sql-value"
+name = "ofdb-value"
 version = "0.1.0"
 dependencies = [
- "automerge 0.10.0",
+ "automerge",
  "autosurgeon",
  "postcard",
  "redb",

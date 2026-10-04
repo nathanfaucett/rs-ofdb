@@ -8,6 +8,7 @@ use kv::KvStore;
 use ofdb_kv_sync::{Config, SyncRole, SyncTransport, synchronize};
 use redb::Database;
 use uuid::Uuid;
+use value::Value;
 
 const TABLE: &str = "kv-sync";
 
@@ -99,8 +100,14 @@ fn sync_retries_after_redb_peer_reopen() {
             test_timestamp_provider,
         );
         let mut source_tx = source.transaction().await.unwrap();
-        source_tx.set("value", vec![9], None).await.unwrap();
-        source_tx.set("deleted", vec![1], None).await.unwrap();
+        source_tx
+            .set("value", Value::Blob(vec![9]), None)
+            .await
+            .unwrap();
+        source_tx
+            .set("deleted", Value::Blob(vec![1]), None)
+            .await
+            .unwrap();
         source_tx.delete("deleted").await.unwrap();
         source_tx.commit().await.unwrap();
 
@@ -112,7 +119,10 @@ fn sync_retries_after_redb_peer_reopen() {
         let (database, reopened) = redb_store(&path, false);
         synchronize_pair(&source, &reopened).await.unwrap();
         let transaction = reopened.transaction().await.unwrap();
-        assert_eq!(transaction.get("value", 0).await.unwrap(), Some(vec![9]));
+        assert_eq!(
+            transaction.get("value", 0).await.unwrap(),
+            Some(Value::Blob(vec![9]))
+        );
         assert_eq!(transaction.get("deleted", 0).await.unwrap(), None);
         transaction.rollback().await.unwrap();
         drop(reopened);

@@ -1,6 +1,6 @@
 [package]
-name = "ofdb-sql-value"
-description = "db value"
+name = "ofdb-value"
+description = "Storage value types and codecs for ofdb"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true

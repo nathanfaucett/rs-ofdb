@@ -8,7 +8,7 @@ The repository root is a workspace only, with no root crate. The public facades 
 
 ### Query Operation
 
-A Query Operation is a store-specific read or write request. SQL operations execute statements; KV operations read or change opaque byte values under UTF-8 keys. SQL and KV do not share a query interface. Each store has structured query errors shared by its embedded and remote query interfaces. Remote requests preserve store-specific categories through structured error details, not message matching. An empty SQL statement batch is invalid, not a successful no-op.
+A Query Operation is a store-specific read or write request. SQL operations execute statements; KV operations read or change shared `ofdb-value::Value` values under UTF-8 keys. KV values can be primitive values, blobs, or nested JSON objects and arrays; Automerge merges concurrent changes to nested values. SQL and KV do not share a query interface. Each store has structured query errors shared by its embedded and remote query interfaces. Remote requests preserve store-specific categories through structured error details, not message matching. An empty SQL statement batch is invalid, not a successful no-op.
 
 ### Embedded Handle
 
@@ -34,7 +34,7 @@ A Sync Session explicitly exchanges replicated state between stores of the same 
 
 ### CLI
 
-Two separate executables, `sql-cli` and `kv-cli`, use their corresponding published facades for embedded or remote queries. They are one-shot query clients only: neither exposes hosting, sync, administration commands, or an interactive shell. Each invocation selects exactly one explicit target: database path, memory, endpoint URL, or Unix socket path. An explicit database path may create a missing database; no default path is selected or created. SQL input is one query argument or one file/stdin input executed as a single statement batch. KV file/stdin values remain opaque bytes.
+Two separate executables, `sql-cli` and `kv-cli`, use their corresponding published facades for embedded or remote queries. They are one-shot query clients only: neither exposes hosting, sync, administration commands, or an interactive shell. Each invocation selects exactly one explicit target: database path, memory, endpoint URL, or Unix socket path. An explicit database path may create a missing database; no default path is selected or created. SQL input is one query argument or one file/stdin input executed as a single statement batch. KV CLI values use an explicit tagged JSON encoding; files and stdin contain that encoding, not raw value bytes.
 
 SQL results and KV scans use JSON. SQL value tags preserve type distinctions; integers use decimal strings, blobs use base64, and floats use exact 64-bit hexadecimal representations, including numbers nested inside JSON values. Optional `--params-file PATH` uses the same lossless value encoding with the existing positional/named parameter containers. KV get emits raw bytes without an added newline. Successful set/delete commands produce no stdout and exit 0. Scans emit an ordered JSON array of key/value entries, with base64 values. Exit codes are 0 for success, 1 for query failure or a missing KV get, and 2 for invalid command usage; errors go to stderr. Empty values and empty scans are successful. CLI request timeouts are optional positive integer seconds, with no fixed default. Library deadline configuration uses `Duration`. One timeout budget starts after input is read and covers connection plus query completion. Timeout is not proof of rollback or a guarantee of hard interruption of blocking storage work.
 
@@ -86,7 +86,7 @@ A Tombstone is ordinary deleted-row state for a Logical Row or catalog Generatio
 
 ## KV Store
 
-A KV Store holds opaque byte values under UTF-8 keys, with Automerge-backed history and tombstones. The greatest UUIDv7 generation determines visible state. Same-generation divergent histories are rejected rather than resolved with last-writer-wins.
+A KV Store holds shared `ofdb-value::Value` values under UTF-8 keys, with Automerge-backed history and tombstones. Values include primitives, blobs, and nested JSON objects and arrays. Concurrent same-generation changes merge through Automerge; tombstones win delete/update races. The greatest UUIDv7 generation determines visible state. This is not a last-writer-wins store.
 
 ## KV Expiry
 
