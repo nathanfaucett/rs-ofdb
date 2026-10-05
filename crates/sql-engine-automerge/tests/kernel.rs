@@ -136,7 +136,7 @@ async fn scoped_row(
 ) -> RowIdentity {
     let table = table.to_string();
     engine.read_transaction(|codec, transaction| Box::pin(async move {
-        codec.row_ids(transaction, &table).await?.into_iter()
+        codec.row_ids(transaction, &table, usize::MAX).await?.into_iter()
             .find(|row| matches!(row, RowIdentity::ScopedUser { row, .. } if *row == *id.as_bytes()))
             .ok_or(engine::EngineError::custom("Missing scoped row"))
     })).await.unwrap()
@@ -206,7 +206,7 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
         let row = scoped_row(&source, table, Uuid::from_u128(1)).await;
         let keys = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, table, row.clone()))
+                Box::pin(codec.change_inventory(transaction, table, row.clone(), usize::MAX))
             })
             .await
             .unwrap();
@@ -217,7 +217,7 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
             .read_transaction(move |codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .export_change(transaction, table, export_row, &key)
+                        .export_change(transaction, table, export_row, &key, usize::MAX)
                         .await
                 })
             })
@@ -278,7 +278,7 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         assert!(
             source
                 .read_transaction(|codec, transaction| {
-                    Box::pin(codec.change_inventory(transaction, table, row.clone()))
+                    Box::pin(codec.change_inventory(transaction, table, row.clone(), usize::MAX))
                 })
                 .await
                 .unwrap()
@@ -286,9 +286,17 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         );
 
         update(&source, "city", Value::from("Paris")).await;
+        assert!(
+            source
+                .read_transaction(|codec, transaction| {
+                    Box::pin(codec.change_inventory(transaction, table, row.clone(), 1))
+                })
+                .await
+                .is_err()
+        );
         let inventory = source
             .read_transaction(|codec, transaction| {
-                Box::pin(codec.change_inventory(transaction, table, row.clone()))
+                Box::pin(codec.change_inventory(transaction, table, row.clone(), usize::MAX))
             })
             .await
             .unwrap();
@@ -296,11 +304,25 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         let key = inventory[0].clone();
         let export_key = key.clone();
         let export_row = row.clone();
+        let limited_key = key.clone();
+        let limited_row = row.clone();
+        assert!(
+            source
+                .read_transaction(move |codec, transaction| {
+                    Box::pin(async move {
+                        codec
+                            .export_change(transaction, table, limited_row, &limited_key, 1)
+                            .await
+                    })
+                })
+                .await
+                .is_err()
+        );
         let payload = source
             .read_transaction(move |codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .export_change(transaction, table, export_row, &export_key)
+                        .export_change(transaction, table, export_row, &export_key, usize::MAX)
                         .await
                 })
             })
@@ -402,7 +424,7 @@ fn newer_index_tombstone_masks_older_active_index() {
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     Ok(codec
-                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, usize::MAX)
                         .await?[0]
                         .clone())
                 })
@@ -486,11 +508,11 @@ fn concurrent_catalog_children_select_one_identity_per_logical_key() {
                 Box::pin(async move {
                     Ok((
                         codec
-                            .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                            .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, usize::MAX)
                             .await?[0]
                             .clone(),
                         codec
-                            .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                            .row_ids(transaction, engine::ENGINE_INDICES_STORAGE, usize::MAX)
                             .await?[0]
                             .clone(),
                     ))
@@ -516,7 +538,7 @@ fn concurrent_catalog_children_select_one_identity_per_logical_key() {
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     Ok(codec
-                        .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                        .row_ids(transaction, engine::ENGINE_INDICES_STORAGE, usize::MAX)
                         .await?
                         .len())
                 })
@@ -656,10 +678,22 @@ fn metadata_first_tombstone_keeps_stale_row_snapshot() {
             .await
             .unwrap();
         let row = scoped_row(&source, "people", Uuid::from_u128(1)).await;
+        assert!(
+            source
+                .read_transaction(|codec, transaction| {
+                    Box::pin(codec.export_state(transaction, "people", row.clone(), 1))
+                })
+                .await
+                .is_err()
+        );
         let state = source
             .read_transaction(|codec, transaction| {
                 let row = row.clone();
-                Box::pin(async move { codec.export_state(transaction, "people", row).await })
+                Box::pin(async move {
+                    codec
+                        .export_state(transaction, "people", row, usize::MAX)
+                        .await
+                })
             })
             .await
             .unwrap()
@@ -683,7 +717,7 @@ fn metadata_first_tombstone_keeps_stale_row_snapshot() {
                 );
                 assert_eq!(
                     codec
-                        .export_state(transaction, "people", row.clone())
+                        .export_state(transaction, "people", row.clone(), usize::MAX)
                         .await?,
                     Some(state)
                 );
@@ -699,7 +733,7 @@ fn metadata_first_tombstone_keeps_stale_row_snapshot() {
                 Box::pin(async move {
                     Ok((
                         codec
-                            .export_state(transaction, "people", row.clone())
+                            .export_state(transaction, "people", row.clone(), usize::MAX)
                             .await?,
                         codec.get_row(transaction, "people", &row).await?,
                     ))
@@ -744,7 +778,7 @@ fn catalog_rows_have_parent_scoped_uuidv7_identities() {
                         engine::ENGINE_INDICES_STORAGE,
                         engine::ENGINE_INDEX_FIELDS_STORAGE,
                     ] {
-                        result.push(codec.row_ids(transaction, storage).await?);
+                        result.push(codec.row_ids(transaction, storage, usize::MAX).await?);
                     }
                     Ok(result)
                 })
@@ -780,6 +814,26 @@ fn catalog_rows_have_parent_scoped_uuidv7_identities() {
         engine.drop_table("people").await.unwrap();
         assert!(engine.table_names().await.unwrap().is_empty());
         assert!(engine.index_schema("people_by_name").await.is_err());
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn row_identity_enumeration_stops_at_its_byte_budget() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        let result = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, 1)
+                        .await
+                })
+            })
+            .await;
+        assert!(result.is_err());
     });
     std::fs::remove_file(path).unwrap();
 }

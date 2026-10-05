@@ -34,4 +34,4 @@ pub use in_memory::{InMemoryKernel, InMemoryKernelTransaction};
 pub use kernel::{Kernel, KernelTransaction};
 
 pub use row_table::RowTable;
-pub use state_transfer::RowMutation;
+pub use state_transfer::{MutationSummary, RowMutation};

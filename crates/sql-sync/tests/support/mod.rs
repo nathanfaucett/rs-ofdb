@@ -148,7 +148,13 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
 }
 
 impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
-    async fn row_ids(&self, transaction: &T, table: &str) -> EngineResult<Vec<RowIdentity>> {
+    async fn row_ids(
+        &self,
+        transaction: &T,
+        table: &str,
+        max_bytes: usize,
+    ) -> EngineResult<Vec<RowIdentity>> {
+        let mut used_bytes = 0usize;
         let mut ids = Vec::new();
         let entries = transaction.scan_bytes(table);
         futures::pin_mut!(entries);
@@ -160,9 +166,15 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
                 }
                 Err(error) => return Err(error),
             };
-            ids.push(
-                RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity"))?,
-            );
+            let row =
+                RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity"))?;
+            used_bytes = used_bytes
+                .saturating_add(row.to_bytes().len())
+                .saturating_add(128);
+            if used_bytes > max_bytes {
+                return Err(EngineError::custom("sync row identities exceed budget"));
+            }
+            ids.push(row);
         }
         Ok(ids)
     }
@@ -172,8 +184,13 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         transaction: &T,
         table: &str,
         row: RowIdentity,
+        max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
-        transaction.get_bytes(table, &row.to_bytes()).await
+        let state = transaction.get_bytes(table, &row.to_bytes()).await?;
+        if state.as_ref().is_some_and(|state| state.len() > max_bytes) {
+            return Err(EngineError::custom("sync state payload exceeds budget"));
+        }
+        Ok(state)
     }
 
     async fn merge_state(
@@ -210,6 +227,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         _transaction: &T,
         _table: &str,
         _row: RowIdentity,
+        _max_bytes: usize,
     ) -> EngineResult<Vec<SyncChangeId>> {
         Ok(Vec::new())
     }
@@ -220,6 +238,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         _table: &str,
         _row: RowIdentity,
         _id: &SyncChangeId,
+        _max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
         Ok(None)
     }
@@ -231,7 +250,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         _row: RowIdentity,
         _id: &SyncChangeId,
         _payload: &[u8],
-    ) -> EngineResult<Option<Row>> {
+    ) -> EngineResult<()> {
         Err(EngineError::SyncDependencyUnavailable)
     }
 }

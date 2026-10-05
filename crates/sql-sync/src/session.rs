@@ -1,18 +1,20 @@
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 
+use futures::{StreamExt, pin_mut};
+
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-    ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, RowIdentity,
-    RowMutation,
+    ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary,
+    RowIdentity,
 };
 use thiserror::Error;
-use value::Row;
 
 use crate::{
     PROTOCOL_VERSION, SyncHello, SyncIncrementalChange, SyncKey, SyncManifest, SyncMessage,
@@ -22,6 +24,7 @@ use crate::{
 /// Maximum serialized sync message size (1 MiB). Transports must also bound reads
 /// before buffering frames; the session checks received frames only afterward.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_SESSION_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncRole {
@@ -32,12 +35,14 @@ pub enum SyncRole {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionConfig {
     pub max_units_per_frame: usize,
+    pub max_session_bytes: usize,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_units_per_frame: 64,
+            max_session_bytes: DEFAULT_MAX_SESSION_BYTES,
         }
     }
 }
@@ -69,6 +74,9 @@ pub enum SyncError<E> {
     #[error("sync message size {size} exceeds {max} bytes")]
     MessageTooLarge { size: usize, max: usize },
 
+    #[error("sync session payload size {size} exceeds {max} bytes")]
+    SessionTooLarge { size: usize, max: usize },
+
     #[error("incompatible protocol version: {0}")]
     IncompatibleProtocol(u16),
 
@@ -91,59 +99,100 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    if config.max_units_per_frame == 0 {
+    if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
 
     exchange_hello(engine, transport, role).await?;
 
     let remote_manifest = exchange_manifest(engine, transport, role).await?;
-    let local_units = export_sync_state_for(engine).await?;
+    let local_units = with_engine_abort(
+        transport,
+        export_sync_state_limited(engine, config.max_session_bytes).await,
+    )
+    .await?;
 
-    let local_inventories = inventories_for(engine, &local_units).await?;
+    let local_inventories = with_engine_abort(
+        transport,
+        inventories_for(engine, &local_units, config.max_session_bytes).await,
+    )
+    .await?;
 
-    let remote_inventories =
-        exchange_inventories(transport, role, local_inventories.clone()).await?;
+    let remote_inventories = exchange_inventories(transport, role, local_inventories).await?;
 
     let remote_inventories = remote_inventories
         .into_iter()
         .map(|inventory| (inventory.key(), inventory))
         .collect::<BTreeMap<_, _>>();
-    let outbound = build_outbound(
-        engine,
-        local_units,
-        remote_manifest.clone(),
-        remote_inventories,
+    let outbound = with_engine_abort(
+        transport,
+        build_outbound(
+            engine,
+            local_units,
+            &remote_manifest,
+            remote_inventories,
+            config.max_session_bytes,
+        )
+        .await,
     )
     .await?;
 
     let (sent, mut received) = match role {
         SyncRole::Initiator => {
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
-            let received = receive_outbound(engine, transport, &remote_manifest).await?;
+            let received = receive_outbound(
+                engine,
+                transport,
+                &remote_manifest,
+                config.max_session_bytes,
+            )
+            .await?;
             (sent, received)
         }
         SyncRole::Responder => {
-            let received = receive_outbound(engine, transport, &remote_manifest).await?;
+            let received = receive_outbound(
+                engine,
+                transport,
+                &remote_manifest,
+                config.max_session_bytes,
+            )
+            .await?;
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
             (sent, received)
         }
     };
 
-    let remote_requests =
-        exchange_snapshot_requests(transport, role, core::mem::take(&mut received.requests))
-            .await?;
-    let recovery = recovery_snapshots(engine, remote_requests).await?;
+    let local_requests = core::mem::take(&mut received.requests);
+    let remote_requests = exchange_snapshot_requests(transport, role, &local_requests).await?;
+    let recovery = with_engine_abort(
+        transport,
+        recovery_snapshots(engine, remote_requests, config.max_session_bytes).await,
+    )
+    .await?;
     let (sent_recovery, (received_recovery, retried_changes)) = match role {
         SyncRole::Initiator => {
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
-            let received =
-                receive_recovery(engine, transport, &mut received, &remote_manifest).await?;
+            let received = receive_recovery(
+                engine,
+                transport,
+                &mut received,
+                &local_requests,
+                &remote_manifest,
+                config.max_session_bytes,
+            )
+            .await?;
             (sent, received)
         }
         SyncRole::Responder => {
-            let received =
-                receive_recovery(engine, transport, &mut received, &remote_manifest).await?;
+            let received = receive_recovery(
+                engine,
+                transport,
+                &mut received,
+                &local_requests,
+                &remote_manifest,
+                config.max_session_bytes,
+            )
+            .await?;
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
             (sent, received)
         }
@@ -177,6 +226,7 @@ struct Received {
     requests: Vec<SyncSnapshotRequest>,
     pending_snapshots: Vec<SyncStateUnit>,
     pending: Vec<SyncIncrementalChange>,
+    received_bytes: usize,
 }
 
 pub async fn sync_manifest_for<K, R>(engine: &Engine<K, R>) -> Result<SyncManifest, EngineError>
@@ -184,13 +234,84 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    Ok(SyncManifest::new(
-        export_sync_state_for(engine)
-            .await?
-            .into_iter()
-            .map(|unit| (unit.key, unit.digest))
-            .collect(),
-    ))
+    sync_manifest_limited(engine, usize::MAX).await
+}
+
+async fn sync_manifest_limited<K, R>(
+    engine: &Engine<K, R>,
+    max_bytes: usize,
+) -> Result<SyncManifest, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let mut used_bytes = 0;
+    let mut entries = Vec::new();
+    let mut tables = [
+        ENGINE_TABLES_STORAGE,
+        ENGINE_TABLE_FIELDS_STORAGE,
+        ENGINE_INDICES_STORAGE,
+        ENGINE_INDEX_FIELDS_STORAGE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    tables.extend(engine.table_names().await?);
+    tables.sort_unstable();
+    tables.dedup();
+    for table in tables {
+        let table_for_rows = table.clone();
+        let row_budget = max_bytes.saturating_sub(used_bytes);
+        let rows = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .row_ids(transaction, &table_for_rows, row_budget)
+                        .await
+                })
+            })
+            .await?;
+        for row in rows {
+            let table_for_row = table.clone();
+            let row_for_state = row.clone();
+            let state_budget = max_bytes.saturating_sub(used_bytes);
+            let (state, metadata) = engine
+                .read_transaction(|codec, transaction| {
+                    Box::pin(async move {
+                        Ok((
+                            codec
+                                .export_state(
+                                    transaction,
+                                    &table_for_row,
+                                    row_for_state.clone(),
+                                    state_budget,
+                                )
+                                .await?
+                                .unwrap_or_default(),
+                            codec
+                                .export_metadata(transaction, &table_for_row, row_for_state)
+                                .await?,
+                        ))
+                    })
+                })
+                .await?;
+            if !state.is_empty() || !metadata.is_empty() {
+                let key = SyncKey::Row {
+                    table: table.clone(),
+                    row,
+                };
+                let digest = SyncStateUnit::new(key.clone(), state, metadata).digest;
+                let SyncKey::Row { table, row } = &key;
+                let entry_bytes = table
+                    .len()
+                    .saturating_add(row.to_bytes().len())
+                    .saturating_add(48);
+                used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
+                entries.push((key, digest));
+            }
+        }
+    }
+    Ok(SyncManifest::new(entries))
 }
 
 pub async fn export_sync_state_for<K, R>(
@@ -200,6 +321,18 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
+    export_sync_state_limited(engine, usize::MAX).await
+}
+
+async fn export_sync_state_limited<K, R>(
+    engine: &Engine<K, R>,
+    max_bytes: usize,
+) -> Result<Vec<SyncStateUnit>, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let mut used_bytes = 0;
     let mut units = Vec::new();
     let mut tables = [
         ENGINE_TABLES_STORAGE,
@@ -215,20 +348,31 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
+        let row_budget = max_bytes.saturating_sub(used_bytes);
         let rows = engine
             .read_transaction(|codec, transaction| {
-                Box::pin(async move { codec.row_ids(transaction, &table_for_rows).await })
+                Box::pin(async move {
+                    codec
+                        .row_ids(transaction, &table_for_rows, row_budget)
+                        .await
+                })
             })
             .await?;
         for row in rows {
             let table_for_row = table.clone();
             let row_for_state = row.clone();
+            let state_budget = max_bytes.saturating_sub(used_bytes);
             let (state, metadata) = engine
                 .read_transaction(|codec, transaction| {
                     Box::pin(async move {
                         Ok((
                             codec
-                                .export_state(transaction, &table_for_row, row_for_state.clone())
+                                .export_state(
+                                    transaction,
+                                    &table_for_row,
+                                    row_for_state.clone(),
+                                    state_budget,
+                                )
                                 .await?
                                 .unwrap_or_default(),
                             codec
@@ -239,6 +383,13 @@ where
                 })
                 .await?;
             if !state.is_empty() || !metadata.is_empty() {
+                let state_bytes = state
+                    .len()
+                    .saturating_add(metadata.len())
+                    .saturating_add(table.len())
+                    .saturating_add(row.to_bytes().len())
+                    .saturating_add(64);
+                used_bytes = account_engine_payload(used_bytes, state_bytes, max_bytes)?;
                 units.push(SyncStateUnit::new(
                     SyncKey::Row {
                         table: table.clone(),
@@ -273,13 +424,13 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    apply_received_batch(engine, batch, Vec::new(), None).await
+    apply_received_batch(engine, Arc::new(batch), Arc::new(Vec::new()), None).await
 }
 
 async fn apply_received_batch<K, R>(
     engine: &Engine<K, R>,
-    mut snapshots: Vec<SyncStateUnit>,
-    mut changes: Vec<SyncIncrementalChange>,
+    snapshots: Arc<Vec<SyncStateUnit>>,
+    changes: Arc<Vec<SyncIncrementalChange>>,
     manifest: Option<&SyncManifest>,
 ) -> Result<(), EngineError>
 where
@@ -288,48 +439,60 @@ where
 {
     validate_state_batch(&snapshots)?;
     validate_change_batch(&changes)?;
-    sort_state_batch(&mut snapshots);
-    changes.sort_by_key(|change| catalog_order(&change.table));
-    let rows = snapshots
-        .iter()
-        .map(|unit| {
-            let SyncKey::Row { table, row } = &unit.key;
-            (table.clone(), row.clone())
-        })
-        .chain(
-            changes
-                .iter()
-                .map(|change| (change.table.clone(), change.row.clone())),
-        )
-        .collect::<Vec<_>>();
-    let touched = rows.clone();
+    let mut tables = BTreeSet::new();
+    for unit in snapshots.iter() {
+        let SyncKey::Row { table, .. } = &unit.key;
+        tables.insert(table.clone());
+    }
+    for change in changes.iter() {
+        tables.insert(change.table.clone());
+    }
+    let tables = tables.into_iter().collect::<Vec<_>>();
     let expected = manifest.cloned();
-    let (catalog_snapshots, user_snapshots): (Vec<_>, Vec<_>) =
-        snapshots.into_iter().partition(|unit| {
-            let SyncKey::Row { table, .. } = &unit.key;
-            catalog_order(table) < 4
-        });
-    let (catalog_changes, user_changes): (Vec<_>, Vec<_>) = changes
-        .into_iter()
-        .partition(|change| catalog_order(&change.table) < 4);
-    let capacity = rows.len();
     engine
-        .mutate_rows(&rows, |codec, transaction| {
+        .mutate_tables(tables.as_slice(), move |codec, transaction| {
+            let snapshots = Arc::clone(&snapshots);
+            let changes = Arc::clone(&changes);
             Box::pin(async move {
-                let mut mutations = Vec::with_capacity(capacity);
-                for unit in catalog_snapshots {
-                    mutations.push(merge_snapshot(codec, transaction, unit).await?);
+                let mut mutations = MutationSummary::default();
+                for order in 0..4 {
+                    for unit in snapshots.iter() {
+                        let SyncKey::Row { table, .. } = &unit.key;
+                        if catalog_order(table) == order {
+                            merge_snapshot(codec, transaction, unit).await?;
+                            mutations.record_table(table);
+                        }
+                    }
                 }
-                for change in catalog_changes {
-                    mutations.push(merge_change(codec, transaction, change).await?);
+                for order in 0..4 {
+                    for change in changes.iter() {
+                        if catalog_order(&change.table) == order {
+                            merge_change(codec, transaction, change).await?;
+                            mutations.record_table(&change.table);
+                        }
+                    }
                 }
-                for unit in user_snapshots {
-                    mutations.push(merge_snapshot(codec, transaction, unit).await?);
+                for unit in snapshots.iter() {
+                    let SyncKey::Row { table, .. } = &unit.key;
+                    if catalog_order(table) == 4 {
+                        merge_snapshot(codec, transaction, unit).await?;
+                        mutations.record_table(table);
+                    }
                 }
-                for change in user_changes {
-                    mutations.push(merge_change(codec, transaction, change).await?);
+                for change in changes.iter() {
+                    if catalog_order(&change.table) == 4 {
+                        merge_change(codec, transaction, change).await?;
+                        mutations.record_table(&change.table);
+                    }
                 }
-                validate_catalog(codec, transaction, &touched, expected.as_ref()).await?;
+                validate_catalog(
+                    codec,
+                    transaction,
+                    snapshots.as_slice(),
+                    changes.as_slice(),
+                    expected.as_ref(),
+                )
+                .await?;
                 Ok(((), mutations))
             })
         })
@@ -339,53 +502,44 @@ where
 async fn merge_snapshot<T, R>(
     codec: &R,
     transaction: &mut T,
-    unit: SyncStateUnit,
-) -> Result<RowMutation, EngineError>
+    unit: &SyncStateUnit,
+) -> Result<(), EngineError>
 where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let SyncKey::Row { table, row } = unit.key;
-    let old = codec.get_row(transaction, &table, &row).await?;
+    let SyncKey::Row { table, row } = &unit.key;
     if !unit.metadata.is_empty() {
         codec
-            .merge_metadata(transaction, &table, row.clone(), &unit.metadata)
+            .merge_metadata(transaction, table, row.clone(), &unit.metadata)
             .await?;
     }
     let new = if unit.state.is_empty() {
         None
     } else {
         codec
-            .merge_state(transaction, &table, row.clone(), &unit.state)
+            .merge_state(transaction, table, row.clone(), &unit.state)
             .await?
     };
-    if new.is_none() && !codec.row_is_deleted(transaction, &table, &row).await? {
+    if new.is_none() && !codec.row_is_deleted(transaction, table, row).await? {
         return Err(EngineError::custom(format!(
             "Sync state for {} row {} produced no row",
             table, row
         )));
     }
-    Ok(RowMutation {
-        table,
-        row,
-        old,
-        new,
-    })
+    Ok(())
 }
 
 async fn merge_change<T, R>(
     codec: &R,
     transaction: &mut T,
-    change: SyncIncrementalChange,
-) -> Result<RowMutation, EngineError>
+    change: &SyncIncrementalChange,
+) -> Result<(), EngineError>
 where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let old = codec
-        .get_row(transaction, &change.table, &change.row)
-        .await?;
-    let new = codec
+    codec
         .apply_change(
             transaction,
             &change.table,
@@ -394,45 +548,34 @@ where
             &change.payload,
         )
         .await?;
-    Ok(RowMutation {
-        table: change.table,
-        row: change.row,
-        old,
-        new,
-    })
+    Ok(())
 }
 
 async fn validate_catalog<T, R>(
     codec: &R,
     transaction: &T,
-    touched: &[(String, RowIdentity)],
+    snapshots: &[SyncStateUnit],
+    changes: &[SyncIncrementalChange],
     manifest: Option<&SyncManifest>,
 ) -> Result<(), EngineError>
 where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    if touched.is_empty() {
+    if snapshots.is_empty() && changes.is_empty() {
         return Ok(());
     }
-    let mut catalog = BTreeMap::<(String, RowIdentity), Row>::new();
-    for table in [
+    let catalog_tables = [
         ENGINE_TABLES_STORAGE,
         ENGINE_TABLE_FIELDS_STORAGE,
         ENGINE_INDICES_STORAGE,
         ENGINE_INDEX_FIELDS_STORAGE,
-    ] {
-        for id in codec.row_ids(transaction, table).await? {
-            if let Some(row) = codec.get_row(transaction, table, &id).await? {
-                catalog.insert((String::from(table), id), row);
-            }
-        }
-    }
+    ];
     if let Some(manifest) = manifest {
         for (key, _) in &manifest.entries {
             let SyncKey::Row { table, row } = key;
             if catalog_order(table) < 4
-                && !catalog.contains_key(&(table.clone(), row.clone()))
+                && !catalog_has_active_row(codec, transaction, table, row).await?
                 && !codec.row_is_deleted(transaction, table, row).await?
             {
                 return Err(EngineError::custom(format!(
@@ -442,174 +585,322 @@ where
             }
         }
     }
-    for ((table, id), value) in &catalog {
-        let RowIdentity::Catalog(bytes) = id else {
-            return Err(EngineError::custom(format!(
-                "Invalid catalog identity in {}",
-                table
-            )));
-        };
-        let parent = match table.as_str() {
-            ENGINE_TABLES_STORAGE if bytes.len() == 16 => None,
-            ENGINE_TABLE_FIELDS_STORAGE | ENGINE_INDICES_STORAGE if bytes.len() == 32 => {
-                Some((ENGINE_TABLES_STORAGE, 16))
+    for table in catalog_tables {
+        let rows = codec.scan_row_states(transaction, table);
+        pin_mut!(rows);
+        while let Some(state) = rows.next().await {
+            let (id, value, deleted) = state?;
+            if deleted {
+                continue;
             }
-            ENGINE_INDEX_FIELDS_STORAGE if bytes.len() == 48 => Some((ENGINE_INDICES_STORAGE, 32)),
-            _ => {
+            let RowIdentity::Catalog(bytes) = &id else {
                 return Err(EngineError::custom(format!(
-                    "Invalid catalog identity length in {}",
+                    "Invalid catalog identity in {}",
                     table
                 )));
+            };
+            let parent = match table {
+                ENGINE_TABLES_STORAGE if bytes.len() == 16 => None,
+                ENGINE_TABLE_FIELDS_STORAGE | ENGINE_INDICES_STORAGE if bytes.len() == 32 => {
+                    Some((ENGINE_TABLES_STORAGE, 16))
+                }
+                ENGINE_INDEX_FIELDS_STORAGE if bytes.len() == 48 => {
+                    Some((ENGINE_INDICES_STORAGE, 32))
+                }
+                _ => {
+                    return Err(EngineError::custom(format!(
+                        "Invalid catalog identity length in {}",
+                        table
+                    )));
+                }
+            };
+            if let Some((storage, size)) = parent {
+                let parent_id = RowIdentity::catalog(bytes[..size].to_vec());
+                if !catalog_has_active_row(codec, transaction, storage, &parent_id).await?
+                    && !codec
+                        .row_is_deleted(transaction, storage, &parent_id)
+                        .await?
+                {
+                    return Err(EngineError::custom(format!(
+                        "Incomplete catalog: {} row {} has no parent in {}",
+                        table, id, storage
+                    )));
+                }
             }
-        };
-        if let Some((storage, size)) = parent {
-            let parent_id = RowIdentity::catalog(bytes[..size].to_vec());
-            if !catalog.contains_key(&(String::from(storage), parent_id.clone()))
-                && !codec
-                    .row_is_deleted(transaction, storage, &parent_id)
-                    .await?
-            {
+            let values = &value.values;
+            let valid = match table {
+                ENGINE_TABLES_STORAGE => values.len() == 1 && values[0].as_text().is_some(),
+                ENGINE_TABLE_FIELDS_STORAGE => {
+                    values.len() == 5
+                        && values[0].as_text().is_some()
+                        && values[1].to_type().is_some()
+                        && values[3].to_integer().is_some_and(|position| position >= 0)
+                        && values[4].to_bool().is_some()
+                }
+                ENGINE_INDICES_STORAGE => {
+                    values.len() == 3
+                        && values[0].as_text().is_some()
+                        && values[1].as_text().is_some()
+                        && values[2].to_bool().is_some()
+                }
+                ENGINE_INDEX_FIELDS_STORAGE => {
+                    values.len() == 3
+                        && values[0].to_integer().is_some_and(|position| position >= 0)
+                        && values[1].as_text().is_some()
+                        && values[2].to_uuid().is_some()
+                }
+                _ => false,
+            };
+            if !valid {
                 return Err(EngineError::custom(format!(
-                    "Incomplete catalog: {} row {} has no parent in {}",
-                    table, id, storage
+                    "Invalid catalog row {} in {}",
+                    id, table
                 )));
             }
         }
-        let values = &value.values;
-        let valid = match table.as_str() {
-            ENGINE_TABLES_STORAGE => values.len() == 1 && values[0].as_text().is_some(),
-            ENGINE_TABLE_FIELDS_STORAGE => {
-                values.len() == 5
-                    && values[0].as_text().is_some()
-                    && values[1].to_type().is_some()
-                    && values[3].to_integer().is_some_and(|position| position >= 0)
-                    && values[4].to_bool().is_some()
-            }
-            ENGINE_INDICES_STORAGE => {
-                values.len() == 3
-                    && values[0].as_text().is_some()
-                    && values[1].as_text().is_some()
-                    && values[2].to_bool().is_some()
-            }
-            ENGINE_INDEX_FIELDS_STORAGE => {
-                values.len() == 3
-                    && values[0].to_integer().is_some_and(|position| position >= 0)
-                    && values[1].as_text().is_some()
-                    && values[2].to_uuid().is_some()
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err(EngineError::custom(format!(
-                "Invalid catalog row {} in {}",
-                id, table
-            )));
-        }
     }
-    for (table, _) in touched {
-        if catalog_order(table) == 4
-            && !catalog.iter().any(|((storage, _), value)| {
-                storage == ENGINE_TABLES_STORAGE && value.values[0].as_text() == Some(table)
-            })
-        {
+    for table in touched_tables(snapshots, changes) {
+        if catalog_order(table) == 4 && !table_name_exists(codec, transaction, table).await? {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: data table {} has no definition",
                 table
             )));
         }
     }
-    for ((table, id), value) in &catalog {
-        if table == ENGINE_TABLES_STORAGE {
-            let RowIdentity::Catalog(parent) = id else {
-                unreachable!()
-            };
-            let has_fields = catalog.keys().any(|(storage, child)| {
-                storage == ENGINE_TABLE_FIELDS_STORAGE
-                    && matches!(child, RowIdentity::Catalog(bytes) if bytes.starts_with(parent))
-            });
-            if touched.iter().any(|(storage, row)| {
-                (storage == ENGINE_TABLES_STORAGE && row == id)
-                    || (storage == ENGINE_TABLE_FIELDS_STORAGE
-                        && matches!(row, RowIdentity::Catalog(bytes) if bytes.starts_with(parent)))
-                    || (storage == value.values[0].as_text().expect("validated table name"))
-            }) {
-                if !has_fields {
-                    return Err(EngineError::custom(format!(
-                        "Incomplete catalog: table {} has no fields",
-                        value.values[0].as_text().expect("validated table name")
-                    )));
-                }
-                if !catalog.iter().any(|((storage, child), field)| {
-                    storage == ENGINE_TABLE_FIELDS_STORAGE
-                        && matches!(child, RowIdentity::Catalog(bytes) if bytes.starts_with(parent))
-                        && field.values[1].to_type() == Some(value::ValueType::Uuid)
-                        && field.values[4].to_bool() == Some(true)
-                }) {
-                    return Err(EngineError::custom(format!(
-                        "Incomplete catalog: table {} has no UUID primary key",
-                        value.values[0].as_text().expect("validated table name")
-                    )));
-                }
+    let tables = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+    pin_mut!(tables);
+    while let Some(state) = tables.next().await {
+        let (id, value, deleted) = state?;
+        if deleted {
+            continue;
+        }
+        let RowIdentity::Catalog(table_id) = &id else {
+            return Err(EngineError::custom("Invalid catalog table identity"));
+        };
+        let name = value.values[0]
+            .as_text()
+            .expect("catalog table name was validated");
+        if touched_row(snapshots, changes, ENGINE_TABLES_STORAGE, &id)
+            || touched_catalog_parent(snapshots, changes, ENGINE_TABLE_FIELDS_STORAGE, table_id)
+            || touched_table(snapshots, changes, name)
+        {
+            let (has_fields, has_uuid_primary_key) =
+                table_field_status(codec, transaction, table_id).await?;
+            if !has_fields {
+                return Err(EngineError::custom(format!(
+                    "Incomplete catalog: table {} has no fields",
+                    name
+                )));
+            }
+            if !has_uuid_primary_key {
+                return Err(EngineError::custom(format!(
+                    "Incomplete catalog: table {} has no UUID primary key",
+                    name
+                )));
             }
         }
-        if table == ENGINE_INDICES_STORAGE {
-            let name = value.values[1].as_text().expect("validated index table");
-            let parent = catalog.iter().find(|((storage, _), row)| {
-                storage == ENGINE_TABLES_STORAGE && row.values[0].as_text() == Some(name)
-            });
-            let Some(((_, RowIdentity::Catalog(table_id)), _)) = parent else {
-                return Err(EngineError::custom(format!(
-                    "Incomplete catalog: index {} references missing table {}",
-                    id, name
-                )));
+    }
+    let indices = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
+    pin_mut!(indices);
+    while let Some(state) = indices.next().await {
+        let (id, value, deleted) = state?;
+        if deleted {
+            continue;
+        }
+        let name = value.values[1]
+            .as_text()
+            .expect("catalog index table name was validated");
+        let Some(table_id) = table_id_for_name(codec, transaction, name).await? else {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: index {} references missing table {}",
+                id, name
+            )));
+        };
+        let RowIdentity::Catalog(index_id) = &id else {
+            return Err(EngineError::custom("Invalid catalog index identity"));
+        };
+        if !index_id.starts_with(&table_id) {
+            return Err(EngineError::custom(format!(
+                "Invalid catalog: index {} is not scoped to table {}",
+                id, name
+            )));
+        }
+        let fields = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+        pin_mut!(fields);
+        let mut has_fields = false;
+        while let Some(field) = fields.next().await {
+            let (field_id, field, deleted) = field?;
+            let RowIdentity::Catalog(field_key) = field_id else {
+                return Err(EngineError::custom("Invalid catalog index-field identity"));
             };
-            let RowIdentity::Catalog(index_id) = id else {
-                unreachable!()
-            };
-            if !index_id.starts_with(table_id) {
+            if deleted || !field_key.starts_with(index_id) {
+                continue;
+            }
+            has_fields = true;
+            let column = field.values[1]
+                .as_text()
+                .expect("catalog index field column was validated");
+            if !table_has_column(codec, transaction, &table_id, column).await? {
                 return Err(EngineError::custom(format!(
-                    "Invalid catalog: index {} is not scoped to table {}",
-                    id, name
+                    "Incomplete catalog: index {} references missing column {}",
+                    id, column
                 )));
             }
-            let fields = catalog
-                .iter()
-                .filter(|((storage, row), _)| {
-                    storage == ENGINE_INDEX_FIELDS_STORAGE
-                        && matches!(row, RowIdentity::Catalog(bytes) if bytes.starts_with(index_id))
-                })
-                .collect::<Vec<_>>();
-            if fields.is_empty() {
-                return Err(EngineError::custom(format!(
-                    "Incomplete catalog: index {} has no fields",
-                    id
-                )));
-            }
-            for (_, field) in fields {
-                let column = field.values[1]
-                    .as_text()
-                    .expect("validated index field column");
-                if !catalog.iter().any(|((storage, row), value)| {
-                    storage == ENGINE_TABLE_FIELDS_STORAGE
-                        && matches!(row, RowIdentity::Catalog(bytes) if bytes.starts_with(table_id))
-                        && value.values[0].as_text() == Some(column)
-                }) {
-                    return Err(EngineError::custom(format!(
-                        "Incomplete catalog: index {} references missing column {}",
-                        id, column
-                    )));
-                }
-            }
+        }
+        if !has_fields {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: index {} has no fields",
+                id
+            )));
         }
     }
     Ok(())
 }
 
-fn sort_state_batch(batch: &mut [SyncStateUnit]) {
-    batch.sort_by_key(|unit| {
-        let SyncKey::Row { table, .. } = &unit.key;
-        catalog_order(table)
-    });
+async fn catalog_has_active_row<T, R>(
+    codec: &R,
+    transaction: &T,
+    table: &str,
+    target: &RowIdentity,
+) -> Result<bool, EngineError>
+where
+    T: KernelTransaction,
+    R: SyncRowCodec<T>,
+{
+    Ok(codec.get_row(transaction, table, target).await?.is_some())
+}
+
+async fn table_name_exists<T, R>(
+    codec: &R,
+    transaction: &T,
+    name: &str,
+) -> Result<bool, EngineError>
+where
+    T: KernelTransaction,
+    R: SyncRowCodec<T>,
+{
+    Ok(table_id_for_name(codec, transaction, name).await?.is_some())
+}
+
+async fn table_id_for_name<T, R>(
+    codec: &R,
+    transaction: &T,
+    name: &str,
+) -> Result<Option<Vec<u8>>, EngineError>
+where
+    T: KernelTransaction,
+    R: SyncRowCodec<T>,
+{
+    let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+    pin_mut!(rows);
+    while let Some(row) = rows.next().await {
+        let (id, value, deleted) = row?;
+        if !deleted && value.values[0].as_text() == Some(name) {
+            let RowIdentity::Catalog(id) = id else {
+                return Err(EngineError::custom("Invalid catalog table identity"));
+            };
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+async fn table_field_status<T, R>(
+    codec: &R,
+    transaction: &T,
+    table_id: &[u8],
+) -> Result<(bool, bool), EngineError>
+where
+    T: KernelTransaction,
+    R: SyncRowCodec<T>,
+{
+    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+    pin_mut!(fields);
+    let mut has_fields = false;
+    let mut has_uuid_primary_key = false;
+    while let Some(field) = fields.next().await {
+        let (id, value, deleted) = field?;
+        if deleted || !matches!(&id, RowIdentity::Catalog(key) if key.starts_with(table_id)) {
+            continue;
+        }
+        has_fields = true;
+        has_uuid_primary_key |= value.values[1].to_type() == Some(value::ValueType::Uuid)
+            && value.values[4].to_bool() == Some(true);
+    }
+    Ok((has_fields, has_uuid_primary_key))
+}
+
+async fn table_has_column<T, R>(
+    codec: &R,
+    transaction: &T,
+    table_id: &[u8],
+    column: &str,
+) -> Result<bool, EngineError>
+where
+    T: KernelTransaction,
+    R: SyncRowCodec<T>,
+{
+    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+    pin_mut!(fields);
+    while let Some(field) = fields.next().await {
+        let (id, value, deleted) = field?;
+        if !deleted
+            && matches!(&id, RowIdentity::Catalog(key) if key.starts_with(table_id))
+            && value.values[0].as_text() == Some(column)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn touched_tables<'a>(
+    snapshots: &'a [SyncStateUnit],
+    changes: &'a [SyncIncrementalChange],
+) -> impl Iterator<Item = &'a str> + 'a {
+    snapshots
+        .iter()
+        .filter_map(|unit| match &unit.key {
+            SyncKey::Row { table, .. } => Some(table.as_str()),
+        })
+        .chain(changes.iter().map(|change| change.table.as_str()))
+}
+
+fn touched_table(
+    snapshots: &[SyncStateUnit],
+    changes: &[SyncIncrementalChange],
+    table: &str,
+) -> bool {
+    touched_tables(snapshots, changes).any(|touched| touched == table)
+}
+
+fn touched_row(
+    snapshots: &[SyncStateUnit],
+    changes: &[SyncIncrementalChange],
+    table: &str,
+    row: &RowIdentity,
+) -> bool {
+    snapshots.iter().any(|unit| {
+        matches!(&unit.key, SyncKey::Row { table: touched_table, row: touched_row }
+            if touched_table == table && touched_row == row)
+    }) || changes
+        .iter()
+        .any(|change| change.table == table && &change.row == row)
+}
+
+fn touched_catalog_parent(
+    snapshots: &[SyncStateUnit],
+    changes: &[SyncIncrementalChange],
+    table: &str,
+    parent: &[u8],
+) -> bool {
+    snapshots.iter().any(|unit| {
+        matches!(&unit.key, SyncKey::Row { table: touched_table, row: RowIdentity::Catalog(bytes) }
+            if touched_table == table && bytes.starts_with(parent))
+    }) || changes.iter().any(|change| {
+        change.table == table
+            && matches!(&change.row, RowIdentity::Catalog(bytes) if bytes.starts_with(parent))
+    })
 }
 
 fn catalog_order(table: &str) -> u8 {
@@ -620,6 +911,33 @@ fn catalog_order(table: &str) -> u8 {
         ENGINE_INDEX_FIELDS_STORAGE => 3,
         _ => 4,
     }
+}
+
+fn validate_recovery_snapshots(
+    requests: &[SyncSnapshotRequest],
+    snapshots: &[SyncStateUnit],
+) -> Result<(), EngineError> {
+    let mut remaining = requests.iter().cloned().collect::<BTreeSet<_>>();
+    for snapshot in snapshots {
+        let SyncKey::Row { table, row } = &snapshot.key;
+        let request = SyncSnapshotRequest {
+            table: table.clone(),
+            row: row.clone(),
+        };
+        if !remaining.remove(&request) {
+            return Err(EngineError::custom(format!(
+                "Unexpected or duplicate recovery snapshot for {} row {}",
+                table, row
+            )));
+        }
+    }
+    if let Some(request) = remaining.first() {
+        return Err(EngineError::custom(format!(
+            "Incomplete sync: recovery snapshot missing for {} row {}",
+            request.table, request.row
+        )));
+    }
+    Ok(())
 }
 
 fn validate_state_batch(batch: &[SyncStateUnit]) -> Result<(), EngineError> {
@@ -646,7 +964,7 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    apply_received_batch(engine, Vec::new(), batch.to_vec(), None).await
+    apply_received_batch(engine, Arc::new(Vec::new()), Arc::new(batch.to_vec()), None).await
 }
 
 fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineError> {
@@ -661,22 +979,42 @@ fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineEr
 async fn inventories_for<K, R>(
     engine: &Engine<K, R>,
     units: &[SyncStateUnit],
+    max_bytes: usize,
 ) -> Result<Vec<SyncRowInventory>, EngineError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
+    let mut used_bytes = 0usize;
     let mut result = Vec::new();
     for unit in units {
         let SyncKey::Row { table, row } = unit.key.clone();
-        result.push(SyncRowInventory {
-            table: table.clone(),
-            row: row.clone(),
-            changes: engine
-                .read_transaction(|codec, transaction| {
-                    Box::pin(async move { codec.change_inventory(transaction, &table, row).await })
+        let key_bytes = table.len() + row.to_bytes().len() + 64;
+        let table_for_inventory = table.clone();
+        let row_for_inventory = row.clone();
+        let inventory_budget = max_bytes.saturating_sub(used_bytes.saturating_add(key_bytes));
+        let changes = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    codec
+                        .change_inventory(
+                            transaction,
+                            &table_for_inventory,
+                            row_for_inventory,
+                            inventory_budget,
+                        )
+                        .await
                 })
-                .await?,
+            })
+            .await?;
+        let inventory_bytes = changes
+            .iter()
+            .fold(key_bytes, |sum, id| sum.saturating_add(id.0.len() + 8));
+        used_bytes = account_engine_payload(used_bytes, inventory_bytes, max_bytes)?;
+        result.push(SyncRowInventory {
+            table,
+            row,
+            changes,
         });
     }
     result.sort_by_key(SyncRowInventory::key);
@@ -714,8 +1052,9 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    match receive_message(transport).await? {
+    match receive_message(transport).await?.0 {
         SyncMessage::Inventory(inventory) => Ok(inventory),
+        SyncMessage::Abort(reason) => Err(SyncError::RemoteAbort(reason)),
         _ => Err(SyncError::UnexpectedMessage),
     }
 }
@@ -723,13 +1062,15 @@ where
 async fn build_outbound<K, R>(
     engine: &Engine<K, R>,
     units: Vec<SyncStateUnit>,
-    remote_manifest: SyncManifest,
+    remote_manifest: &SyncManifest,
     remote_inventories: BTreeMap<SyncKey, SyncRowInventory>,
+    max_bytes: usize,
 ) -> Result<Outbound, EngineError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
+    let mut used_bytes = 0;
     let mut outbound = Outbound::default();
     for unit in units {
         let SyncKey::Row { table, row } = unit.key.clone();
@@ -737,16 +1078,24 @@ where
             continue;
         }
         let Some(remote) = remote_inventories.get(&unit.key) else {
+            used_bytes =
+                account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
             outbound.snapshots.push(unit);
             continue;
         };
         let table_for_inventory = table.clone();
         let row_for_inventory = row.clone();
+        let inventory_budget = max_bytes.saturating_sub(used_bytes);
         let local = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     codec
-                        .change_inventory(transaction, &table_for_inventory, row_for_inventory)
+                        .change_inventory(
+                            transaction,
+                            &table_for_inventory,
+                            row_for_inventory,
+                            inventory_budget,
+                        )
                         .await
                 })
             })
@@ -759,6 +1108,13 @@ where
             let export_id = key.clone();
             let table_for_export = table.clone();
             let row_for_export = row.clone();
+            let export_budget = max_bytes.saturating_sub(
+                used_bytes
+                    .saturating_add(key.0.len())
+                    .saturating_add(table.len())
+                    .saturating_add(row.to_bytes().len())
+                    .saturating_add(64),
+            );
             if let Some(payload) = engine
                 .read_transaction(move |codec, transaction| {
                     Box::pin(async move {
@@ -768,12 +1124,18 @@ where
                                 &table_for_export,
                                 row_for_export,
                                 &export_id,
+                                export_budget,
                             )
                             .await
                     })
                 })
                 .await?
             {
+                used_bytes = account_engine_payload(
+                    used_bytes,
+                    payload.len() + key.0.len() + table.len() + row.to_bytes().len() + 64,
+                    max_bytes,
+                )?;
                 outbound.changes.push(SyncIncrementalChange {
                     table: table.clone(),
                     row: row.clone(),
@@ -784,6 +1146,8 @@ where
             }
         }
         if exported == 0 {
+            used_bytes =
+                account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
             outbound.snapshots.push(unit);
         }
     }
@@ -833,13 +1197,13 @@ where
 async fn exchange_snapshot_requests<T>(
     transport: &mut T,
     role: SyncRole,
-    local: Vec<SyncSnapshotRequest>,
+    local: &[SyncSnapshotRequest],
 ) -> Result<Vec<SyncSnapshotRequest>, SyncError<T::Error>>
 where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let message = SyncMessage::RequestSnapshots(local);
+    let message = SyncMessage::RequestSnapshots(local.to_vec());
     match role {
         SyncRole::Initiator => {
             send_message(transport, &message).await?;
@@ -860,7 +1224,7 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    match receive_message(transport).await? {
+    match receive_message(transport).await?.0 {
         SyncMessage::RequestSnapshots(requests) => Ok(requests),
         _ => Err(SyncError::UnexpectedMessage),
     }
@@ -869,18 +1233,26 @@ where
 async fn recovery_snapshots<K, R>(
     engine: &Engine<K, R>,
     requests: Vec<SyncSnapshotRequest>,
+    max_bytes: usize,
 ) -> Result<Vec<SyncStateUnit>, EngineError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
+    let mut used_bytes = 0;
     let mut snapshots = Vec::new();
     for request in requests {
+        let state_budget = max_bytes.saturating_sub(used_bytes);
         let snapshot = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     let state = codec
-                        .export_state(transaction, &request.table, request.row.clone())
+                        .export_state(
+                            transaction,
+                            &request.table,
+                            request.row.clone(),
+                            state_budget,
+                        )
                         .await?
                         .unwrap_or_default();
                     let metadata = codec
@@ -902,6 +1274,8 @@ where
             })
             .await?;
         if let Some(snapshot) = snapshot {
+            used_bytes =
+                account_engine_payload(used_bytes, state_unit_payload_size(&snapshot), max_bytes)?;
             snapshots.push(snapshot);
         }
     }
@@ -928,7 +1302,9 @@ async fn receive_recovery<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     received: &mut Received,
+    requested: &[SyncSnapshotRequest],
     manifest: &SyncManifest,
+    max_session_bytes: usize,
 ) -> Result<(usize, usize), SyncError<T::Error>>
 where
     K: Kernel,
@@ -937,8 +1313,12 @@ where
     T::Error: core::fmt::Display,
 {
     let mut snapshots = Vec::new();
+    let mut received_bytes = received.received_bytes;
     loop {
-        match receive_message(transport).await? {
+        let (message, message_bytes) = receive_message(transport).await?;
+        received_bytes =
+            account_message(transport, received_bytes, message_bytes, max_session_bytes).await?;
+        match message {
             SyncMessage::State(batch) => {
                 snapshots.extend(batch);
             }
@@ -948,6 +1328,12 @@ where
         }
     }
     let count = snapshots.len();
+    if let Err(error) = validate_recovery_snapshots(requested, &snapshots) {
+        let reason = format!("{} (recovery snapshot batch)", error);
+        let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
+        return Err(error.into());
+    }
+    received.received_bytes = received_bytes;
     received.pending_snapshots.append(&mut snapshots);
     if received.pending.is_empty() && count == 0 {
         return Ok((0, 0));
@@ -960,8 +1346,8 @@ where
     }
     if let Err(error) = apply_received_batch(
         engine,
-        core::mem::take(&mut received.pending_snapshots),
-        Vec::new(),
+        Arc::new(core::mem::take(&mut received.pending_snapshots)),
+        Arc::new(Vec::new()),
         Some(manifest),
     )
     .await
@@ -970,6 +1356,8 @@ where
         let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
         return Err(error.into());
     }
+
+    received.pending_snapshots.clear();
 
     // A recovery snapshot is the sender's complete current row state. It includes
     // the history needed by the pending changes and supersedes their payloads.
@@ -981,6 +1369,7 @@ async fn receive_outbound<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     manifest: &SyncManifest,
+    max_session_bytes: usize,
 ) -> Result<Received, SyncError<T::Error>>
 where
     K: Kernel,
@@ -994,22 +1383,41 @@ where
         requests: Vec::new(),
         pending_snapshots: Vec::new(),
         pending: Vec::new(),
+        received_bytes: 0,
     };
     let mut snapshots = Vec::new();
     let mut changes = Vec::new();
     loop {
-        match receive_message(transport).await? {
+        let (message, message_bytes) = receive_message(transport).await?;
+        count.received_bytes = account_message(
+            transport,
+            count.received_bytes,
+            message_bytes,
+            max_session_bytes,
+        )
+        .await?;
+        match message {
             SyncMessage::State(batch) => snapshots.extend(batch),
             SyncMessage::Changes(batch) => changes.extend(batch),
             SyncMessage::Done => {
                 count.snapshots = snapshots.len();
-                if let Err(error) =
-                    apply_received_batch(engine, snapshots.clone(), changes.clone(), Some(manifest))
-                        .await
+                let change_count = changes.len();
+                let snapshot_batch = Arc::new(snapshots);
+                let change_batch = Arc::new(changes);
+                if let Err(error) = apply_received_batch(
+                    engine,
+                    Arc::clone(&snapshot_batch),
+                    Arc::clone(&change_batch),
+                    Some(manifest),
+                )
+                .await
                 {
                     if matches!(error, EngineError::SyncDependencyUnavailable) {
-                        count.pending_snapshots = snapshots;
-                        for change in changes {
+                        count.pending_snapshots = Arc::try_unwrap(snapshot_batch)
+                            .expect("sync apply releases its snapshot batch before returning");
+                        for change in Arc::try_unwrap(change_batch)
+                            .expect("sync apply releases its change batch before returning")
+                        {
                             count.requests.push(SyncSnapshotRequest {
                                 table: change.table.clone(),
                                 row: change.row.clone(),
@@ -1020,7 +1428,7 @@ where
                         return abort(transport, error, String::from("incremental batch")).await;
                     }
                 } else {
-                    count.changes = changes.len();
+                    count.changes = change_count;
                 }
                 count.requests.sort_unstable();
                 count.requests.dedup();
@@ -1062,17 +1470,22 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
+    let manifest = with_engine_abort(
+        transport,
+        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64).await,
+    )
+    .await?;
     let hello = SyncMessage::Hello(SyncHello {
         protocol_version: PROTOCOL_VERSION,
-        manifest: sync_manifest_for(engine).await?,
+        manifest,
     });
     match role {
         SyncRole::Initiator => {
             send_message(transport, &hello).await?;
-            validate_hello(receive_message(transport).await?)
+            validate_hello(receive_message(transport).await?.0)
         }
         SyncRole::Responder => {
-            validate_hello(receive_message(transport).await?)?;
+            validate_hello(receive_message(transport).await?.0)?;
             send_message(transport, &hello).await
         }
     }
@@ -1080,6 +1493,9 @@ where
 
 fn validate_hello<E>(message: SyncMessage) -> Result<(), SyncError<E>> {
     let SyncMessage::Hello(hello) = message else {
+        if let SyncMessage::Abort(reason) = message {
+            return Err(SyncError::RemoteAbort(reason));
+        }
         return Err(SyncError::UnexpectedMessage);
     };
     if hello.protocol_version != PROTOCOL_VERSION {
@@ -1099,7 +1515,12 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let message = SyncMessage::Manifest(sync_manifest_for(engine).await?);
+    let manifest = with_engine_abort(
+        transport,
+        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64).await,
+    )
+    .await?;
+    let message = SyncMessage::Manifest(manifest);
     match role {
         SyncRole::Initiator => {
             send_message(transport, &message).await?;
@@ -1118,9 +1539,68 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    match receive_message(transport).await? {
+    match receive_message(transport).await?.0 {
         SyncMessage::Manifest(manifest) => Ok(manifest),
+        SyncMessage::Abort(reason) => Err(SyncError::RemoteAbort(reason)),
         _ => Err(SyncError::UnexpectedMessage),
+    }
+}
+
+async fn with_engine_abort<T, O>(
+    transport: &mut T,
+    result: Result<O, EngineError>,
+) -> Result<O, SyncError<T::Error>>
+where
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+{
+    match result {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
+            Err(error.into())
+        }
+    }
+}
+
+fn state_unit_payload_size(unit: &SyncStateUnit) -> usize {
+    let SyncKey::Row { table, row } = &unit.key;
+    unit.state
+        .len()
+        .saturating_add(unit.metadata.len())
+        .saturating_add(table.len())
+        .saturating_add(row.to_bytes().len())
+        .saturating_add(64)
+}
+
+fn account_engine_payload(used: usize, incoming: usize, max: usize) -> Result<usize, EngineError> {
+    let size = used.saturating_add(incoming);
+    if size > max {
+        Err(EngineError::custom(format!(
+            "sync session payload size {size} exceeds {max} bytes"
+        )))
+    } else {
+        Ok(size)
+    }
+}
+
+async fn account_message<T>(
+    transport: &mut T,
+    used: usize,
+    message_bytes: usize,
+    max: usize,
+) -> Result<usize, SyncError<T::Error>>
+where
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+{
+    let size = used.saturating_add(message_bytes);
+    if size > max {
+        let error = SyncError::SessionTooLarge { size, max };
+        let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
+        Err(error)
+    } else {
+        Ok(size)
     }
 }
 
@@ -1143,7 +1623,7 @@ where
     transport.send(frame).await.map_err(SyncError::Transport)
 }
 
-async fn receive_message<T>(transport: &mut T) -> Result<SyncMessage, SyncError<T::Error>>
+async fn receive_message<T>(transport: &mut T) -> Result<(SyncMessage, usize), SyncError<T::Error>>
 where
     T: SyncTransport,
     T::Error: core::fmt::Display,
@@ -1155,7 +1635,10 @@ where
             max: MAX_MESSAGE_BYTES,
         });
     }
-    postcard::from_bytes(&frame).map_err(|error| SyncError::Protocol(error.to_string()))
+    let size = frame.len();
+    let message =
+        postcard::from_bytes(&frame).map_err(|error| SyncError::Protocol(error.to_string()))?;
+    Ok((message, size))
 }
 
 #[cfg(test)]
@@ -1169,12 +1652,12 @@ mod tests {
     use futures::executor::block_on;
 
     use super::{
-        MAX_MESSAGE_BYTES, SyncError, catalog_order, receive_message, send_message,
-        sort_state_batch, validate_hello, validate_state_batch,
+        MAX_MESSAGE_BYTES, SyncError, catalog_order, receive_message, send_message, validate_hello,
+        validate_recovery_snapshots, validate_state_batch,
     };
     use crate::{
-        PROTOCOL_VERSION, SyncHello, SyncKey, SyncManifest, SyncMessage, SyncStateUnit,
-        SyncTransport,
+        PROTOCOL_VERSION, SyncHello, SyncKey, SyncManifest, SyncMessage, SyncSnapshotRequest,
+        SyncStateUnit, SyncTransport,
     };
 
     #[derive(Default)]
@@ -1211,40 +1694,45 @@ mod tests {
     }
 
     #[test]
-    fn catalog_rows_are_ordered_before_user_rows() {
-        let mut units = [
-            "user_table",
-            ENGINE_INDEX_FIELDS_STORAGE,
-            ENGINE_TABLE_FIELDS_STORAGE,
-            ENGINE_INDICES_STORAGE,
-            ENGINE_TABLES_STORAGE,
-        ]
-        .map(|table| {
+    fn catalog_order_places_system_tables_before_user_tables() {
+        assert_eq!(catalog_order(ENGINE_TABLES_STORAGE), 0);
+        assert_eq!(catalog_order(ENGINE_TABLE_FIELDS_STORAGE), 1);
+        assert_eq!(catalog_order(ENGINE_INDICES_STORAGE), 2);
+        assert_eq!(catalog_order(ENGINE_INDEX_FIELDS_STORAGE), 3);
+        assert_eq!(catalog_order("user_table"), 4);
+    }
+
+    #[test]
+    fn recovery_requires_exactly_one_snapshot_for_each_requested_row() {
+        let requests = vec![
+            SyncSnapshotRequest {
+                table: String::from("people"),
+                row: RowIdentity::User([1; 16]),
+            },
+            SyncSnapshotRequest {
+                table: String::from("people"),
+                row: RowIdentity::User([2; 16]),
+            },
+        ];
+        let snapshot = |row| {
             SyncStateUnit::new(
                 SyncKey::Row {
-                    table: table.into(),
-                    row: RowIdentity::catalog(vec![1]),
+                    table: String::from("people"),
+                    row: RowIdentity::User([row; 16]),
                 },
-                vec![2],
-                vec![],
+                vec![1],
+                Vec::new(),
             )
-        });
-        sort_state_batch(&mut units);
-        let tables = units.map(|unit| {
-            let SyncKey::Row { table, .. } = unit.key;
-            table
-        });
-        assert_eq!(
-            tables,
-            [
-                ENGINE_TABLES_STORAGE,
-                ENGINE_TABLE_FIELDS_STORAGE,
-                ENGINE_INDICES_STORAGE,
-                ENGINE_INDEX_FIELDS_STORAGE,
-                "user_table",
-            ]
+        };
+
+        assert!(validate_recovery_snapshots(&requests, &[snapshot(1)]).is_err());
+        assert!(validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(2)]).is_ok());
+        assert!(validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(1)]).is_err());
+        assert!(
+            validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(2), snapshot(3)])
+                .is_err()
         );
-        assert_eq!(catalog_order("user_table"), 4);
+        assert!(validate_recovery_snapshots(&[], &[snapshot(1)]).is_err());
     }
 
     #[test]
@@ -1307,9 +1795,9 @@ mod tests {
         let frame = transport.outbound.take().expect("message was sent");
         assert_eq!(frame.len(), MAX_MESSAGE_BYTES);
         transport.inbound = Some(frame);
-        assert_eq!(
-            block_on(receive_message(&mut transport)).expect("boundary message must decode"),
-            message
-        );
+        let (received, encoded_size) =
+            block_on(receive_message(&mut transport)).expect("boundary message must decode");
+        assert_eq!(received, message);
+        assert_eq!(encoded_size, MAX_MESSAGE_BYTES);
     }
 }

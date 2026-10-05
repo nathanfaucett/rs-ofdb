@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeSet, string::String, vec::Vec};
 use core::{future::Future, pin::Pin};
 
 use value::Row;
@@ -7,6 +7,22 @@ use crate::{
     Engine, EngineResult, Kernel, KernelTransaction, RowCodec, RowIdentity,
     schema::{active_table_names, catalog_table_for_storage, ensure},
 };
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MutationSummary {
+    changed_tables: BTreeSet<String>,
+    catalog_changed: bool,
+}
+
+impl MutationSummary {
+    pub fn record_table(&mut self, table: &str) {
+        if catalog_table_for_storage(table).is_some() {
+            self.catalog_changed = true;
+        } else {
+            self.changed_tables.insert(String::from(table));
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowMutation {
@@ -77,6 +93,54 @@ where
                     false,
                 )
                 .await?;
+            }
+            Ok(output)
+        }
+        .await;
+        match result {
+            Ok(output) => {
+                transaction.commit().await?;
+                Ok(output)
+            }
+            Err(error) => {
+                transaction.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn mutate_tables<F, O>(&self, tables: &[String], operation: F) -> EngineResult<O>
+    where
+        F: for<'a> FnOnce(
+            &'a R,
+            &'a mut K::Transaction,
+        ) -> Pin<
+            Box<dyn Future<Output = EngineResult<(O, MutationSummary)>> + Send + 'a>,
+        >,
+    {
+        let mut transaction = self.kernel.transaction().await?;
+        let result: EngineResult<O> = async {
+            ensure(&mut transaction, self.reconciler.as_ref()).await?;
+            for table in tables {
+                self.reconciler
+                    .ensure_table(&mut transaction, table)
+                    .await?;
+            }
+            let (output, summary) = operation(self.reconciler.as_ref(), &mut transaction).await?;
+            let active_tables = active_table_names(&transaction, self.reconciler.as_ref()).await?;
+            for table in active_tables {
+                if summary.catalog_changed || summary.changed_tables.contains(&table) {
+                    self.reconciler
+                        .ensure_table(&mut transaction, &table)
+                        .await?;
+                    crate::index::rebuild_table(
+                        &mut transaction,
+                        self.reconciler.as_ref(),
+                        &table,
+                        false,
+                    )
+                    .await?;
+                }
             }
             Ok(output)
         }

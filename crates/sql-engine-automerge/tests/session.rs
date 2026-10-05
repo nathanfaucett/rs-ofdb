@@ -1,13 +1,14 @@
 use core::fmt;
 use std::{cell::RefCell, rc::Rc};
 
-use engine::{Engine, InMemoryKernel};
+use engine::{Engine, InMemoryKernel, RowCodec};
 use engine_automerge::AutomergeRowCodec;
 use futures::{StreamExt, channel::mpsc, executor::block_on};
+use query::{Query, QueryInsert, Statement};
 use schema::{ColumnSchema, TableSchema};
 use sql_translator::SqlTranslator;
 use sync::{SessionConfig, SyncMessage, SyncRole, SyncRowCodec, SyncTransport, synchronize};
-use value::{Value, ValueType};
+use value::{Row, Value, ValueType};
 
 #[derive(Debug)]
 struct Closed;
@@ -108,13 +109,30 @@ fn synchronizes_catalog_state_and_converges() {
     block_on(async {
         let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
         let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
-        left.create_table(table("users")).await.unwrap();
+        let users = TableSchema {
+            name: "users".into(),
+            columns: vec![
+                ColumnSchema {
+                    name: "id".into(),
+                    r#type: ValueType::Uuid,
+                    default: Value::Null,
+                    primary_key: true,
+                },
+                ColumnSchema {
+                    name: "email".into(),
+                    r#type: ValueType::Text,
+                    default: Value::Null,
+                    primary_key: false,
+                },
+            ],
+        };
+        left.create_table(users).await.unwrap();
         left.execute(vec![query::Statement::DataDefinition(
             query::DataDefinition::CreateIndex {
                 schema: schema::IndexSchema {
-                    name: "users_by_id".into(),
+                    name: "users_by_email".into(),
                     table_name: "users".into(),
-                    column_indices: vec![0],
+                    column_indices: vec![1],
                     unique: true,
                 },
                 if_not_exists: false,
@@ -122,18 +140,60 @@ fn synchronizes_catalog_state_and_converges() {
         )])
         .await
         .unwrap();
+        left.execute(vec![Statement::Query(Query::Insert(QueryInsert {
+            table: "users".into(),
+            row: Row::new(vec![
+                Value::Uuid(uuid::Uuid::from_u128(1)),
+                Value::from("ada@example.test"),
+            ]),
+            returning: None,
+        }))])
+        .await
+        .unwrap();
 
         let frames = sync(&left, &right, &SessionConfig::default()).await;
 
-        assert_eq!(right.table_schema("users").await.unwrap(), table("users"));
         assert_eq!(
-            right.index_schema("users_by_id").await.unwrap(),
+            right.table_schema("users").await.unwrap(),
+            TableSchema {
+                name: "users".into(),
+                columns: vec![
+                    ColumnSchema {
+                        name: "id".into(),
+                        r#type: ValueType::Uuid,
+                        default: Value::Null,
+                        primary_key: true,
+                    },
+                    ColumnSchema {
+                        name: "email".into(),
+                        r#type: ValueType::Text,
+                        default: Value::Null,
+                        primary_key: false,
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            right.index_schema("users_by_email").await.unwrap(),
             schema::IndexSchema {
-                name: "users_by_id".into(),
+                name: "users_by_email".into(),
                 table_name: "users".into(),
-                column_indices: vec![0],
+                column_indices: vec![1],
                 unique: true,
             }
+        );
+        assert!(
+            right
+                .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                    table: "users".into(),
+                    row: Row::new(vec![
+                        Value::Uuid(uuid::Uuid::from_u128(2)),
+                        Value::from("ada@example.test"),
+                    ]),
+                    returning: None,
+                }))])
+                .await
+                .is_err()
         );
         assert!(
             frames
@@ -144,6 +204,104 @@ fn synchronizes_catalog_state_and_converges() {
             sync::sync_manifest_for(&left).await.unwrap(),
             sync::sync_manifest_for(&right).await.unwrap()
         );
+    });
+}
+
+#[test]
+fn oversized_single_row_fails_sync_and_preserves_source_data() {
+    block_on(async {
+        let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        left.create_table(people_table()).await.unwrap();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let oversized_value = (0..sync::MAX_MESSAGE_BYTES * 3)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                char::from(b'a' + (seed % 26) as u8)
+            })
+            .collect::<String>();
+        left.execute(vec![Statement::Query(Query::Insert(QueryInsert {
+            table: "people".into(),
+            row: Row::new(vec![
+                Value::Uuid(uuid::Uuid::from_u128(1)),
+                Value::from(oversized_value),
+            ]),
+            returning: None,
+        }))])
+        .await
+        .unwrap();
+
+        let (mut left_transport, mut right_transport) = transport_pair();
+        let config = SessionConfig::default();
+        let (left_result, right_result) = futures::join!(
+            synchronize(&left, &mut left_transport, &config, SyncRole::Initiator),
+            synchronize(&right, &mut right_transport, &config, SyncRole::Responder),
+        );
+        assert!(left_result.is_err());
+        assert!(right_result.is_err());
+
+        let source_rows = left
+            .translate_and_execute("SELECT * FROM people;", &SqlTranslator)
+            .await
+            .unwrap();
+        assert_eq!(source_rows[0].rows.len(), 1);
+        assert!(right.table_names().await.unwrap().is_empty());
+    });
+}
+
+#[test]
+fn oversized_incremental_fails_sync_and_preserves_both_versions() {
+    block_on(async {
+        let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let translator = SqlTranslator;
+        left.create_table(people_table()).await.unwrap();
+        left.translate_and_execute(
+            "INSERT INTO people (id, name) VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada');",
+            &translator,
+        )
+        .await
+        .unwrap();
+        sync(&left, &right, &SessionConfig::default()).await;
+
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let oversized_value = (0..sync::MAX_MESSAGE_BYTES * 3)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                char::from(b'a' + (seed % 26) as u8)
+            })
+            .collect::<String>();
+        let update = format!(
+            "UPDATE people SET name = '{oversized_value}' WHERE id = CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID);"
+        );
+        left.translate_and_execute(&update, &translator)
+            .await
+            .unwrap();
+
+        let (mut left_transport, mut right_transport) = transport_pair();
+        let config = SessionConfig::default();
+        let (left_result, right_result) = futures::join!(
+            synchronize(&left, &mut left_transport, &config, SyncRole::Initiator),
+            synchronize(&right, &mut right_transport, &config, SyncRole::Responder),
+        );
+        assert!(left_result.is_err());
+        assert!(right_result.is_err());
+
+        let source_rows = left
+            .translate_and_execute("SELECT * FROM people;", &translator)
+            .await
+            .unwrap();
+        assert_eq!(source_rows[0].rows.len(), 1);
+        let destination_rows = right
+            .translate_and_execute("SELECT * FROM people;", &translator)
+            .await
+            .unwrap();
+        assert_eq!(destination_rows[0].rows.len(), 1);
+        assert_eq!(destination_rows[0].rows[0].values[1], Value::from("Ada"));
     });
 }
 
@@ -310,9 +468,10 @@ fn duplicate_incremental_frames_are_idempotent() {
         right
             .mutate_transaction(&table, row.clone(), move |codec, transaction, _| {
                 Box::pin(async move {
-                    let value = codec
-                        .apply_change(transaction, &table_for_apply, row, &id, &payload)
+                    codec
+                        .apply_change(transaction, &table_for_apply, row.clone(), &id, &payload)
                         .await?;
+                    let value = codec.get_row(transaction, &table_for_apply, &row).await?;
                     Ok(((), value))
                 })
             })
@@ -339,6 +498,7 @@ fn batches_state_units_without_checkpoint_or_envelope_messages() {
             &right,
             &SessionConfig {
                 max_units_per_frame: 2,
+                ..SessionConfig::default()
             },
         )
         .await;

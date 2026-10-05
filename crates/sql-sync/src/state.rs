@@ -25,21 +25,50 @@ pub struct SyncStateUnit {
 
 impl SyncStateUnit {
     pub fn new(key: SyncKey, state: Vec<u8>, metadata: Vec<u8>) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update((state.len() as u64).to_le_bytes());
-        hasher.update(&state);
-        hasher.update((metadata.len() as u64).to_le_bytes());
-        hasher.update(&metadata);
+        let digest = state_digest(&state, &metadata);
         Self {
             key,
             state,
             metadata,
-            digest: StateDigest(hasher.finalize().into()),
+            digest,
         }
     }
 
     pub fn verify_digest(&self) -> bool {
-        Self::new(self.key.clone(), self.state.clone(), self.metadata.clone()).digest == self.digest
+        state_digest(&self.state, &self.metadata) == self.digest
+    }
+}
+
+fn state_digest(state: &[u8], metadata: &[u8]) -> StateDigest {
+    let mut hasher = Sha256::new();
+    hasher.update((state.len() as u64).to_le_bytes());
+    hasher.update(state);
+    hasher.update((metadata.len() as u64).to_le_bytes());
+    hasher.update(metadata);
+    StateDigest(hasher.finalize().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::String, vec};
+
+    use super::{SyncKey, SyncStateUnit};
+    use engine::RowIdentity;
+
+    #[test]
+    fn digest_verification_does_not_require_mutating_state() {
+        let mut unit = SyncStateUnit::new(
+            SyncKey::Row {
+                table: String::from("items"),
+                row: RowIdentity::User([1; 16]),
+            },
+            vec![7; 1024],
+            vec![9; 256],
+        );
+
+        assert!(unit.verify_digest());
+        unit.state[0] ^= 1;
+        assert!(!unit.verify_digest());
     }
 }
 

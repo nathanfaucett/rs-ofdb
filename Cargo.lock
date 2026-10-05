@@ -2743,6 +2743,7 @@ dependencies = [
  "futures",
  "iroh",
  "ofdb-sql-engine",
+ "ofdb-sql-engine-redb",
  "ofdb-sql-schema",
  "ofdb-sql-translator",
  "ofdb-value",

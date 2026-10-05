@@ -22,6 +22,22 @@ use value::{Row, Value};
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
 
+fn account_row_identity_bytes(
+    used_bytes: usize,
+    row: &RowIdentity,
+    max_bytes: usize,
+) -> EngineResult<usize> {
+    let next_bytes = used_bytes
+        .saturating_add(row.to_bytes().len())
+        .saturating_add(128);
+    if next_bytes > max_bytes {
+        return Err(EngineError::custom(format!(
+            "sync row identities exceed the {max_bytes}-byte budget"
+        )));
+    }
+    Ok(next_bytes)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RowMetadata {
     pub version: u8,
@@ -804,8 +820,14 @@ impl<T> SyncRowCodec<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
-    async fn row_ids(&self, transaction: &T, table: &str) -> EngineResult<Vec<RowIdentity>> {
+    async fn row_ids(
+        &self,
+        transaction: &T,
+        table: &str,
+        max_bytes: usize,
+    ) -> EngineResult<Vec<RowIdentity>> {
         let mut ids = BTreeMap::new();
+        let mut used_bytes = 0;
         let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
         let documents = reconstruct_document_values(changes.range(..).filter_map(|entry| async {
             match &entry {
@@ -816,12 +838,20 @@ where
         pin_mut!(documents);
         while let Some(document) = documents.next().await {
             let (id, _) = document.map_err(EngineError::custom)?;
-            ids.insert(Self::row_id(&id)?, ());
+            let row = Self::row_id(&id)?;
+            if !ids.contains_key(&row) {
+                used_bytes = account_row_identity_bytes(used_bytes, &row, max_bytes)?;
+                ids.insert(row, ());
+            }
         }
         let metadata = self.export_metadata_rows(transaction, table);
         pin_mut!(metadata);
         while let Some(row) = metadata.next().await {
-            ids.insert(row?.0, ());
+            let row = row?.0;
+            if !ids.contains_key(&row) {
+                used_bytes = account_row_identity_bytes(used_bytes, &row, max_bytes)?;
+                ids.insert(row, ());
+            }
         }
         Ok(ids.into_keys().collect())
     }
@@ -831,12 +861,20 @@ where
         transaction: &T,
         table: &str,
         row: RowIdentity,
+        max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
         let id = Self::document_id(&row);
-        Self::document(transaction, table, &id)
-            .await?
-            .map(|mut document| Ok(document.save()))
-            .transpose()
+        let Some(mut document) = Self::document(transaction, table, &id).await? else {
+            return Ok(None);
+        };
+        let state = document.save();
+        if state.len() > max_bytes {
+            return Err(EngineError::custom(format!(
+                "sync state payload of {} bytes exceeds the {max_bytes}-byte budget",
+                state.len()
+            )));
+        }
+        Ok(Some(state))
     }
 
     async fn merge_state(
@@ -928,15 +966,26 @@ where
         transaction: &T,
         table: &str,
         row: RowIdentity,
+        max_bytes: usize,
     ) -> EngineResult<Vec<SyncChangeId>> {
         let id = Self::document_id(&row);
         let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
         let entries = changes.range(DocumentChangeKey::range_for(&id));
         pin_mut!(entries);
         let mut inventory = BTreeMap::new();
+        let mut used_bytes = 0usize;
         while let Some(entry) = entries.next().await {
-            let (key, _) = entry.map_err(EngineError::custom)?;
+            let (key, payload) = entry.map_err(EngineError::custom)?;
             if key.r#type().is_incremental() {
+                used_bytes = used_bytes
+                    .saturating_add(payload.len())
+                    .saturating_add(key.change_hash().len())
+                    .saturating_add(128);
+                if used_bytes > max_bytes {
+                    return Err(EngineError::custom(format!(
+                        "sync change inventory exceeds the {max_bytes}-byte budget"
+                    )));
+                }
                 inventory.insert(*key.change_hash(), SyncChangeId(key.change_hash().to_vec()));
             }
         }
@@ -956,16 +1005,26 @@ where
         table: &str,
         row: RowIdentity,
         id: &SyncChangeId,
+        max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
         let hash: [u8; 32] =
             id.0.as_slice()
                 .try_into()
                 .map_err(|_| EngineError::custom("Invalid sync change ID"))?;
         let key = DocumentChangeKey::new_incremental(Self::document_id(&row), hash);
-        AutomergeChangeStore::new(BytesTable::new(transaction, table))
+        let payload = AutomergeChangeStore::new(BytesTable::new(transaction, table))
             .get(&key)
             .await
-            .map_err(EngineError::custom)
+            .map_err(EngineError::custom)?;
+        if let Some(payload) = &payload
+            && payload.len() > max_bytes
+        {
+            return Err(EngineError::custom(format!(
+                "sync change payload of {} bytes exceeds the {max_bytes}-byte budget",
+                payload.len()
+            )));
+        }
+        Ok(payload)
     }
 
     async fn apply_change(
@@ -975,7 +1034,7 @@ where
         row: RowIdentity,
         id: &SyncChangeId,
         payload: &[u8],
-    ) -> EngineResult<Option<Row>> {
+    ) -> EngineResult<()> {
         let hash: [u8; 32] =
             id.0.as_slice()
                 .try_into()
@@ -988,7 +1047,7 @@ where
             .map_err(EngineError::custom)?
             .is_some();
         if already_applied {
-            return self.get_row(transaction, table, &row).await;
+            return Ok(());
         }
         let Some(mut document) = Self::document(transaction, table, &document_id).await? else {
             return Err(EngineError::SyncDependencyUnavailable);
@@ -1007,12 +1066,12 @@ where
             ));
         }
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
-        let value = Self::decode_row(&document, &columns)?;
+        Self::decode_row(&document, &columns)?;
         AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table))
             .insert(automerge_key, payload.to_vec())
             .await
             .map_err(EngineError::custom)?;
-        Ok((!Self::metadata_deleted(transaction, table, &row).await?).then_some(value))
+        Ok(())
     }
 }
 

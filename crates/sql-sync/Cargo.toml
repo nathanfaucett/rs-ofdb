@@ -20,6 +20,7 @@ iroh = ["dep:iroh"]
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = [] }
 
 # external dependencies
+futures = { version = "0.3", default-features = false, features = [] }
 iroh = { version = "1.1", default-features = false, features = ["tls-ring"], optional = true }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
@@ -31,6 +32,7 @@ value = { version = "0.1", path = "../value", package = "ofdb-value", default-fe
 [dev-dependencies]
 # internal dependencies
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["in-memory", "std"] }
+engine-redb = { version = "0.1", path = "../sql-engine-redb", package = "ofdb-sql-engine-redb", default-features = false, features = [] }
 
 schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
 sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = [] }

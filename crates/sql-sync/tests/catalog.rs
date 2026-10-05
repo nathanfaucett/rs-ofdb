@@ -6,11 +6,18 @@ use engine::{
     ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine,
     InMemoryKernel, Kernel, KernelTransaction, RowIdentity,
 };
-use futures::{StreamExt, channel::mpsc, executor::block_on};
+use engine_redb::{RedbKernel, redb};
+use futures::{
+    FutureExt, StreamExt,
+    channel::{mpsc, oneshot},
+    executor::block_on,
+    future::{Either, select},
+};
 use support::TestCodec;
 use sync::{
     SessionConfig, SyncChangeId, SyncIncrementalChange, SyncKey, SyncMessage, SyncRole,
-    SyncStateUnit, SyncTransport, apply_sync_state_batch_for, export_sync_state_for, synchronize,
+    SyncStateUnit, SyncTransport, apply_sync_state_batch_for, export_sync_state_for,
+    sync_manifest_for, synchronize,
 };
 use value::{Row, Value, ValueType};
 
@@ -90,11 +97,176 @@ fn transport_pair(interrupt: bool) -> (Transport, Transport) {
     )
 }
 
+struct StalledReceiveTransport {
+    receives: usize,
+    ready: Option<oneshot::Sender<()>>,
+}
+
+impl SyncTransport for StalledReceiveTransport {
+    type Error = Closed;
+
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+        self.receives += 1;
+        let message = match self.receives {
+            1 => SyncMessage::Hello(sync::SyncHello {
+                protocol_version: sync::PROTOCOL_VERSION,
+                manifest: sync::SyncManifest::default(),
+            }),
+            2 => SyncMessage::Manifest(sync::SyncManifest::default()),
+            3 => SyncMessage::Inventory(Vec::new()),
+            _ => {
+                self.ready
+                    .take()
+                    .expect("signal once when sync waits for peer data")
+                    .send(())
+                    .expect("writer test is waiting");
+                return futures::future::pending().await;
+            }
+        };
+        postcard::to_allocvec(&message).map_err(|_| Closed)
+    }
+
+    async fn send(&mut self, _frame: Vec<u8>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn waiting_for_network_frames_does_not_hold_the_engine_write_transaction() {
+    block_on(async {
+        let kernel = InMemoryKernel::new();
+        let engine = Engine::new(kernel.clone(), TestCodec);
+        let (ready, waiting) = oneshot::channel();
+        let mut transport = StalledReceiveTransport {
+            receives: 0,
+            ready: Some(ready),
+        };
+        let config = SessionConfig::default();
+        let sync = synchronize(&engine, &mut transport, &config, SyncRole::Initiator);
+        let writer = async {
+            waiting.await.expect("sync reached peer receive");
+            let mut transaction = kernel
+                .transaction()
+                .await
+                .expect("unrelated writer can begin during network receive");
+            transaction
+                .ensure_table("unrelated")
+                .await
+                .expect("create unrelated table");
+            transaction
+                .put_bytes("unrelated", vec![1], vec![2])
+                .await
+                .expect("write unrelated data");
+            transaction.commit().await.expect("commit unrelated writer");
+        };
+        match select(sync.boxed(), writer.boxed()).await {
+            Either::Right(((), _sync)) => {}
+            Either::Left((result, _writer)) => panic!("sync ended before writer: {result:?}"),
+        }
+        let transaction = kernel.transaction().await.expect("read committed data");
+        assert_eq!(
+            transaction
+                .get_bytes("unrelated", &[1])
+                .await
+                .expect("read committed value"),
+            Some(vec![2])
+        );
+    });
+}
+
+#[test]
+fn waiting_for_network_frames_does_not_hold_the_redb_write_transaction() {
+    block_on(async {
+        let path = std::env::temp_dir().join(format!(
+            "ofdb-sync-writer-progress-{}-{}.redb",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after Unix epoch")
+                .as_nanos()
+        ));
+        let database = std::sync::Arc::new(
+            redb::Database::create(&path).expect("create temporary Redb database"),
+        );
+        let sync_kernel = RedbKernel::new(std::sync::Arc::clone(&database));
+        let writer_kernel = RedbKernel::new(std::sync::Arc::clone(&database));
+        let engine = Engine::new(sync_kernel, TestCodec);
+        let (ready, waiting) = oneshot::channel();
+        let mut transport = StalledReceiveTransport {
+            receives: 0,
+            ready: Some(ready),
+        };
+        let config = SessionConfig::default();
+        let sync = synchronize(&engine, &mut transport, &config, SyncRole::Initiator);
+        let writer = async {
+            waiting.await.expect("sync reached peer receive");
+            let mut transaction = writer_kernel
+                .transaction()
+                .await
+                .expect("unrelated Redb writer can begin during network receive");
+            transaction
+                .ensure_table("unrelated")
+                .await
+                .expect("create unrelated table");
+            transaction
+                .put_bytes("unrelated", vec![1], vec![2])
+                .await
+                .expect("write unrelated data");
+            transaction.commit().await.expect("commit unrelated writer");
+        };
+        match select(sync.boxed(), writer.boxed()).await {
+            Either::Right(((), _sync)) => {}
+            Either::Left((result, _writer)) => panic!("sync ended before writer: {result:?}"),
+        }
+        let transaction = writer_kernel
+            .transaction()
+            .await
+            .expect("read committed Redb data");
+        assert_eq!(
+            transaction
+                .get_bytes("unrelated", &[1])
+                .await
+                .expect("read committed value"),
+            Some(vec![2])
+        );
+        transaction
+            .rollback()
+            .await
+            .expect("finish read transaction");
+        drop(engine);
+        drop(writer_kernel);
+        drop(database);
+        std::fs::remove_file(path).expect("remove temporary Redb database");
+    });
+}
+
+#[test]
+fn manifest_matches_exported_state_digests() {
+    block_on(async {
+        let source = source().await;
+        let expected = export_sync_state_for(&source)
+            .await
+            .expect("export source state")
+            .into_iter()
+            .map(|unit| (unit.key, unit.digest))
+            .collect::<Vec<_>>();
+        let manifest = sync_manifest_for(&source)
+            .await
+            .expect("build manifest without retaining state snapshots");
+
+        assert_eq!(manifest.entries, expected);
+    });
+}
+
 fn destination() -> Engine<InMemoryKernel, TestCodec> {
     Engine::new(InMemoryKernel::new(), TestCodec)
 }
 
 async fn source() -> Engine<InMemoryKernel, TestCodec> {
+    source_with_rows(1).await
+}
+
+async fn source_with_rows(user_rows: usize) -> Engine<InMemoryKernel, TestCodec> {
     let kernel = InMemoryKernel::new();
     let mut transaction = kernel.transaction().await.expect("source transaction");
     transaction
@@ -135,21 +307,26 @@ async fn source() -> Engine<InMemoryKernel, TestCodec> {
             .await
             .expect("source row");
     }
-    let user = RowIdentity::ScopedUser {
-        table: [1; 16],
-        row: [4; 16],
-    };
-    transaction
-        .put_bytes(
-            "people",
-            user.to_bytes(),
-            postcard::to_allocvec(&Row::new(vec![Value::Uuid(uuid::Uuid::from_bytes(
-                [4; 16],
-            ))]))
-            .expect("encode user row"),
-        )
-        .await
-        .expect("source user row");
+    for index in 0..user_rows {
+        let row_id = if index == 0 {
+            [4; 16]
+        } else {
+            (index as u128).to_be_bytes()
+        };
+        let user = RowIdentity::ScopedUser {
+            table: [1; 16],
+            row: row_id,
+        };
+        transaction
+            .put_bytes(
+                "people",
+                user.to_bytes(),
+                postcard::to_allocvec(&Row::new(vec![Value::Uuid(uuid::Uuid::from_bytes(row_id))]))
+                    .expect("encode user row"),
+            )
+            .await
+            .expect("source user row");
+    }
     transaction.commit().await.expect("commit source");
     Engine::new(kernel, TestCodec)
 }
@@ -161,6 +338,7 @@ fn interrupted_catalog_frames_leave_no_partial_table_and_retry() {
         let destination = destination();
         let config = SessionConfig {
             max_units_per_frame: 1,
+            ..SessionConfig::default()
         };
         let (mut left, mut right) = transport_pair(true);
         let (sent, received) = futures::join!(
@@ -208,6 +386,120 @@ fn interrupted_catalog_frames_leave_no_partial_table_and_retry() {
                 .expect("recovered state")
                 .iter()
                 .any(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table == "people"))
+        );
+    });
+}
+
+#[test]
+fn session_payload_limit_rejects_before_catalog_commit() {
+    block_on(async {
+        let source = source().await;
+        let destination = destination();
+        let sender_config = SessionConfig::default();
+        let receiver_config = SessionConfig {
+            max_session_bytes: 1,
+            ..SessionConfig::default()
+        };
+        let (mut left, mut right) = transport_pair(false);
+        let (sent, received) = futures::join!(
+            synchronize(&source, &mut left, &sender_config, SyncRole::Initiator),
+            synchronize(
+                &destination,
+                &mut right,
+                &receiver_config,
+                SyncRole::Responder
+            )
+        );
+        assert!(sent.is_err());
+        assert!(received.is_err());
+        assert!(
+            destination
+                .table_names()
+                .await
+                .expect("destination catalog")
+                .is_empty()
+        );
+        assert_eq!(
+            source.table_names().await.expect("source catalog"),
+            vec!["people"]
+        );
+    });
+}
+
+#[test]
+fn cumulative_inbound_budget_aborts_multiframe_catalog_before_apply() {
+    block_on(async {
+        let source = source_with_rows(2048).await;
+        let destination = destination();
+        let sender_config = SessionConfig::default();
+        let receiver_config = SessionConfig {
+            max_session_bytes: 8 * 1024,
+            ..SessionConfig::default()
+        };
+        let (mut left, mut right) = transport_pair(false);
+        let (sent, received) = futures::join!(
+            synchronize(&source, &mut left, &sender_config, SyncRole::Initiator),
+            synchronize(
+                &destination,
+                &mut right,
+                &receiver_config,
+                SyncRole::Responder
+            )
+        );
+
+        assert!(sent.is_err(), "sender observes the receiver abort");
+        let error = received.expect_err("cumulative budget aborts receiver");
+        assert!(
+            error.to_string().contains("sync session payload size"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            destination
+                .table_names()
+                .await
+                .expect("destination catalog")
+                .is_empty(),
+            "the receiver must not apply a partial catalog"
+        );
+        assert_eq!(
+            source.table_names().await.expect("source catalog"),
+            vec!["people"]
+        );
+    });
+}
+
+#[test]
+fn outbound_payload_limit_aborts_peer_and_preserves_both_catalogs() {
+    block_on(async {
+        let source = source().await;
+        let destination = destination();
+        let sender_config = SessionConfig {
+            max_session_bytes: 1,
+            ..SessionConfig::default()
+        };
+        let receiver_config = SessionConfig::default();
+        let (mut left, mut right) = transport_pair(false);
+        let (sent, received) = futures::join!(
+            synchronize(&source, &mut left, &sender_config, SyncRole::Initiator),
+            synchronize(
+                &destination,
+                &mut right,
+                &receiver_config,
+                SyncRole::Responder
+            )
+        );
+        assert!(sent.is_err());
+        assert!(received.is_err());
+        assert_eq!(
+            source.table_names().await.expect("source catalog"),
+            vec!["people"]
+        );
+        assert!(
+            destination
+                .table_names()
+                .await
+                .expect("destination catalog")
+                .is_empty()
         );
     });
 }

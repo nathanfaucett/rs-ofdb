@@ -20,7 +20,7 @@ pub use protocol::{
     SyncSnapshotRequest,
 };
 pub use session::{
-    MAX_MESSAGE_BYTES, SessionConfig, SyncError, SyncResult, SyncRole,
+    DEFAULT_MAX_SESSION_BYTES, MAX_MESSAGE_BYTES, SessionConfig, SyncError, SyncResult, SyncRole,
     apply_incremental_changes_for, apply_sync_state_batch_for, apply_sync_state_for,
     export_sync_state_for, sync_manifest_for, synchronize,
 };

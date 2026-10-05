@@ -13,12 +13,14 @@ where
         &self,
         transaction: &T,
         table: &str,
+        max_bytes: usize,
     ) -> impl Future<Output = EngineResult<Vec<RowIdentity>>> + Send;
     fn export_state(
         &self,
         transaction: &T,
         table: &str,
         row: RowIdentity,
+        max_bytes: usize,
     ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
     fn merge_state(
         &self,
@@ -45,6 +47,7 @@ where
         transaction: &T,
         table: &str,
         row: RowIdentity,
+        max_bytes: usize,
     ) -> impl Future<Output = EngineResult<Vec<SyncChangeId>>> + Send;
     fn export_change(
         &self,
@@ -52,6 +55,7 @@ where
         table: &str,
         row: RowIdentity,
         id: &SyncChangeId,
+        max_bytes: usize,
     ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
     fn apply_change(
         &self,
@@ -60,5 +64,5 @@ where
         row: RowIdentity,
         id: &SyncChangeId,
         payload: &[u8],
-    ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
+    ) -> impl Future<Output = EngineResult<()>> + Send;
 }
