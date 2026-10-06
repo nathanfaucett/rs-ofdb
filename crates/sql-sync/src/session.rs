@@ -526,18 +526,7 @@ where
             if catalog_order(table) == 4 {
                 let entry = rows.entry((table.clone(), row.clone())).or_default();
                 entry.0.push(index);
-                let identity_bytes = match row {
-                    RowIdentity::User(_) => 16,
-                    RowIdentity::ScopedUser { .. } => 32,
-                    RowIdentity::Catalog(bytes) => bytes.len(),
-                };
-                entry.2 = entry
-                    .2
-                    .saturating_add(core::mem::size_of::<SyncStateUnit>())
-                    .saturating_add(table.len())
-                    .saturating_add(identity_bytes)
-                    .saturating_add(unit.state.len())
-                    .saturating_add(unit.metadata.len());
+                entry.2 = entry.2.saturating_add(sync_state_unit_estimate(unit));
             }
         }
         for (index, change) in changes.iter().enumerate() {
@@ -546,51 +535,98 @@ where
                     .entry((change.table.clone(), change.row.clone()))
                     .or_default();
                 entry.1.push(index);
-                let identity_bytes = match &change.row {
-                    RowIdentity::User(_) => 16,
-                    RowIdentity::ScopedUser { .. } => 32,
-                    RowIdentity::Catalog(bytes) => bytes.len(),
-                };
                 entry.2 = entry
                     .2
-                    .saturating_add(core::mem::size_of::<SyncIncrementalChange>())
-                    .saturating_add(change.table.len())
-                    .saturating_add(identity_bytes)
-                    .saturating_add(change.id.0.len())
-                    .saturating_add(change.payload.len());
+                    .saturating_add(sync_incremental_change_estimate(change));
             }
         }
+        let mut batch = Vec::new();
+        let mut batch_bytes = 0_usize;
         for ((table, _), (snapshot_indices, change_indices, bytes)) in rows {
             if bytes > MAX_APPLY_BATCH_BYTES {
                 return Err(EngineError::custom(format!(
                     "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
                 )));
             }
-            let table_names = alloc::vec![table.clone()];
-            let batch_snapshots = Arc::clone(&snapshots);
-            let batch_changes = Arc::clone(&changes);
-            engine
-                .mutate_tables(table_names.as_slice(), move |codec, transaction| {
-                    let snapshots = batch_snapshots;
-                    let changes = batch_changes;
-                    Box::pin(async move {
-                        let mut mutations = MutationSummary::default();
-                        for index in snapshot_indices {
-                            merge_snapshot(codec, transaction, &snapshots[index]).await?;
-                            mutations.record_table(&table);
-                        }
-                        for index in change_indices {
-                            merge_change(codec, transaction, &changes[index]).await?;
-                            mutations.record_table(&table);
-                        }
-                        Ok(((), mutations))
-                    })
-                })
+            if !batch.is_empty() && batch_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES {
+                Box::pin(apply_data_row_batch(
+                    engine,
+                    Arc::clone(&snapshots),
+                    Arc::clone(&changes),
+                    core::mem::take(&mut batch),
+                ))
                 .await?;
+                batch_bytes = 0;
+            }
+            batch_bytes = batch_bytes.saturating_add(bytes);
+            batch.push((table, snapshot_indices, change_indices));
+        }
+        if !batch.is_empty() {
+            Box::pin(apply_data_row_batch(engine, snapshots, changes, batch)).await?;
         }
     }
 
     Ok(())
+}
+
+async fn apply_data_row_batch<K, R>(
+    engine: &Engine<K, R>,
+    snapshots: Arc<Vec<SyncStateUnit>>,
+    changes: Arc<Vec<SyncIncrementalChange>>,
+    rows: Vec<(String, Vec<usize>, Vec<usize>)>,
+) -> Result<(), EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let mut tables = BTreeSet::new();
+    for (table, _, _) in &rows {
+        tables.insert(table.clone());
+    }
+    let tables = tables.into_iter().collect::<Vec<_>>();
+    engine
+        .mutate_tables(tables.as_slice(), move |codec, transaction| {
+            Box::pin(async move {
+                let mut mutations = MutationSummary::default();
+                for (table, snapshot_indices, change_indices) in rows {
+                    for index in snapshot_indices {
+                        merge_snapshot(codec, transaction, &snapshots[index]).await?;
+                        mutations.record_table(&table);
+                    }
+                    for index in change_indices {
+                        merge_change(codec, transaction, &changes[index]).await?;
+                        mutations.record_table(&table);
+                    }
+                }
+                Ok(((), mutations))
+            })
+        })
+        .await
+}
+
+fn sync_state_unit_estimate(unit: &SyncStateUnit) -> usize {
+    let SyncKey::Row { table, row } = &unit.key;
+    core::mem::size_of::<SyncStateUnit>()
+        .saturating_add(table.len())
+        .saturating_add(row_identity_estimate(row))
+        .saturating_add(unit.state.len())
+        .saturating_add(unit.metadata.len())
+}
+
+fn sync_incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
+    core::mem::size_of::<SyncIncrementalChange>()
+        .saturating_add(change.table.len())
+        .saturating_add(row_identity_estimate(&change.row))
+        .saturating_add(change.id.0.len())
+        .saturating_add(change.payload.len())
+}
+
+fn row_identity_estimate(row: &RowIdentity) -> usize {
+    match row {
+        RowIdentity::User(_) => 16,
+        RowIdentity::ScopedUser { .. } => 32,
+        RowIdentity::Catalog(bytes) => bytes.len(),
+    }
 }
 
 async fn merge_snapshot<T, R>(
@@ -1459,13 +1495,13 @@ where
         let SyncMessage::State(snapshot) = message else {
             return Err(SyncError::UnexpectedMessage);
         };
-        if let Err(error) = apply_received_batch(
+        if let Err(error) = Box::pin(apply_received_batch(
             engine,
             Arc::new(snapshot),
             Arc::new(Vec::new()),
             Some(manifest),
             false,
-        )
+        ))
         .await
         {
             let reason = format!("{} (recovery snapshot batch)", error);
@@ -1570,6 +1606,10 @@ where
         changes: 0,
         requests: Vec::new(),
     };
+    let mut pending_snapshots = Vec::new();
+    let mut pending_snapshot_bytes = 0_usize;
+    let mut pending_changes = Vec::new();
+    let mut pending_change_bytes = 0_usize;
     while let Some(record) = stage
         .next_record()
         .await
@@ -1579,61 +1619,233 @@ where
             .map_err(|error| EngineError::custom(error.to_string()))?;
         match (snapshots, message) {
             (true, SyncMessage::State(units)) => {
-                let Some(unit) = units.first() else {
+                if units.is_empty() {
                     return Err(EngineError::custom("Empty state record in data stage"));
-                };
-                let request = match &unit.key {
-                    SyncKey::Row { table, row } => SyncSnapshotRequest {
-                        table: table.clone(),
-                        row: row.clone(),
-                    },
-                };
-                let batch = Arc::new(units);
-                match apply_received_batch(
-                    engine,
-                    Arc::clone(&batch),
-                    Arc::new(Vec::new()),
-                    Some(manifest),
-                    true,
-                )
-                .await
-                {
-                    Ok(()) => applied.snapshots += batch.len(),
-                    Err(error) if matches!(error, EngineError::SyncDependencyUnavailable) => {
-                        applied.requests.push(request);
+                }
+                for unit in units {
+                    let bytes = sync_state_unit_estimate(&unit);
+                    if bytes > MAX_APPLY_BATCH_BYTES {
+                        return Err(EngineError::custom(format!(
+                            "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                        )));
                     }
-                    Err(error) => return Err(error),
+                    if !pending_snapshots.is_empty()
+                        && pending_snapshot_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES
+                    {
+                        let completed = apply_staged_snapshot_batch(
+                            engine,
+                            manifest,
+                            core::mem::take(&mut pending_snapshots),
+                        )
+                        .await?;
+                        merge_staged_apply(&mut applied, completed);
+                        pending_snapshot_bytes = 0;
+                    }
+                    pending_snapshot_bytes = pending_snapshot_bytes.saturating_add(bytes);
+                    pending_snapshots.push(unit);
                 }
             }
             (false, SyncMessage::Changes(changes)) => {
                 let Some(first) = changes.first() else {
                     return Err(EngineError::custom("Empty change record in data stage"));
                 };
-                let request = SyncSnapshotRequest {
-                    table: first.table.clone(),
-                    row: first.row.clone(),
-                };
-                let batch = Arc::new(changes);
-                match apply_received_batch(
+                if changes
+                    .iter()
+                    .any(|change| change.table != first.table || change.row != first.row)
+                {
+                    return Err(EngineError::custom(
+                        "Change record in data stage spans multiple rows",
+                    ));
+                }
+                let bytes = changes.iter().fold(0_usize, |total, change| {
+                    total.saturating_add(sync_incremental_change_estimate(change))
+                });
+                if bytes > MAX_APPLY_BATCH_BYTES {
+                    return Err(EngineError::custom(format!(
+                        "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                    )));
+                }
+                if !pending_changes.is_empty()
+                    && pending_change_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES
+                {
+                    let completed = apply_staged_change_batch(
+                        engine,
+                        manifest,
+                        core::mem::take(&mut pending_changes),
+                    )
+                    .await?;
+                    merge_staged_apply(&mut applied, completed);
+                    pending_change_bytes = 0;
+                }
+                pending_change_bytes = pending_change_bytes.saturating_add(bytes);
+                pending_changes.extend(changes);
+            }
+            _ => return Err(EngineError::custom("Unexpected message in data stage")),
+        }
+    }
+    if !pending_snapshots.is_empty() {
+        let completed =
+            apply_staged_snapshot_batch(engine, manifest, core::mem::take(&mut pending_snapshots))
+                .await?;
+        merge_staged_apply(&mut applied, completed);
+    }
+    if !pending_changes.is_empty() {
+        let completed =
+            apply_staged_change_batch(engine, manifest, core::mem::take(&mut pending_changes))
+                .await?;
+        merge_staged_apply(&mut applied, completed);
+    }
+    Ok(applied)
+}
+
+fn merge_staged_apply(target: &mut StagedDataApply, source: StagedDataApply) {
+    target.snapshots = target.snapshots.saturating_add(source.snapshots);
+    target.changes = target.changes.saturating_add(source.changes);
+    for request in source.requests {
+        if !target
+            .requests
+            .iter()
+            .any(|existing| existing.table == request.table && existing.row == request.row)
+        {
+            target.requests.push(request);
+        }
+    }
+}
+
+async fn apply_staged_snapshot_batch<K, R>(
+    engine: &Engine<K, R>,
+    manifest: &SyncManifest,
+    units: Vec<SyncStateUnit>,
+) -> Result<StagedDataApply, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let count = units.len();
+    let units = Arc::new(units);
+    match Box::pin(apply_received_batch(
+        engine,
+        Arc::clone(&units),
+        Arc::new(Vec::new()),
+        Some(manifest),
+        true,
+    ))
+    .await
+    {
+        Ok(()) => Ok(StagedDataApply {
+            snapshots: count,
+            changes: 0,
+            requests: Vec::new(),
+        }),
+        Err(EngineError::SyncDependencyUnavailable) => {
+            let units = Arc::try_unwrap(units).unwrap_or_else(|shared| shared.as_ref().clone());
+            let mut rows = BTreeMap::<(String, RowIdentity), Vec<SyncStateUnit>>::new();
+            for unit in units {
+                let SyncKey::Row { table, row } = &unit.key;
+                rows.entry((table.clone(), row.clone()))
+                    .or_default()
+                    .push(unit);
+            }
+            let mut applied = StagedDataApply {
+                snapshots: 0,
+                changes: 0,
+                requests: Vec::new(),
+            };
+            for (_, units) in rows {
+                let request = snapshot_request(&units[0]);
+                let count = units.len();
+                match Box::pin(apply_received_batch(
                     engine,
+                    Arc::new(units),
                     Arc::new(Vec::new()),
-                    Arc::clone(&batch),
                     Some(manifest),
                     true,
-                )
+                ))
                 .await
                 {
-                    Ok(()) => applied.changes += batch.len(),
-                    Err(error) if matches!(error, EngineError::SyncDependencyUnavailable) => {
+                    Ok(()) => applied.snapshots += count,
+                    Err(EngineError::SyncDependencyUnavailable) => {
                         applied.requests.push(request);
                     }
                     Err(error) => return Err(error),
                 }
             }
-            _ => return Err(EngineError::custom("Unexpected message in data stage")),
+            Ok(applied)
         }
+        Err(error) => Err(error),
     }
-    Ok(applied)
+}
+
+async fn apply_staged_change_batch<K, R>(
+    engine: &Engine<K, R>,
+    manifest: &SyncManifest,
+    changes: Vec<SyncIncrementalChange>,
+) -> Result<StagedDataApply, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let count = changes.len();
+    let changes = Arc::new(changes);
+    match Box::pin(apply_received_batch(
+        engine,
+        Arc::new(Vec::new()),
+        Arc::clone(&changes),
+        Some(manifest),
+        true,
+    ))
+    .await
+    {
+        Ok(()) => Ok(StagedDataApply {
+            snapshots: 0,
+            changes: count,
+            requests: Vec::new(),
+        }),
+        Err(EngineError::SyncDependencyUnavailable) => {
+            let changes = Arc::try_unwrap(changes).unwrap_or_else(|shared| shared.as_ref().clone());
+            let mut rows = BTreeMap::<(String, RowIdentity), Vec<SyncIncrementalChange>>::new();
+            for change in changes {
+                rows.entry((change.table.clone(), change.row.clone()))
+                    .or_default()
+                    .push(change);
+            }
+            let mut applied = StagedDataApply {
+                snapshots: 0,
+                changes: 0,
+                requests: Vec::new(),
+            };
+            for ((table, row), changes) in rows {
+                let request = SyncSnapshotRequest { table, row };
+                let count = changes.len();
+                match Box::pin(apply_received_batch(
+                    engine,
+                    Arc::new(Vec::new()),
+                    Arc::new(changes),
+                    Some(manifest),
+                    true,
+                ))
+                .await
+                {
+                    Ok(()) => applied.changes += count,
+                    Err(EngineError::SyncDependencyUnavailable) => {
+                        applied.requests.push(request);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(applied)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn snapshot_request(unit: &SyncStateUnit) -> SyncSnapshotRequest {
+    match &unit.key {
+        SyncKey::Row { table, row } => SyncSnapshotRequest {
+            table: table.clone(),
+            row: row.clone(),
+        },
+    }
 }
 
 async fn receive_outbound<K, R, T, F>(

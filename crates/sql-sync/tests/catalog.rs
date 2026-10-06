@@ -552,7 +552,7 @@ fn dependent_incremental_failure_keeps_completed_catalog_batch() {
 }
 
 #[test]
-fn failed_data_row_keeps_prior_row_batch_and_rolls_back_failed_row() {
+fn failed_data_batch_rolls_back_all_rows() {
     block_on(async {
         let source = source().await;
         let destination = destination();
@@ -595,7 +595,7 @@ fn failed_data_row_keeps_prior_row_batch_and_rolls_back_failed_row() {
         let applied = export_sync_state_for(&destination)
             .await
             .expect("destination state");
-        assert!(applied.iter().any(|unit| matches!(
+        assert!(!applied.iter().any(|unit| matches!(
             &unit.key,
             SyncKey::Row { table, row } if table == "people" && row == &earlier
         )));
@@ -603,6 +603,69 @@ fn failed_data_row_keeps_prior_row_batch_and_rolls_back_failed_row() {
             &unit.key,
             SyncKey::Row { table, row } if table == "people" && row == &failing
         )));
+    });
+}
+
+#[test]
+fn prior_data_batches_remain_committed_when_a_later_batch_fails() {
+    block_on(async {
+        let source = source().await;
+        let destination = destination();
+        let source_units = export_sync_state_for(&source).await.expect("source state");
+        let catalog = source_units
+            .into_iter()
+            .filter(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table != "people"))
+            .collect();
+        apply_sync_state_batch_for(&destination, catalog)
+            .await
+            .expect("apply catalog first");
+
+        let large_value = "x".repeat(MAX_APPLY_BATCH_BYTES / 4);
+        let mut batch = (1..=5)
+            .map(|identity| {
+                SyncStateUnit::new(
+                    SyncKey::Row {
+                        table: String::from("people"),
+                        row: RowIdentity::User([identity; 16]),
+                    },
+                    postcard::to_allocvec(&Row::new(vec![Value::from(large_value.clone())]))
+                        .expect("encode row"),
+                    Vec::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let failed = RowIdentity::User([6; 16]);
+        batch.push(SyncStateUnit::new(
+            SyncKey::Row {
+                table: String::from("people"),
+                row: failed.clone(),
+            },
+            vec![0xff],
+            Vec::new(),
+        ));
+
+        assert!(
+            apply_sync_state_batch_for(&destination, batch)
+                .await
+                .is_err()
+        );
+        let applied = export_sync_state_for(&destination)
+            .await
+            .expect("destination state");
+        for identity in 1..=3 {
+            assert!(applied.iter().any(|unit| matches!(
+                &unit.key,
+                SyncKey::Row { table, row: RowIdentity::User(row) }
+                    if table == "people" && row == &[identity; 16]
+            )));
+        }
+        for identity in 4..=6 {
+            assert!(!applied.iter().any(|unit| matches!(
+                &unit.key,
+                SyncKey::Row { table, row: RowIdentity::User(row) }
+                    if table == "people" && row == &[identity; 16]
+            )));
+        }
     });
 }
 

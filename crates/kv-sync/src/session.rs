@@ -187,6 +187,28 @@ mod tests {
         }
     }
 
+    struct FailOnThirdSend {
+        channel: Channel,
+        successful_sends_remaining: usize,
+    }
+
+    impl SyncTransport for FailOnThirdSend {
+        type Error = ();
+
+        async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+            self.channel.receive().await
+        }
+
+        async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+            if self.successful_sends_remaining == 0 {
+                self.channel.sender.close_channel();
+                return Err(());
+            }
+            self.successful_sends_remaining -= 1;
+            self.channel.send(frame).await
+        }
+    }
+
     #[test]
     fn failed_received_batch_rolls_back_all_snapshots() {
         block_on(async {
@@ -237,6 +259,66 @@ mod tests {
             let tx = destination.transaction().await.unwrap();
             assert_eq!(tx.get("valid", i64::MIN).await.unwrap(), None);
             tx.rollback().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn interrupted_later_snapshot_batch_preserves_completed_batch_and_source() {
+        block_on(async {
+            let source = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let destination = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+            let mut transaction = source.transaction().await.unwrap();
+            transaction
+                .set("first", Value::Blob(b"one".to_vec()), None)
+                .await
+                .unwrap();
+            transaction
+                .set("second", Value::Blob(b"two".to_vec()), None)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
+
+            let (initiator_sender, initiator_receiver) = mpsc::unbounded();
+            let (responder_sender, responder_receiver) = mpsc::unbounded();
+            let mut initiator = FailOnThirdSend {
+                channel: Channel {
+                    sender: initiator_sender,
+                    receiver: responder_receiver,
+                },
+                successful_sends_remaining: 2,
+            };
+            let mut responder = Channel {
+                sender: responder_sender,
+                receiver: initiator_receiver,
+            };
+            let config = Config {
+                max_snapshots_per_batch: 1,
+                ..Config::default()
+            };
+
+            let (initiator_result, responder_result) = join!(
+                synchronize(&source, &mut initiator, SyncRole::Initiator, config),
+                synchronize(&destination, &mut responder, SyncRole::Responder, config),
+            );
+            assert!(matches!(initiator_result, Err(Error::Transport(()))));
+            assert!(matches!(responder_result, Err(Error::Transport(()))));
+
+            let source_transaction = source.transaction().await.unwrap();
+            let destination_transaction = destination.transaction().await.unwrap();
+            let first_source = source_transaction.get("first", i64::MIN).await.unwrap();
+            let second_source = source_transaction.get("second", i64::MIN).await.unwrap();
+            let first_destination = destination_transaction
+                .get("first", i64::MIN)
+                .await
+                .unwrap();
+            let second_destination = destination_transaction
+                .get("second", i64::MIN)
+                .await
+                .unwrap();
+            assert!(first_source.is_some() && second_source.is_some());
+            assert_ne!(first_destination.is_some(), second_destination.is_some());
+            source_transaction.rollback().await.unwrap();
+            destination_transaction.rollback().await.unwrap();
         });
     }
 
