@@ -104,8 +104,28 @@ impl KernelTransaction for InMemoryKernelTransaction {
         Ok(self.table(table)?.get(key).cloned())
     }
 
-    fn scan_bytes(&self, table: &str) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> {
+    fn scan_bytes<'a>(
+        &'a self,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
         stream::iter(self.scan(table))
+    }
+
+    fn scan_bytes_range<'a>(
+        &'a self,
+        table: &'a str,
+        range: (core::ops::Bound<Vec<u8>>, core::ops::Bound<Vec<u8>>),
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
+        async_stream::stream! {
+            match self.table(table) {
+                Ok(rows) => {
+                    for (key, value) in rows.range(range) {
+                        yield Ok((key.clone(), value.clone()));
+                    }
+                }
+                Err(error) => yield Err(error),
+            }
+        }
     }
 
     async fn put_bytes(&mut self, table: &str, key: Vec<u8>, value: Vec<u8>) -> EngineResult<()> {
@@ -139,7 +159,10 @@ impl KernelTransaction for InMemoryKernelTransaction {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
+    use alloc::vec::Vec;
+    use core::ops::Bound;
+
+    use futures::{StreamExt, executor::block_on};
 
     use super::InMemoryKernel;
     use crate::{Kernel, KernelTransaction};
@@ -168,6 +191,33 @@ mod tests {
             );
             assert_eq!(transaction.get_bytes(second, key).await.unwrap(), None);
             transaction.rollback().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn byte_range_scan_returns_only_ordered_matching_keys() {
+        block_on(async {
+            let kernel = InMemoryKernel::new();
+            let mut transaction = kernel.transaction().await.unwrap();
+            transaction.ensure_table("range").await.unwrap();
+            for key in [b"a".as_slice(), b"b", b"c", b"d"] {
+                transaction
+                    .put_bytes("range", key.to_vec(), key.to_vec())
+                    .await
+                    .unwrap();
+            }
+            let rows = transaction
+                .scan_bytes_range(
+                    "range",
+                    (
+                        Bound::Included(b"b".to_vec()),
+                        Bound::Excluded(b"d".to_vec()),
+                    ),
+                )
+                .map(|row| row.unwrap().0)
+                .collect::<Vec<_>>()
+                .await;
+            assert_eq!(rows, [b"b".to_vec(), b"c".to_vec()]);
         });
     }
 }

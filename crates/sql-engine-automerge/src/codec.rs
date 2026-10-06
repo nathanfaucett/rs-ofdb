@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, string::String, vec::Vec};
 
+use core::ops::Bound;
+
 use async_stream::stream;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, Value as AutomergeValue};
@@ -22,20 +24,18 @@ use value::{Row, Value};
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
 
-fn account_row_identity_bytes(
-    used_bytes: usize,
-    row: &RowIdentity,
-    max_bytes: usize,
-) -> EngineResult<usize> {
-    let next_bytes = used_bytes
-        .saturating_add(row.to_bytes().len())
-        .saturating_add(128);
-    if next_bytes > max_bytes {
-        return Err(EngineError::custom(format!(
-            "sync row identities exceed the {max_bytes}-byte budget"
-        )));
-    }
-    Ok(next_bytes)
+fn change_key_prefix_bounds(prefix: &[u8]) -> (Bound<DocumentChangeKey>, Bound<DocumentChangeKey>) {
+    let start = Bound::Included(DocumentChangeKey::min_for_id(prefix.to_vec()));
+    let end = prefix
+        .iter()
+        .rposition(|byte| *byte != u8::MAX)
+        .map(|index| {
+            let mut next_prefix = prefix[..=index].to_vec();
+            next_prefix[index] += 1;
+            Bound::Excluded(DocumentChangeKey::min_for_id(next_prefix))
+        })
+        .unwrap_or(Bound::Unbounded);
+    (start, end)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -84,9 +84,32 @@ impl AutomergeRowCodec {
     where
         T: KernelTransaction,
     {
+        Self::catalog_states_range(transaction, table, (Bound::Unbounded, Bound::Unbounded))
+    }
+
+    fn catalog_states_prefix<'a, T>(
+        transaction: &'a T,
+        table: &'a str,
+        identity_prefix: &[u8],
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a
+    where
+        T: KernelTransaction,
+    {
+        let (start, end) = change_key_prefix_bounds(identity_prefix);
+        Self::catalog_states_range(transaction, table, (start, end))
+    }
+
+    fn catalog_states_range<'a, T>(
+        transaction: &'a T,
+        table: &'a str,
+        range: (Bound<DocumentChangeKey>, Bound<DocumentChangeKey>),
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a
+    where
+        T: KernelTransaction,
+    {
         stream! {
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
-            let documents = reconstruct_document_values(changes.range(..).filter_map(|entry| async {
+            let documents = reconstruct_document_values(changes.range(range).filter_map(|entry| async {
                 match &entry {
                     Ok((key, _)) if key.r#type().is_metadata() => None,
                     _ => Some(entry),
@@ -550,11 +573,11 @@ where
         Self::decode_row(&document, &columns).map(Some)
     }
 
-    fn scan_rows(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> {
+    fn scan_rows<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a {
         stream! {
             let storage = table;
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, storage));
@@ -581,11 +604,11 @@ where
         }
     }
 
-    fn scan_row_states(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send {
+    fn scan_row_states<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
         stream! {
             if catalog_table_for_storage(table).is_some() {
                 let states = Self::catalog_states(transaction, table);
@@ -597,6 +620,30 @@ where
                 while let Some(row) = rows.next().await {
                     let (id, value) = row?;
                     yield Ok((id, value, false));
+                }
+            }
+        }
+    }
+
+    fn scan_row_states_prefix<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+        identity_prefix: &'a [u8],
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
+        stream! {
+            if catalog_table_for_storage(table).is_some() {
+                let rows = Self::catalog_states_prefix(transaction, table, identity_prefix);
+                pin_mut!(rows);
+                while let Some(row) = rows.next().await { yield row; }
+            } else {
+                let rows = self.scan_row_states(transaction, table);
+                pin_mut!(rows);
+                while let Some(row) = rows.next().await {
+                    let (identity, value, deleted) = row?;
+                    if identity.to_bytes().starts_with(identity_prefix) {
+                        yield Ok((identity, value, deleted));
+                    }
                 }
             }
         }
@@ -820,40 +867,26 @@ impl<T> SyncRowCodec<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
-    async fn row_ids(
-        &self,
-        transaction: &T,
-        table: &str,
-        max_bytes: usize,
-    ) -> EngineResult<Vec<RowIdentity>> {
-        let mut ids = BTreeMap::new();
-        let mut used_bytes = 0;
-        let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
-        let documents = reconstruct_document_values(changes.range(..).filter_map(|entry| async {
-            match &entry {
-                Ok((key, _)) if key.r#type().is_metadata() => None,
-                _ => Some(entry),
-            }
-        }));
-        pin_mut!(documents);
-        while let Some(document) = documents.next().await {
-            let (id, _) = document.map_err(EngineError::custom)?;
-            let row = Self::row_id(&id)?;
-            if !ids.contains_key(&row) {
-                used_bytes = account_row_identity_bytes(used_bytes, &row, max_bytes)?;
-                ids.insert(row, ());
+    fn row_ids<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<RowIdentity>> + Send + 'a {
+        stream! {
+            let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
+            let entries = changes.range(..);
+            pin_mut!(entries);
+            let mut previous = None;
+            while let Some(entry) = entries.next().await {
+                let (key, _) = entry.map_err(EngineError::custom)?;
+                if previous.as_ref() == Some(key.id()) {
+                    continue;
+                }
+                let row = Self::row_id(key.id())?;
+                previous = Some(key.id().clone());
+                yield Ok(row);
             }
         }
-        let metadata = self.export_metadata_rows(transaction, table);
-        pin_mut!(metadata);
-        while let Some(row) = metadata.next().await {
-            let row = row?.0;
-            if !ids.contains_key(&row) {
-                used_bytes = account_row_identity_bytes(used_bytes, &row, max_bytes)?;
-                ids.insert(row, ());
-            }
-        }
-        Ok(ids.into_keys().collect())
     }
 
     async fn export_state(
@@ -1072,27 +1105,6 @@ where
             .await
             .map_err(EngineError::custom)?;
         Ok(())
-    }
-}
-
-impl AutomergeRowCodec {
-    fn export_metadata_rows<T>(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Vec<u8>)>> + Send
-    where
-        T: KernelTransaction,
-    {
-        stream! {
-            let entries = transaction.scan_bytes(table);
-            pin_mut!(entries);
-            while let Some(entry) = entries.next().await {
-                let (key, value) = entry?;
-                let key = DocumentChangeKey::decode_ordered(&key).map_err(EngineError::custom)?;
-                if key.r#type().is_metadata() { yield Ok((Self::row_id(key.id())?, value)); }
-            }
-        }
     }
 }
 

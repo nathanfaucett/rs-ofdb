@@ -1,11 +1,11 @@
-# sql-cli
+# sql-client-cli
 
-`sql-cli` is a one-shot SQL client. Build with explicit features for the targets you need, for example:
+`sql-client-cli` is a one-shot SQL client. Build with explicit features for the targets you need, for example:
 
 ```sh
-cargo install ofdb-sql-cli --features remote
-sql-cli --endpoint http://127.0.0.1:50051 --query 'SELECT * FROM users'
-sql-cli --database ./users.redb --file query.sql
+cargo install ofdb-sql-client-cli --features remote
+sql-client-cli --endpoint http://127.0.0.1:50051 --query 'SELECT * FROM users'
+sql-client-cli --database ./users.redb --file query.sql
 ```
 
 Select exactly one of `--database PATH`, `--memory`, `--endpoint URL`, or `--unix-socket PATH`. The binary has no implicit target. `--memory` needs the `in-memory` feature, `--database` needs `redb`, and remote targets need `remote`.
@@ -13,13 +13,13 @@ Select exactly one of `--database PATH`, `--memory`, `--endpoint URL`, or `--uni
 Pass exactly one of `--query SQL` and `--file PATH`. `--file -` reads SQL from stdin. The complete input is translated and executed as one statement batch. `--params-file PATH` accepts either:
 
 ```json
-{"positional":[{"type":"integer","value":"9007199254740993"}]}
+{ "positional": [{ "type": "integer", "value": "9007199254740993" }] }
 ```
 
 or:
 
 ```json
-{"named":{"name":{"type":"text","value":"Ada"}}}
+{ "named": { "name": { "type": "text", "value": "Ada" } } }
 ```
 
 Each SQL parameter is a tagged object. Supported tags are `null`, `type`, `uuid`, `bool`, `integer`, `float`, `text`, `blob`, and `json`. Integers use decimal strings. Floats use exactly 16 hexadecimal digits containing the IEEE-754 bits. Blobs use base64. For example, `{"type":"float","value":"8000000000000000"}` is negative zero. `type` values use the `ValueType` names (`Null`, `Type`, `Uuid`, `Bool`, `Integer`, `Float`, `Text`, `Json`, `Blob`).

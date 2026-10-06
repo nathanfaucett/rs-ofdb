@@ -11,7 +11,7 @@ use engine::{Engine, Kernel, KernelTransaction, RowCodec, RowIdentity};
 use engine_automerge::{AutomergeRowCodec, RowMetadata};
 use engine_redb::RedbKernel;
 
-use futures::{StreamExt, executor::block_on};
+use futures::{StreamExt, TryStreamExt, executor::block_on};
 use query::{
     AlterTableOperation, DataDefinition, Query, QueryColumn, QueryDelete, QueryExpr,
     QueryExprValue, QueryFrom, QueryInsert, QuerySelect, QueryUpdate, QueryUpdateAssignment,
@@ -136,7 +136,7 @@ async fn scoped_row(
 ) -> RowIdentity {
     let table = table.to_string();
     engine.read_transaction(|codec, transaction| Box::pin(async move {
-        codec.row_ids(transaction, &table, usize::MAX).await?.into_iter()
+        codec.row_ids(transaction, &table).try_collect::<Vec<_>>().await?.into_iter()
             .find(|row| matches!(row, RowIdentity::ScopedUser { row, .. } if *row == *id.as_bytes()))
             .ok_or(engine::EngineError::custom("Missing scoped row"))
     })).await.unwrap()
@@ -424,7 +424,8 @@ fn newer_index_tombstone_masks_older_active_index() {
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     Ok(codec
-                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, usize::MAX)
+                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                        .try_collect::<Vec<_>>()
                         .await?[0]
                         .clone())
                 })
@@ -508,11 +509,13 @@ fn concurrent_catalog_children_select_one_identity_per_logical_key() {
                 Box::pin(async move {
                     Ok((
                         codec
-                            .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, usize::MAX)
+                            .row_ids(transaction, engine::ENGINE_TABLES_STORAGE)
+                            .try_collect::<Vec<_>>()
                             .await?[0]
                             .clone(),
                         codec
-                            .row_ids(transaction, engine::ENGINE_INDICES_STORAGE, usize::MAX)
+                            .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                            .try_collect::<Vec<_>>()
                             .await?[0]
                             .clone(),
                     ))
@@ -538,7 +541,8 @@ fn concurrent_catalog_children_select_one_identity_per_logical_key() {
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     Ok(codec
-                        .row_ids(transaction, engine::ENGINE_INDICES_STORAGE, usize::MAX)
+                        .row_ids(transaction, engine::ENGINE_INDICES_STORAGE)
+                        .try_collect::<Vec<_>>()
                         .await?
                         .len())
                 })
@@ -778,7 +782,12 @@ fn catalog_rows_have_parent_scoped_uuidv7_identities() {
                         engine::ENGINE_INDICES_STORAGE,
                         engine::ENGINE_INDEX_FIELDS_STORAGE,
                     ] {
-                        result.push(codec.row_ids(transaction, storage, usize::MAX).await?);
+                        result.push(
+                            codec
+                                .row_ids(transaction, storage)
+                                .try_collect::<Vec<_>>()
+                                .await?,
+                        );
                     }
                     Ok(result)
                 })
@@ -819,7 +828,7 @@ fn catalog_rows_have_parent_scoped_uuidv7_identities() {
 }
 
 #[test]
-fn row_identity_enumeration_stops_at_its_byte_budget() {
+fn row_identity_stream_yields_catalog_rows() {
     let path = database_path();
     let engine = replica(&path);
     block_on(async {
@@ -827,13 +836,68 @@ fn row_identity_enumeration_stops_at_its_byte_budget() {
         let result = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
-                    codec
-                        .row_ids(transaction, engine::ENGINE_TABLES_STORAGE, 1)
-                        .await
+                    let rows = codec.row_ids(transaction, engine::ENGINE_TABLES_STORAGE);
+                    futures::pin_mut!(rows);
+                    let mut count = 0;
+                    while rows.next().await.transpose()?.is_some() {
+                        count += 1;
+                    }
+                    Ok(count)
                 })
             })
             .await;
-        assert!(result.is_err());
+        assert_eq!(result.expect("enumerate catalog rows"), 1);
+    });
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn catalog_prefix_scan_returns_only_children_of_requested_table() {
+    let path = database_path();
+    let engine = replica(&path);
+    block_on(async {
+        engine.create_table(people_schema()).await.unwrap();
+        let mut second_schema = people_schema();
+        second_schema.name = "animals".into();
+        engine.create_table(second_schema).await.unwrap();
+
+        let field_count = engine
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move {
+                    let tables = codec.scan_row_states(transaction, engine::ENGINE_TABLES_STORAGE);
+                    futures::pin_mut!(tables);
+                    let mut people_id = None;
+                    while let Some(row) = tables.next().await {
+                        let (identity, value, deleted) = row?;
+                        if !deleted && value.values[0].as_text() == Some("people") {
+                            let RowIdentity::Catalog(id) = identity else {
+                                return Err(engine::EngineError::custom(
+                                    "table identity is not catalog",
+                                ));
+                            };
+                            people_id = Some(id);
+                        }
+                    }
+                    let prefix = RowIdentity::catalog(
+                        people_id.ok_or(engine::EngineError::custom("people table missing"))?,
+                    )
+                    .to_bytes();
+                    let fields = codec.scan_row_states_prefix(
+                        transaction,
+                        engine::ENGINE_TABLE_FIELDS_STORAGE,
+                        &prefix,
+                    );
+                    futures::pin_mut!(fields);
+                    let mut count = 0;
+                    while fields.next().await.transpose()?.is_some() {
+                        count += 1;
+                    }
+                    Ok(count)
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(field_count, 3);
     });
     std::fs::remove_file(path).unwrap();
 }
@@ -1020,6 +1084,15 @@ fn removing_a_logical_row_writes_a_tombstone() {
             .unwrap();
         assert_eq!(metadata.version, 1);
         assert!(metadata.deleted);
+        {
+            let row_ids = reconciler.row_ids(&transaction, table);
+            futures::pin_mut!(row_ids);
+            assert_eq!(
+                row_ids.next().await.unwrap().unwrap(),
+                RowIdentity::user(row_id)
+            );
+            assert!(row_ids.next().await.is_none());
+        }
         {
             let rows = reconciler.scan_rows(&transaction, table);
             futures::pin_mut!(rows);

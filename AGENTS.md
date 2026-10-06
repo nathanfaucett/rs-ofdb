@@ -1,6 +1,6 @@
 # AGENTS.md
 
-For Domain information, see the [Domain Model](CONTEXT.md).
+For domain information, see [GLOSSARY.md](GLOSSARY.md).
 
 ## Refactoring Protocol
 
@@ -48,3 +48,13 @@ For Domain information, see the [Domain Model](CONTEXT.md).
 
 - Assess new features and changes for complexity, risk, and priority before implementation.
 - Run `just crap` as final validation after implementation is complete, not incrementally.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as Markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Use a single-context `GLOSSARY.md` at the repo root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.

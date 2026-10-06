@@ -220,27 +220,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
+## Database Server Images
+
+`compose.yaml` runs the persistent KV and SQL gRPC servers. It stores database files in separate named volumes:
+
+```bash
+docker compose up --build
+```
+
+The KV server listens on port `8080`. The SQL server listens on port `8081`. Both images use a statically linked Rustls build and a `scratch` runtime. gRPC TLS is optional. Set `OFDB_TLS_CERT` and `OFDB_TLS_KEY` to PEM file paths and mount those files into the container. Clients can trust the server certificate with `--tls-ca <PEM>`. For mutual TLS, also set `OFDB_TLS_CLIENT_CA` on the server. The server then requires a client certificate issued by that CA. Clients pass the client certificate and key with `--tls-cert <PEM> --tls-key <PEM>`. The client CA option requires TLS to be enabled.
+
+P2P sync uses Iroh. It is off until you set `--sync-listen` or one or more `--sync-peer <NODE_ID>` options. Start each peer with `--sync-listen` to print its public node ID. Then restart each peer with the other node ID as `--sync-peer`; each configured peer is also the inbound allowlist. The private node key is stored next to the database file as `.iroh-key`, so keep the database volume persistent. Iroh uses relays and address discovery; it does not require Docker host networking. Relay discovery needs outbound network access.
+
+The gRPC listener is plaintext unless TLS files are set. Do not expose plaintext gRPC to untrusted networks. Server TLS without `OFDB_TLS_CLIENT_CA` does not authenticate clients. Use mTLS or an authenticated proxy before exposing gRPC publicly.
+
+For example, connect with a private CA certificate:
+
+```bash
+cargo run -p ofdb-sql-client-cli --features="remote" -- \
+  --endpoint https://db.example:8081 --tls-ca ca.pem \
+  --tls-cert client.crt --tls-key client.key --query "SELECT 1"
+```
+
 ## One-Shot CLI Utilities
 
-The workspace includes single-command CLIs for scripting, testing, and administration:
+The workspace includes single-command CLIs for scripting and testing:
 
-- **`sql-cli`**: Runs a SQL query batch against a database file, in-memory instance, or remote gRPC endpoint, outputting tagged JSON.
-- **`kv-cli`**: Gets, sets, deletes, or scans keys against local or remote KV storage.
+- **`sql-client-cli`**: Runs a SQL query batch against a database file, in-memory instance, or remote gRPC endpoint, outputting tagged JSON.
+- **`kv-client-cli`**: Gets, sets, deletes, or scans keys against local or remote KV storage.
 
 ```bash
 # Query an embedded Redb database
-cargo run --bin sql-cli --features="redb,sql" -- \
+cargo run --bin sql-client-cli --features="redb,sql" -- \
   --database app.db --query "SELECT * FROM users"
 
 # Query in memory
-cargo run --bin sql-cli --features="in-memory,sql" -- \
+cargo run --bin sql-client-cli --features="in-memory,sql" -- \
   --memory --query "CREATE TABLE t (id UUID PRIMARY KEY); SELECT * FROM t;"
 
 # KV store operations
-cargo run --bin kv-cli --features="redb" -- \
+cargo run --bin kv-client-cli --features="redb" -- \
   --database kv.db set my-key --value "Hello World"
 
-cargo run --bin kv-cli --features="redb" -- \
+cargo run --bin kv-client-cli --features="redb" -- \
   --database kv.db get my-key
 ```
 
@@ -251,7 +273,8 @@ cargo run --bin kv-cli --features="redb" -- \
 ```
 crates/
 ├── sql/                   # Public SQL facade (Database, Client, Transaction)
-├── sql-cli/               # One-shot SQL CLI executable
+├── sql-client-cli/        # One-shot SQL client CLI executable
+├── sql-server-cli/        # SQL database server executable
 ├── sql-client/            # gRPC client for remote SQL hosts
 ├── sql-engine/            # Relational database engine, schema catalogs, transaction coordinator
 ├── sql-engine-automerge/  # Automerge CRDT row codec
@@ -267,7 +290,8 @@ crates/
 ├── sql-translator/        # SQL text-to-statement parser & translator
 ├── value/                 # Shared runtime Value types (UUID, JSON, Blobs, Decimals)
 ├── kv/                    # Public KV facade (Database, Client, Transaction)
-├── kv-cli/                # One-shot KV CLI executable
+├── kv-client-cli/         # One-shot KV client CLI executable
+├── kv-server-cli/         # KV database server executable
 ├── kv-client/             # gRPC client for remote KV hosts
 ├── kv-proto/              # Protocol buffer definitions for KV gRPC
 ├── kv-server/             # gRPC server implementation for KV
@@ -282,7 +306,7 @@ crates/
 
 ## Documentation & Standards
 
-- [`CONTEXT.md`](CONTEXT.md): Domain terminology, generation semantics, catalog invariants, and conflict rules.
+- [`GLOSSARY.md`](GLOSSARY.md): Domain terminology, generation semantics, catalog invariants, and conflict rules.
 - [`docs/design.md`](docs/design.md): Deep architectural specification and protocol details.
 - [`docs/goal.md`](docs/goal.md): Project requirements and engine invariants.
 - [`AGENTS.md`](AGENTS.md): Workspace coding standards, dependency constraints, and refactoring guidelines.

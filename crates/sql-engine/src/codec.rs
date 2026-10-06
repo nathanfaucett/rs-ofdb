@@ -107,22 +107,39 @@ where
         table: &str,
         row: &RowIdentity,
     ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
-    fn scan_rows(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send;
-    fn scan_row_states(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send {
+    fn scan_rows<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a;
+    fn scan_row_states<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
         stream! {
             let rows = self.scan_rows(transaction, table);
             pin_mut!(rows);
             while let Some(row) = rows.next().await {
                 let (id, value) = row?;
                 yield Ok((id, value, false));
+            }
+        }
+    }
+    fn scan_row_states_prefix<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+        identity_prefix: &'a [u8],
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
+        stream! {
+            let rows = self.scan_row_states(transaction, table);
+            pin_mut!(rows);
+            while let Some(row) = rows.next().await {
+                let (identity, value, deleted) = row?;
+                if identity.to_bytes().starts_with(identity_prefix) {
+                    yield Ok((identity, value, deleted));
+                }
             }
         }
     }

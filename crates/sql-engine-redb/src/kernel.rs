@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::Bound, sync::Arc};
 
 use async_stream::stream;
 use btree::{BTreeRead, BTreeTransaction};
@@ -70,11 +70,28 @@ impl KernelTransaction for RedbKernelTransaction {
             .map_err(EngineError::custom)
     }
 
-    fn scan_bytes(&self, table: &str) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> {
+    fn scan_bytes<'a>(
+        &'a self,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
+        self.scan_bytes_range(table, (Bound::Unbounded, Bound::Unbounded))
+    }
+
+    fn scan_bytes_range<'a>(
+        &'a self,
+        table: &'a str,
+        range: (Bound<Vec<u8>>, Bound<Vec<u8>>),
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
         stream! {
             let name = table.to_string();
             let entries = self.entries(&name);
-            for await entry in entries.range(..) {
+            let map_bound = |bound| match bound {
+                Bound::Included(key) => Bound::Included(Bytes(key)),
+                Bound::Excluded(key) => Bound::Excluded(Bytes(key)),
+                Bound::Unbounded => Bound::Unbounded,
+            };
+            let range = (map_bound(range.0), map_bound(range.1));
+            for await entry in entries.range(range) {
                 yield entry.map(|(key, value)| (key.0, value.0)).map_err(EngineError::custom);
             }
         }

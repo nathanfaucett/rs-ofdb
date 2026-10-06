@@ -17,7 +17,7 @@ kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", d
 # External dependencies
 tokio = { version = "1.0", default-features = false, features = ["net", "rt", "macros", "sync"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
-tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "server", "router", "codegen", "tls-ring"] }
 
 [dev-dependencies]
 # Shared test values

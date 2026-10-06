@@ -169,18 +169,58 @@ impl Database {
         address: std::net::SocketAddr,
         shutdown: impl core::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.serve_tcp_with_tls(address, None, shutdown).await
+    }
+
+    #[cfg(feature = "server")]
+    pub async fn serve_tcp_with_tls(
+        &self,
+        address: std::net::SocketAddr,
+        identity: Option<(Vec<u8>, Vec<u8>)>,
+        shutdown: impl core::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.serve_tcp_with_client_ca(address, identity, None, shutdown)
+            .await
+    }
+
+    #[cfg(feature = "server")]
+    pub async fn serve_tcp_with_client_ca(
+        &self,
+        address: std::net::SocketAddr,
+        identity: Option<(Vec<u8>, Vec<u8>)>,
+        client_ca: Option<Vec<u8>>,
+        shutdown: impl core::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match &self.storage {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => {
-                kv_server::Server::tcp(address, store.clone())
-                    .serve(shutdown)
-                    .await
+                let server = kv_server::Server::tcp(address, store.clone());
+                let server = match identity {
+                    Some((certificate, private_key)) => {
+                        server.tls_identity(certificate, private_key)
+                    }
+                    None => server,
+                };
+                let server = match client_ca.clone() {
+                    Some(certificate) => server.tls_client_ca(certificate),
+                    None => server,
+                };
+                server.serve(shutdown).await
             }
             #[cfg(feature = "redb")]
             Storage::Redb(store) => {
-                kv_server::Server::tcp(address, store.clone())
-                    .serve(shutdown)
-                    .await
+                let server = kv_server::Server::tcp(address, store.clone());
+                let server = match identity {
+                    Some((certificate, private_key)) => {
+                        server.tls_identity(certificate, private_key)
+                    }
+                    None => server,
+                };
+                let server = match client_ca {
+                    Some(certificate) => server.tls_client_ca(certificate),
+                    None => server,
+                };
+                server.serve(shutdown).await
             }
         }
     }

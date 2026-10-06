@@ -15,10 +15,10 @@ fn free_address() -> SocketAddr {
 }
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sql-cli"))
+    Command::new(env!("CARGO_BIN_EXE_sql-client-cli"))
         .args(args)
         .output()
-        .expect("run sql-cli")
+        .expect("run sql-client-cli")
 }
 
 #[test]
@@ -40,13 +40,70 @@ fn local_cli_executes_one_batch_and_reports_errors() {
     assert!(failed.stdout.is_empty());
     assert!(!failed.stderr.is_empty());
 
-    let help = Command::new(env!("CARGO_BIN_EXE_sql-cli"))
+    let help = Command::new(env!("CARGO_BIN_EXE_sql-client-cli"))
         .arg("--help")
         .output()
-        .expect("run sql-cli help");
+        .expect("run sql-client-cli help");
     let help = String::from_utf8(help.stdout).expect("help is UTF-8");
     assert!(!help.contains("serve"));
     assert!(!help.contains("sync"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_cli_verifies_tls_with_the_configured_ca() {
+    let address = free_address();
+    let database = Database::in_memory();
+    let (shutdown, shutdown_signal) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        database
+            .serve_tcp_with_tls(
+                address,
+                Some((
+                    include_bytes!("../../../test-fixtures/tls/server.crt").to_vec(),
+                    include_bytes!("../../../test-fixtures/tls/server.key").to_vec(),
+                )),
+                async {
+                    let _ = shutdown_signal.await;
+                },
+            )
+            .await
+            .expect("TLS server stops cleanly");
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while TcpStream::connect(address).await.is_err() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("TLS server starts");
+
+    let endpoint = format!("https://{address}");
+    let ca_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/tls/ca.crt")
+        .into_os_string()
+        .into_string()
+        .expect("CA path is UTF-8");
+    let output = tokio::task::spawn_blocking(move || {
+        run(&[
+            "--endpoint",
+            &endpoint,
+            "--tls-ca",
+            &ca_path,
+            "--query",
+            "CREATE TABLE items (id UUID PRIMARY KEY)",
+        ])
+    })
+    .await
+    .expect("TLS CLI process completes");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    shutdown.send(()).expect("server awaits shutdown");
+    server.await.expect("server task completes");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -9,12 +9,11 @@ pub trait SyncRowCodec<T>: RowCodec<T>
 where
     T: KernelTransaction,
 {
-    fn row_ids(
-        &self,
-        transaction: &T,
-        table: &str,
-        max_bytes: usize,
-    ) -> impl Future<Output = EngineResult<Vec<RowIdentity>>> + Send;
+    fn row_ids<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl futures::Stream<Item = EngineResult<RowIdentity>> + Send + 'a;
     fn export_state(
         &self,
         transaction: &T,

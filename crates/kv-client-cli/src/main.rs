@@ -24,6 +24,12 @@ struct Args {
     memory: bool,
     #[arg(long, group = "target")]
     endpoint: Option<String>,
+    #[arg(long, value_name = "PEM", requires = "endpoint")]
+    tls_ca: Option<PathBuf>,
+    #[arg(long, value_name = "PEM", requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+    #[arg(long, value_name = "PEM", requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
     #[arg(long, group = "target")]
     unix_socket: Option<PathBuf>,
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -95,9 +101,32 @@ async fn main() -> ExitCode {
         if let Some(_endpoint) = &args.endpoint {
             #[cfg(feature = "remote")]
             {
-                let client = Client::connect(_endpoint)
+                let client = match (&args.tls_ca, &args.tls_cert, &args.tls_key) {
+                    (Some(ca), Some(certificate), Some(private_key)) => {
+                        Client::connect_with_identity(
+                            _endpoint,
+                            std::fs::read(ca).map_err(|error| error.to_string())?,
+                            std::fs::read(certificate).map_err(|error| error.to_string())?,
+                            std::fs::read(private_key).map_err(|error| error.to_string())?,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?
+                    }
+                    (Some(ca), None, None) => Client::connect_with_ca(
+                        _endpoint,
+                        std::fs::read(ca).map_err(|error| error.to_string())?,
+                    )
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.to_string())?,
+                    (None, None, None) => Client::connect(_endpoint)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                    _ => {
+                        return Err(
+                            "--tls-cert and --tls-key require --tls-ca and each other".to_owned()
+                        );
+                    }
+                };
                 return execute_client(&client, &args.command, _input).await;
             }
             #[cfg(not(feature = "remote"))]

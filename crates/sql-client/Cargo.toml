@@ -19,7 +19,7 @@ query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", de
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 tokio = { version = "1.0", default-features = false, features = ["net", "sync"] }
 tokio-stream = { version = "0.1", default-features = false, features = [] }
-tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "codegen"] }
+tonic = { version = "0.14", default-features = false, features = ["transport", "channel", "codegen", "tls-ring"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 
 [features]

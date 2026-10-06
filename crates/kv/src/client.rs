@@ -9,7 +9,7 @@ use kv_proto::kvdb::{
     kv_service_client::KvServiceClient,
 };
 #[cfg(feature = "remote")]
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use value::Value;
 
@@ -126,6 +126,42 @@ impl Client {
     pub async fn connect(uri: impl AsRef<str>) -> Result<Self, Error> {
         let endpoint = Endpoint::from_shared(uri.as_ref().to_owned())
             .map_err(|error| Error::Connect(error.to_string()))?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    #[cfg(feature = "remote")]
+    pub async fn connect_with_ca(
+        uri: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+    ) -> Result<Self, Error> {
+        let endpoint = Endpoint::from_shared(uri.as_ref().to_owned())
+            .map_err(|error| Error::Connect(error.to_string()))?
+            .tls_config(
+                ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_certificate)),
+            )
+            .map_err(|error| Error::Connect(error.to_string()))?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    #[cfg(feature = "remote")]
+    pub async fn connect_with_identity(
+        uri: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+        client_certificate: impl AsRef<[u8]>,
+        client_private_key: impl AsRef<[u8]>,
+    ) -> Result<Self, Error> {
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(ca_certificate))
+            .identity(Identity::from_pem(client_certificate, client_private_key));
+        let endpoint = Endpoint::from_shared(uri.as_ref().to_owned())
+            .map_err(|error| Error::Connect(error.to_string()))?
+            .tls_config(tls)
+            .map_err(|error| Error::Connect(error.to_string()))?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    #[cfg(feature = "remote")]
+    async fn connect_endpoint(endpoint: Endpoint) -> Result<Self, Error> {
         let channel = endpoint
             .connect()
             .await

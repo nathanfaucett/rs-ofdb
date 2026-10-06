@@ -13,9 +13,9 @@ use query::{QueryParams, QueryResult, Statement, Translator};
 
 #[cfg(feature = "sync")]
 use sync::{
-    SessionConfig, SyncError, SyncManifest, SyncResult, SyncRole, SyncStateUnit, SyncTransport,
-    apply_sync_state_for, export_sync_state_for, sync_manifest_for,
-    synchronize as synchronize_engine,
+    SessionConfig, SyncError, SyncManifest, SyncResult, SyncRole, SyncStageFactory, SyncStateUnit,
+    SyncTransport, apply_sync_state_for, export_sync_state_for, sync_manifest_for,
+    synchronize as synchronize_engine, synchronize_with_stage_factory as synchronize_staged_engine,
 };
 use value::FromRow;
 
@@ -215,18 +215,60 @@ impl Database {
         address: std::net::SocketAddr,
         shutdown: impl core::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.serve_tcp_with_tls(address, None, shutdown).await
+    }
+
+    #[cfg(feature = "server")]
+    pub async fn serve_tcp_with_tls(
+        &self,
+        address: std::net::SocketAddr,
+        identity: Option<(Vec<u8>, Vec<u8>)>,
+        shutdown: impl core::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.serve_tcp_with_mtls(address, identity, None, shutdown)
+            .await
+    }
+
+    #[cfg(feature = "server")]
+    pub async fn serve_tcp_with_mtls(
+        &self,
+        address: std::net::SocketAddr,
+        mut identity: Option<(Vec<u8>, Vec<u8>)>,
+        client_ca: Option<Vec<u8>>,
+        shutdown: impl core::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => {
-                crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()))
-                    .serve(shutdown)
-                    .await
+                let server =
+                    crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()));
+                let server = match identity.take() {
+                    Some((certificate, private_key)) => {
+                        server.tls_identity(certificate, private_key)
+                    }
+                    None => server,
+                };
+                let server = match client_ca {
+                    Some(ca) => server.tls_client_ca(ca),
+                    None => server,
+                };
+                server.serve(shutdown).await
             }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
-                crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()))
-                    .serve(shutdown)
-                    .await
+                let server =
+                    crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()));
+                let server = match identity.take() {
+                    Some((certificate, private_key)) => {
+                        server.tls_identity(certificate, private_key)
+                    }
+                    None => server,
+                };
+                let server = match client_ca {
+                    Some(ca) => server.tls_client_ca(ca),
+                    None => server,
+                };
+                server.serve(shutdown).await
             }
         }
     }
@@ -274,6 +316,36 @@ impl Database {
                 #[cfg(feature = "in-memory")]
                 DatabaseBackend::InMemory(engine) => {
                     synchronize_engine(engine, transport, config, role).await
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_with_stage_factory<T, F>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        stage_factory: &F,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        F: SyncStageFactory,
+        F::Error: core::fmt::Display,
+        F::Stage: 'static,
+    {
+        #[cfg(any(feature = "redb", feature = "in-memory",))]
+        {
+            match &self.backend {
+                #[cfg(feature = "redb")]
+                DatabaseBackend::File(engine) => {
+                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
+                }
+                #[cfg(feature = "in-memory")]
+                DatabaseBackend::InMemory(engine) => {
+                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
                 }
             }
         }

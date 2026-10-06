@@ -18,13 +18,16 @@ use thiserror::Error;
 
 use crate::{
     PROTOCOL_VERSION, SyncHello, SyncIncrementalChange, SyncKey, SyncManifest, SyncMessage,
-    SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStateUnit, SyncTransport,
+    SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStage, SyncStageFactory,
+    SyncStateUnit, SyncTransport,
 };
 
 /// Maximum serialized sync message size (1 MiB). Transports must also bound reads
 /// before buffering frames; the session checks received frames only afterward.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+pub const MAX_APPLY_BATCH_BYTES: usize = MAX_MESSAGE_BYTES;
 pub const DEFAULT_MAX_SESSION_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CATALOG_LOOKUP_BYTES: usize = DEFAULT_MAX_SESSION_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncRole {
@@ -65,6 +68,9 @@ pub enum SyncError<E> {
     #[error("transport error: {0}")]
     Transport(E),
 
+    #[error("sync staging error: {0}")]
+    Staging(String),
+
     #[error("invalid session configuration")]
     InvalidConfiguration,
 
@@ -98,6 +104,25 @@ where
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
     T::Error: core::fmt::Display,
+{
+    let factory = crate::MemorySyncStageFactory::new(config.max_session_bytes);
+    synchronize_with_stage_factory(engine, transport, config, role, &factory).await
+}
+
+pub async fn synchronize_with_stage_factory<K, R, T, F>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
 {
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
@@ -145,6 +170,7 @@ where
                 transport,
                 &remote_manifest,
                 config.max_session_bytes,
+                stage_factory,
             )
             .await?;
             (sent, received)
@@ -155,6 +181,7 @@ where
                 transport,
                 &remote_manifest,
                 config.max_session_bytes,
+                stage_factory,
             )
             .await?;
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
@@ -179,6 +206,7 @@ where
                 &local_requests,
                 &remote_manifest,
                 config.max_session_bytes,
+                stage_factory,
             )
             .await?;
             (sent, received)
@@ -191,6 +219,7 @@ where
                 &local_requests,
                 &remote_manifest,
                 config.max_session_bytes,
+                stage_factory,
             )
             .await?;
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
@@ -224,8 +253,6 @@ struct Received {
     snapshots: usize,
     changes: usize,
     requests: Vec<SyncSnapshotRequest>,
-    pending_snapshots: Vec<SyncStateUnit>,
-    pending: Vec<SyncIncrementalChange>,
     received_bytes: usize,
 }
 
@@ -261,55 +288,45 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
-        let row_budget = max_bytes.saturating_sub(used_bytes);
-        let rows = engine
+        let (table_entries, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
-                    codec
-                        .row_ids(transaction, &table_for_rows, row_budget)
-                        .await
+                    let mut used_bytes = used_bytes;
+                    let mut entries = Vec::new();
+                    let rows = codec.row_ids(transaction, &table_for_rows);
+                    pin_mut!(rows);
+                    while let Some(row) = rows.next().await {
+                        let row = row?;
+                        let entry_bytes = table_for_rows
+                            .len()
+                            .saturating_add(row.to_bytes().len())
+                            .saturating_add(48);
+                        used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
+                        let state_budget = max_bytes.saturating_sub(used_bytes);
+                        let state = codec
+                            .export_state(transaction, &table_for_rows, row.clone(), state_budget)
+                            .await?
+                            .unwrap_or_default();
+                        let metadata = codec
+                            .export_metadata(transaction, &table_for_rows, row.clone())
+                            .await?;
+                        if !state.is_empty() || !metadata.is_empty() {
+                            let key = SyncKey::Row {
+                                table: table_for_rows.clone(),
+                                row,
+                            };
+                            let digest = SyncStateUnit::new(key.clone(), state, metadata).digest;
+                            entries.push((key, digest));
+                        } else {
+                            used_bytes = used_bytes.saturating_sub(entry_bytes);
+                        }
+                    }
+                    Ok((entries, used_bytes))
                 })
             })
             .await?;
-        for row in rows {
-            let table_for_row = table.clone();
-            let row_for_state = row.clone();
-            let state_budget = max_bytes.saturating_sub(used_bytes);
-            let (state, metadata) = engine
-                .read_transaction(|codec, transaction| {
-                    Box::pin(async move {
-                        Ok((
-                            codec
-                                .export_state(
-                                    transaction,
-                                    &table_for_row,
-                                    row_for_state.clone(),
-                                    state_budget,
-                                )
-                                .await?
-                                .unwrap_or_default(),
-                            codec
-                                .export_metadata(transaction, &table_for_row, row_for_state)
-                                .await?,
-                        ))
-                    })
-                })
-                .await?;
-            if !state.is_empty() || !metadata.is_empty() {
-                let key = SyncKey::Row {
-                    table: table.clone(),
-                    row,
-                };
-                let digest = SyncStateUnit::new(key.clone(), state, metadata).digest;
-                let SyncKey::Row { table, row } = &key;
-                let entry_bytes = table
-                    .len()
-                    .saturating_add(row.to_bytes().len())
-                    .saturating_add(48);
-                used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
-                entries.push((key, digest));
-            }
-        }
+        entries.extend(table_entries);
+        used_bytes = next_used_bytes;
     }
     Ok(SyncManifest::new(entries))
 }
@@ -348,58 +365,52 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
-        let row_budget = max_bytes.saturating_sub(used_bytes);
-        let rows = engine
+        let (table_units, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
-                    codec
-                        .row_ids(transaction, &table_for_rows, row_budget)
-                        .await
+                    let mut used_bytes = used_bytes;
+                    let mut units = Vec::new();
+                    let rows = codec.row_ids(transaction, &table_for_rows);
+                    pin_mut!(rows);
+                    while let Some(row) = rows.next().await {
+                        let row = row?;
+                        let state_budget = max_bytes
+                            .saturating_sub(used_bytes)
+                            .saturating_sub(table_for_rows.len())
+                            .saturating_sub(row.to_bytes().len())
+                            .saturating_sub(64);
+                        let state = codec
+                            .export_state(transaction, &table_for_rows, row.clone(), state_budget)
+                            .await?
+                            .unwrap_or_default();
+                        let metadata = codec
+                            .export_metadata(transaction, &table_for_rows, row.clone())
+                            .await?;
+                        if !state.is_empty() || !metadata.is_empty() {
+                            let state_bytes = state
+                                .len()
+                                .saturating_add(metadata.len())
+                                .saturating_add(table_for_rows.len())
+                                .saturating_add(row.to_bytes().len())
+                                .saturating_add(64);
+                            used_bytes =
+                                account_engine_payload(used_bytes, state_bytes, max_bytes)?;
+                            units.push(SyncStateUnit::new(
+                                SyncKey::Row {
+                                    table: table_for_rows.clone(),
+                                    row,
+                                },
+                                state,
+                                metadata,
+                            ));
+                        }
+                    }
+                    Ok((units, used_bytes))
                 })
             })
             .await?;
-        for row in rows {
-            let table_for_row = table.clone();
-            let row_for_state = row.clone();
-            let state_budget = max_bytes.saturating_sub(used_bytes);
-            let (state, metadata) = engine
-                .read_transaction(|codec, transaction| {
-                    Box::pin(async move {
-                        Ok((
-                            codec
-                                .export_state(
-                                    transaction,
-                                    &table_for_row,
-                                    row_for_state.clone(),
-                                    state_budget,
-                                )
-                                .await?
-                                .unwrap_or_default(),
-                            codec
-                                .export_metadata(transaction, &table_for_row, row_for_state)
-                                .await?,
-                        ))
-                    })
-                })
-                .await?;
-            if !state.is_empty() || !metadata.is_empty() {
-                let state_bytes = state
-                    .len()
-                    .saturating_add(metadata.len())
-                    .saturating_add(table.len())
-                    .saturating_add(row.to_bytes().len())
-                    .saturating_add(64);
-                used_bytes = account_engine_payload(used_bytes, state_bytes, max_bytes)?;
-                units.push(SyncStateUnit::new(
-                    SyncKey::Row {
-                        table: table.clone(),
-                        row,
-                    },
-                    state,
-                    metadata,
-                ));
-            }
-        }
+        units.extend(table_units);
+        used_bytes = next_used_bytes;
     }
     units.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     Ok(units)
@@ -424,7 +435,7 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    apply_received_batch(engine, Arc::new(batch), Arc::new(Vec::new()), None).await
+    apply_received_batch(engine, Arc::new(batch), Arc::new(Vec::new()), None, false).await
 }
 
 async fn apply_received_batch<K, R>(
@@ -432,6 +443,7 @@ async fn apply_received_batch<K, R>(
     snapshots: Arc<Vec<SyncStateUnit>>,
     changes: Arc<Vec<SyncIncrementalChange>>,
     manifest: Option<&SyncManifest>,
+    catalog_already_validated: bool,
 ) -> Result<(), EngineError>
 where
     K: Kernel,
@@ -439,64 +451,146 @@ where
 {
     validate_state_batch(&snapshots)?;
     validate_change_batch(&changes)?;
-    let mut tables = BTreeSet::new();
-    for unit in snapshots.iter() {
+    let has_catalog = snapshots.iter().any(|unit| {
         let SyncKey::Row { table, .. } = &unit.key;
-        tables.insert(table.clone());
-    }
-    for change in changes.iter() {
-        tables.insert(change.table.clone());
-    }
-    let tables = tables.into_iter().collect::<Vec<_>>();
+        catalog_order(table) < 4
+    }) || changes
+        .iter()
+        .any(|change| catalog_order(&change.table) < 4);
+    let has_data = snapshots.iter().any(|unit| {
+        let SyncKey::Row { table, .. } = &unit.key;
+        catalog_order(table) == 4
+    }) || changes
+        .iter()
+        .any(|change| catalog_order(&change.table) == 4);
     let expected = manifest.cloned();
-    engine
-        .mutate_tables(tables.as_slice(), move |codec, transaction| {
-            let snapshots = Arc::clone(&snapshots);
-            let changes = Arc::clone(&changes);
-            Box::pin(async move {
-                let mut mutations = MutationSummary::default();
-                for order in 0..4 {
-                    for unit in snapshots.iter() {
-                        let SyncKey::Row { table, .. } = &unit.key;
-                        if catalog_order(table) == order {
-                            merge_snapshot(codec, transaction, unit).await?;
-                            mutations.record_table(table);
+
+    if has_catalog || (!catalog_already_validated && (manifest.is_some() || has_data)) {
+        let mut tables = BTreeSet::new();
+        for unit in snapshots.iter() {
+            let SyncKey::Row { table, .. } = &unit.key;
+            if catalog_order(table) < 4 {
+                tables.insert(table.clone());
+            }
+        }
+        for change in changes.iter() {
+            if catalog_order(&change.table) < 4 {
+                tables.insert(change.table.clone());
+            }
+        }
+        let tables = tables.into_iter().collect::<Vec<_>>();
+        let expected = expected.clone();
+        let batch_snapshots = Arc::clone(&snapshots);
+        let batch_changes = Arc::clone(&changes);
+        engine
+            .mutate_tables(tables.as_slice(), move |codec, transaction| {
+                let snapshots = batch_snapshots;
+                let changes = batch_changes;
+                Box::pin(async move {
+                    let mut mutations = MutationSummary::default();
+                    for order in 0..4 {
+                        for unit in snapshots.iter() {
+                            let SyncKey::Row { table, .. } = &unit.key;
+                            if catalog_order(table) == order {
+                                merge_snapshot(codec, transaction, unit).await?;
+                                mutations.record_table(table);
+                            }
                         }
                     }
-                }
-                for order in 0..4 {
-                    for change in changes.iter() {
-                        if catalog_order(&change.table) == order {
-                            merge_change(codec, transaction, change).await?;
-                            mutations.record_table(&change.table);
+                    for order in 0..4 {
+                        for change in changes.iter() {
+                            if catalog_order(&change.table) == order {
+                                merge_change(codec, transaction, change).await?;
+                                mutations.record_table(&change.table);
+                            }
                         }
                     }
-                }
-                for unit in snapshots.iter() {
-                    let SyncKey::Row { table, .. } = &unit.key;
-                    if catalog_order(table) == 4 {
-                        merge_snapshot(codec, transaction, unit).await?;
-                        mutations.record_table(table);
-                    }
-                }
-                for change in changes.iter() {
-                    if catalog_order(&change.table) == 4 {
-                        merge_change(codec, transaction, change).await?;
-                        mutations.record_table(&change.table);
-                    }
-                }
-                validate_catalog(
-                    codec,
-                    transaction,
-                    snapshots.as_slice(),
-                    changes.as_slice(),
-                    expected.as_ref(),
-                )
-                .await?;
-                Ok(((), mutations))
+                    validate_catalog(
+                        codec,
+                        transaction,
+                        snapshots.as_slice(),
+                        changes.as_slice(),
+                        expected.as_ref(),
+                    )
+                    .await?;
+                    Ok(((), mutations))
+                })
             })
-        })
-        .await
+            .await?;
+    }
+
+    if has_data {
+        let mut rows = BTreeMap::<(String, RowIdentity), (Vec<usize>, Vec<usize>, usize)>::new();
+        for (index, unit) in snapshots.iter().enumerate() {
+            let SyncKey::Row { table, row } = &unit.key;
+            if catalog_order(table) == 4 {
+                let entry = rows.entry((table.clone(), row.clone())).or_default();
+                entry.0.push(index);
+                let identity_bytes = match row {
+                    RowIdentity::User(_) => 16,
+                    RowIdentity::ScopedUser { .. } => 32,
+                    RowIdentity::Catalog(bytes) => bytes.len(),
+                };
+                entry.2 = entry
+                    .2
+                    .saturating_add(core::mem::size_of::<SyncStateUnit>())
+                    .saturating_add(table.len())
+                    .saturating_add(identity_bytes)
+                    .saturating_add(unit.state.len())
+                    .saturating_add(unit.metadata.len());
+            }
+        }
+        for (index, change) in changes.iter().enumerate() {
+            if catalog_order(&change.table) == 4 {
+                let entry = rows
+                    .entry((change.table.clone(), change.row.clone()))
+                    .or_default();
+                entry.1.push(index);
+                let identity_bytes = match &change.row {
+                    RowIdentity::User(_) => 16,
+                    RowIdentity::ScopedUser { .. } => 32,
+                    RowIdentity::Catalog(bytes) => bytes.len(),
+                };
+                entry.2 = entry
+                    .2
+                    .saturating_add(core::mem::size_of::<SyncIncrementalChange>())
+                    .saturating_add(change.table.len())
+                    .saturating_add(identity_bytes)
+                    .saturating_add(change.id.0.len())
+                    .saturating_add(change.payload.len());
+            }
+        }
+        for ((table, _), (snapshot_indices, change_indices, bytes)) in rows {
+            if bytes > MAX_APPLY_BATCH_BYTES {
+                return Err(EngineError::custom(format!(
+                    "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                )));
+            }
+            let table_names = alloc::vec![table.clone()];
+            let batch_snapshots = Arc::clone(&snapshots);
+            let batch_changes = Arc::clone(&changes);
+            engine
+                .mutate_tables(table_names.as_slice(), move |codec, transaction| {
+                    let snapshots = batch_snapshots;
+                    let changes = batch_changes;
+                    Box::pin(async move {
+                        let mut mutations = MutationSummary::default();
+                        for index in snapshot_indices {
+                            merge_snapshot(codec, transaction, &snapshots[index]).await?;
+                            mutations.record_table(&table);
+                        }
+                        for index in change_indices {
+                            merge_change(codec, transaction, &changes[index]).await?;
+                            mutations.record_table(&table);
+                        }
+                        Ok(((), mutations))
+                    })
+                })
+                .await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn merge_snapshot<T, R>(
@@ -562,7 +656,7 @@ where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    if snapshots.is_empty() && changes.is_empty() {
+    if snapshots.is_empty() && changes.is_empty() && manifest.is_none() {
         return Ok(());
     }
     let catalog_tables = [
@@ -659,14 +753,8 @@ where
             }
         }
     }
-    for table in touched_tables(snapshots, changes) {
-        if catalog_order(table) == 4 && !table_name_exists(codec, transaction, table).await? {
-            return Err(EngineError::custom(format!(
-                "Incomplete catalog: data table {} has no definition",
-                table
-            )));
-        }
-    }
+    let mut table_ids_by_name = BTreeMap::new();
+    let mut table_lookup_bytes = 0usize;
     let tables = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
     pin_mut!(tables);
     while let Some(state) = tables.next().await {
@@ -680,24 +768,34 @@ where
         let name = value.values[0]
             .as_text()
             .expect("catalog table name was validated");
-        if touched_row(snapshots, changes, ENGINE_TABLES_STORAGE, &id)
-            || touched_catalog_parent(snapshots, changes, ENGINE_TABLE_FIELDS_STORAGE, table_id)
-            || touched_table(snapshots, changes, name)
-        {
-            let (has_fields, has_uuid_primary_key) =
-                table_field_status(codec, transaction, table_id).await?;
-            if !has_fields {
-                return Err(EngineError::custom(format!(
-                    "Incomplete catalog: table {} has no fields",
-                    name
-                )));
-            }
-            if !has_uuid_primary_key {
-                return Err(EngineError::custom(format!(
-                    "Incomplete catalog: table {} has no UUID primary key",
-                    name
-                )));
-            }
+        insert_table_identity(
+            &mut table_ids_by_name,
+            &mut table_lookup_bytes,
+            name,
+            table_id,
+            MAX_CATALOG_LOOKUP_BYTES,
+        )?;
+        let (has_fields, has_uuid_primary_key) =
+            table_field_status(codec, transaction, table_id).await?;
+        if !has_fields {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: table {} has no fields",
+                name
+            )));
+        }
+        if !has_uuid_primary_key {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: table {} has no UUID primary key",
+                name
+            )));
+        }
+    }
+    for table in touched_tables(snapshots, changes) {
+        if catalog_order(table) == 4 && !table_ids_by_name.contains_key(table) {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: data table {} has no definition",
+                table
+            )));
         }
     }
     let indices = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
@@ -710,7 +808,7 @@ where
         let name = value.values[1]
             .as_text()
             .expect("catalog index table name was validated");
-        let Some(table_id) = table_id_for_name(codec, transaction, name).await? else {
+        let Some(table_id) = table_ids_by_name.get(name) else {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: index {} references missing table {}",
                 id, name
@@ -725,7 +823,9 @@ where
                 id, name
             )));
         }
-        let fields = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+        let field_prefix = RowIdentity::catalog(index_id.clone()).to_bytes();
+        let fields =
+            codec.scan_row_states_prefix(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field_prefix);
         pin_mut!(fields);
         let mut has_fields = false;
         while let Some(field) = fields.next().await {
@@ -757,6 +857,36 @@ where
     Ok(())
 }
 
+fn insert_table_identity(
+    index: &mut BTreeMap<String, Vec<u8>>,
+    used_bytes: &mut usize,
+    name: &str,
+    id: &[u8],
+    max_bytes: usize,
+) -> Result<(), EngineError> {
+    match index.get(name) {
+        Some(current_id) if current_id.as_slice() >= id => Ok(()),
+        Some(_) => {
+            index.insert(name.to_string(), id.to_vec());
+            Ok(())
+        }
+        None => {
+            let next_bytes = used_bytes
+                .saturating_add(name.len())
+                .saturating_add(id.len())
+                .saturating_add(256);
+            if next_bytes > max_bytes {
+                return Err(EngineError::custom(format!(
+                    "Catalog table-name index exceeds the {max_bytes}-byte validation limit"
+                )));
+            }
+            *used_bytes = next_bytes;
+            index.insert(name.to_string(), id.to_vec());
+            Ok(())
+        }
+    }
+}
+
 async fn catalog_has_active_row<T, R>(
     codec: &R,
     transaction: &T,
@@ -770,41 +900,6 @@ where
     Ok(codec.get_row(transaction, table, target).await?.is_some())
 }
 
-async fn table_name_exists<T, R>(
-    codec: &R,
-    transaction: &T,
-    name: &str,
-) -> Result<bool, EngineError>
-where
-    T: KernelTransaction,
-    R: SyncRowCodec<T>,
-{
-    Ok(table_id_for_name(codec, transaction, name).await?.is_some())
-}
-
-async fn table_id_for_name<T, R>(
-    codec: &R,
-    transaction: &T,
-    name: &str,
-) -> Result<Option<Vec<u8>>, EngineError>
-where
-    T: KernelTransaction,
-    R: SyncRowCodec<T>,
-{
-    let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
-    pin_mut!(rows);
-    while let Some(row) = rows.next().await {
-        let (id, value, deleted) = row?;
-        if !deleted && value.values[0].as_text() == Some(name) {
-            let RowIdentity::Catalog(id) = id else {
-                return Err(EngineError::custom("Invalid catalog table identity"));
-            };
-            return Ok(Some(id));
-        }
-    }
-    Ok(None)
-}
-
 async fn table_field_status<T, R>(
     codec: &R,
     transaction: &T,
@@ -814,7 +909,9 @@ where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+    let field_prefix = RowIdentity::catalog(table_id.to_vec()).to_bytes();
+    let fields =
+        codec.scan_row_states_prefix(transaction, ENGINE_TABLE_FIELDS_STORAGE, &field_prefix);
     pin_mut!(fields);
     let mut has_fields = false;
     let mut has_uuid_primary_key = false;
@@ -840,7 +937,9 @@ where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+    let field_prefix = RowIdentity::catalog(table_id.to_vec()).to_bytes();
+    let fields =
+        codec.scan_row_states_prefix(transaction, ENGINE_TABLE_FIELDS_STORAGE, &field_prefix);
     pin_mut!(fields);
     while let Some(field) = fields.next().await {
         let (id, value, deleted) = field?;
@@ -866,43 +965,6 @@ fn touched_tables<'a>(
         .chain(changes.iter().map(|change| change.table.as_str()))
 }
 
-fn touched_table(
-    snapshots: &[SyncStateUnit],
-    changes: &[SyncIncrementalChange],
-    table: &str,
-) -> bool {
-    touched_tables(snapshots, changes).any(|touched| touched == table)
-}
-
-fn touched_row(
-    snapshots: &[SyncStateUnit],
-    changes: &[SyncIncrementalChange],
-    table: &str,
-    row: &RowIdentity,
-) -> bool {
-    snapshots.iter().any(|unit| {
-        matches!(&unit.key, SyncKey::Row { table: touched_table, row: touched_row }
-            if touched_table == table && touched_row == row)
-    }) || changes
-        .iter()
-        .any(|change| change.table == table && &change.row == row)
-}
-
-fn touched_catalog_parent(
-    snapshots: &[SyncStateUnit],
-    changes: &[SyncIncrementalChange],
-    table: &str,
-    parent: &[u8],
-) -> bool {
-    snapshots.iter().any(|unit| {
-        matches!(&unit.key, SyncKey::Row { table: touched_table, row: RowIdentity::Catalog(bytes) }
-            if touched_table == table && bytes.starts_with(parent))
-    }) || changes.iter().any(|change| {
-        change.table == table
-            && matches!(&change.row, RowIdentity::Catalog(bytes) if bytes.starts_with(parent))
-    })
-}
-
 fn catalog_order(table: &str) -> u8 {
     match table {
         ENGINE_TABLES_STORAGE => 0,
@@ -913,24 +975,27 @@ fn catalog_order(table: &str) -> u8 {
     }
 }
 
-fn validate_recovery_snapshots(
-    requests: &[SyncSnapshotRequest],
-    snapshots: &[SyncStateUnit],
+fn consume_recovery_snapshot(
+    remaining: &mut BTreeSet<SyncSnapshotRequest>,
+    snapshot: &SyncStateUnit,
 ) -> Result<(), EngineError> {
-    let mut remaining = requests.iter().cloned().collect::<BTreeSet<_>>();
-    for snapshot in snapshots {
-        let SyncKey::Row { table, row } = &snapshot.key;
-        let request = SyncSnapshotRequest {
-            table: table.clone(),
-            row: row.clone(),
-        };
-        if !remaining.remove(&request) {
-            return Err(EngineError::custom(format!(
-                "Unexpected or duplicate recovery snapshot for {} row {}",
-                table, row
-            )));
-        }
+    let SyncKey::Row { table, row } = &snapshot.key;
+    let request = SyncSnapshotRequest {
+        table: table.clone(),
+        row: row.clone(),
+    };
+    if !remaining.remove(&request) {
+        return Err(EngineError::custom(format!(
+            "Unexpected or duplicate recovery snapshot for {} row {}",
+            table, row
+        )));
     }
+    Ok(())
+}
+
+fn validate_recovery_complete(
+    remaining: &BTreeSet<SyncSnapshotRequest>,
+) -> Result<(), EngineError> {
     if let Some(request) = remaining.first() {
         return Err(EngineError::custom(format!(
             "Incomplete sync: recovery snapshot missing for {} row {}",
@@ -964,7 +1029,14 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    apply_received_batch(engine, Arc::new(Vec::new()), Arc::new(batch.to_vec()), None).await
+    apply_received_batch(
+        engine,
+        Arc::new(Vec::new()),
+        Arc::new(batch.to_vec()),
+        None,
+        false,
+    )
+    .await
 }
 
 fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineError> {
@@ -1167,6 +1239,8 @@ where
     outbound.changes.sort_unstable_by(|left, right| {
         catalog_order(&left.table)
             .cmp(&catalog_order(&right.table))
+            .then_with(|| left.table.cmp(&right.table))
+            .then_with(|| left.row.cmp(&right.row))
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(outbound)
@@ -1298,138 +1372,468 @@ where
     Ok(snapshots.len())
 }
 
-async fn receive_recovery<K, R, T>(
+async fn receive_recovery<K, R, T, F>(
     engine: &Engine<K, R>,
     transport: &mut T,
     received: &mut Received,
     requested: &[SyncSnapshotRequest],
     manifest: &SyncManifest,
     max_session_bytes: usize,
+    stage_factory: &F,
 ) -> Result<(usize, usize), SyncError<T::Error>>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
     T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Error: core::fmt::Display,
+    F::Stage: 'static,
 {
-    let mut snapshots = Vec::new();
+    let mut stage = stage_factory
+        .create()
+        .await
+        .map_err(|error| SyncError::Staging(error.to_string()))?;
+    let mut remaining = requested.iter().cloned().collect::<BTreeSet<_>>();
+    let mut count = 0;
     let mut received_bytes = received.received_bytes;
     loop {
         let (message, message_bytes) = receive_message(transport).await?;
-        received_bytes =
-            account_message(transport, received_bytes, message_bytes, max_session_bytes).await?;
+        received_bytes = account_message(
+            transport,
+            received_bytes,
+            message_bytes,
+            retained_message_bytes(&message),
+            max_session_bytes,
+        )
+        .await?;
         match message {
             SyncMessage::State(batch) => {
-                snapshots.extend(batch);
+                for snapshot in batch {
+                    if let Err(error) = consume_recovery_snapshot(&mut remaining, &snapshot) {
+                        let _ = send_message(
+                            transport,
+                            &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
+                        )
+                        .await;
+                        return Err(error.into());
+                    }
+                    let record = postcard::to_allocvec(&SyncMessage::State(alloc::vec![snapshot]))
+                        .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                    stage
+                        .append(record)
+                        .await
+                        .map_err(|error| SyncError::Staging(error.to_string()))?;
+                    count += 1;
+                }
             }
             SyncMessage::Done => break,
             SyncMessage::Abort(reason) => return Err(SyncError::RemoteAbort(reason)),
             _ => return Err(SyncError::UnexpectedMessage),
         }
     }
-    let count = snapshots.len();
-    if let Err(error) = validate_recovery_snapshots(requested, &snapshots) {
-        let reason = format!("{} (recovery snapshot batch)", error);
-        let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
+    received.received_bytes = received_bytes;
+    if let Err(error) = validate_recovery_complete(&remaining) {
+        let _ = send_message(
+            transport,
+            &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
+        )
+        .await;
         return Err(error.into());
     }
-    received.received_bytes = received_bytes;
-    received.pending_snapshots.append(&mut snapshots);
-    if received.pending.is_empty() && count == 0 {
+    if requested.is_empty() && count == 0 {
         return Ok((0, 0));
     }
-    if count == 0 && !received.pending.is_empty() {
-        let error =
-            EngineError::custom("Incomplete sync: requested recovery snapshots were not provided");
-        let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
-        return Err(error.into());
-    }
-    if let Err(error) = apply_received_batch(
-        engine,
-        Arc::new(core::mem::take(&mut received.pending_snapshots)),
-        Arc::new(Vec::new()),
-        Some(manifest),
-    )
-    .await
-    {
-        let reason = format!("{} (recovery snapshot batch)", error);
-        let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
-        return Err(error.into());
-    }
 
-    received.pending_snapshots.clear();
+    stage
+        .finish()
+        .await
+        .map_err(|error| SyncError::Staging(error.to_string()))?;
+    while let Some(record) = stage
+        .next_record()
+        .await
+        .map_err(|error| SyncError::Staging(error.to_string()))?
+    {
+        let message: SyncMessage = postcard::from_bytes(&record)
+            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+        let SyncMessage::State(snapshot) = message else {
+            return Err(SyncError::UnexpectedMessage);
+        };
+        if let Err(error) = apply_received_batch(
+            engine,
+            Arc::new(snapshot),
+            Arc::new(Vec::new()),
+            Some(manifest),
+            false,
+        )
+        .await
+        {
+            let reason = format!("{} (recovery snapshot batch)", error);
+            let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
+            return Err(error.into());
+        }
+    }
 
     // A recovery snapshot is the sender's complete current row state. It includes
-    // the history needed by the pending changes and supersedes their payloads.
-    received.pending.clear();
+    // the history needed by pending changes and supersedes their payloads.
     Ok((count, 0))
 }
 
-async fn receive_outbound<K, R, T>(
+async fn apply_catalog_stages<K, R, S>(
+    engine: &Engine<K, R>,
+    stages: Vec<S>,
+    manifest: &SyncManifest,
+) -> Result<(), EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    S: SyncStage + 'static,
+{
+    let tables = [
+        String::from(ENGINE_TABLES_STORAGE),
+        String::from(ENGINE_TABLE_FIELDS_STORAGE),
+        String::from(ENGINE_INDICES_STORAGE),
+        String::from(ENGINE_INDEX_FIELDS_STORAGE),
+    ];
+    let manifest = manifest.clone();
+    engine
+        .mutate_tables(&tables, move |codec, transaction| {
+            Box::pin(async move {
+                let mut mutations = MutationSummary::default();
+                for (stage_index, mut stage) in stages.into_iter().enumerate() {
+                    while let Some(record) = stage
+                        .next_record()
+                        .await
+                        .map_err(|error| EngineError::custom(error.to_string()))?
+                    {
+                        let message: SyncMessage = postcard::from_bytes(&record)
+                            .map_err(|error| EngineError::custom(error.to_string()))?;
+                        match message {
+                            SyncMessage::State(units) => {
+                                for unit in units {
+                                    validate_state_batch(core::slice::from_ref(&unit))?;
+                                    let SyncKey::Row { table, .. } = &unit.key;
+                                    if catalog_order(table) != (stage_index % 4) as u8 {
+                                        return Err(EngineError::custom(
+                                            "Staged catalog state has an invalid apply order",
+                                        ));
+                                    }
+                                    merge_snapshot(codec, transaction, &unit).await?;
+                                    mutations.record_table(table);
+                                }
+                            }
+                            SyncMessage::Changes(changes) => {
+                                for change in changes {
+                                    if catalog_order(&change.table) != (stage_index % 4) as u8 {
+                                        return Err(EngineError::custom(
+                                            "Staged catalog change has an invalid apply order",
+                                        ));
+                                    }
+                                    merge_change(codec, transaction, &change).await?;
+                                    mutations.record_table(&change.table);
+                                }
+                            }
+                            _ => {
+                                return Err(EngineError::custom(
+                                    "Unexpected message in catalog stage",
+                                ));
+                            }
+                        }
+                    }
+                }
+                validate_catalog(codec, transaction, &[], &[], Some(&manifest)).await?;
+                Ok(((), mutations))
+            })
+        })
+        .await
+}
+
+struct StagedDataApply {
+    snapshots: usize,
+    changes: usize,
+    requests: Vec<SyncSnapshotRequest>,
+}
+
+async fn apply_staged_data<K, R, S>(
+    engine: &Engine<K, R>,
+    stage: &mut S,
+    manifest: &SyncManifest,
+    snapshots: bool,
+) -> Result<StagedDataApply, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    S: SyncStage,
+{
+    let mut applied = StagedDataApply {
+        snapshots: 0,
+        changes: 0,
+        requests: Vec::new(),
+    };
+    while let Some(record) = stage
+        .next_record()
+        .await
+        .map_err(|error| EngineError::custom(error.to_string()))?
+    {
+        let message: SyncMessage = postcard::from_bytes(&record)
+            .map_err(|error| EngineError::custom(error.to_string()))?;
+        match (snapshots, message) {
+            (true, SyncMessage::State(units)) => {
+                let Some(unit) = units.first() else {
+                    return Err(EngineError::custom("Empty state record in data stage"));
+                };
+                let request = match &unit.key {
+                    SyncKey::Row { table, row } => SyncSnapshotRequest {
+                        table: table.clone(),
+                        row: row.clone(),
+                    },
+                };
+                let batch = Arc::new(units);
+                match apply_received_batch(
+                    engine,
+                    Arc::clone(&batch),
+                    Arc::new(Vec::new()),
+                    Some(manifest),
+                    true,
+                )
+                .await
+                {
+                    Ok(()) => applied.snapshots += batch.len(),
+                    Err(error) if matches!(error, EngineError::SyncDependencyUnavailable) => {
+                        applied.requests.push(request);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            (false, SyncMessage::Changes(changes)) => {
+                let Some(first) = changes.first() else {
+                    return Err(EngineError::custom("Empty change record in data stage"));
+                };
+                let request = SyncSnapshotRequest {
+                    table: first.table.clone(),
+                    row: first.row.clone(),
+                };
+                let batch = Arc::new(changes);
+                match apply_received_batch(
+                    engine,
+                    Arc::new(Vec::new()),
+                    Arc::clone(&batch),
+                    Some(manifest),
+                    true,
+                )
+                .await
+                {
+                    Ok(()) => applied.changes += batch.len(),
+                    Err(error) if matches!(error, EngineError::SyncDependencyUnavailable) => {
+                        applied.requests.push(request);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            _ => return Err(EngineError::custom("Unexpected message in data stage")),
+        }
+    }
+    Ok(applied)
+}
+
+async fn receive_outbound<K, R, T, F>(
     engine: &Engine<K, R>,
     transport: &mut T,
     manifest: &SyncManifest,
     max_session_bytes: usize,
+    stage_factory: &F,
 ) -> Result<Received, SyncError<T::Error>>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
     T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Error: core::fmt::Display,
+    F::Stage: 'static,
 {
     let mut count = Received {
         snapshots: 0,
         changes: 0,
         requests: Vec::new(),
-        pending_snapshots: Vec::new(),
-        pending: Vec::new(),
         received_bytes: 0,
     };
-    let mut snapshots = Vec::new();
-    let mut changes = Vec::new();
+    let mut catalog_stages = Vec::with_capacity(8);
+    for _ in 0..8 {
+        catalog_stages.push(
+            stage_factory
+                .create()
+                .await
+                .map_err(|error| SyncError::Staging(error.to_string()))?,
+        );
+    }
+    let mut catalog_snapshots = 0;
+    let mut catalog_changes = 0;
+    let mut data_snapshot_stage = stage_factory
+        .create()
+        .await
+        .map_err(|error| SyncError::Staging(error.to_string()))?;
+    let mut data_change_stage = stage_factory
+        .create()
+        .await
+        .map_err(|error| SyncError::Staging(error.to_string()))?;
+
+    let mut current_changes: Vec<SyncIncrementalChange> = Vec::new();
+    let mut current_change_bytes = 0usize;
+    let mut current_change_key: Option<(String, RowIdentity)> = None;
+    let mut previous_change_key: Option<(String, RowIdentity)> = None;
+    let mut previous_change_id = None;
     loop {
         let (message, message_bytes) = receive_message(transport).await?;
         count.received_bytes = account_message(
             transport,
             count.received_bytes,
             message_bytes,
+            retained_message_bytes(&message),
             max_session_bytes,
         )
         .await?;
         match message {
-            SyncMessage::State(batch) => snapshots.extend(batch),
-            SyncMessage::Changes(batch) => changes.extend(batch),
+            SyncMessage::State(batch) => {
+                for unit in batch {
+                    let SyncKey::Row { table, .. } = &unit.key;
+                    let order = catalog_order(table);
+                    if order < 4 {
+                        let record = postcard::to_allocvec(&SyncMessage::State(alloc::vec![unit]))
+                            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                        catalog_stages[order as usize]
+                            .append(record)
+                            .await
+                            .map_err(|error| SyncError::Staging(error.to_string()))?;
+                        catalog_snapshots += 1;
+                    } else {
+                        let record = postcard::to_allocvec(&SyncMessage::State(alloc::vec![unit]))
+                            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                        data_snapshot_stage
+                            .append(record)
+                            .await
+                            .map_err(|error| SyncError::Staging(error.to_string()))?;
+                    }
+                }
+            }
+            SyncMessage::Changes(batch) => {
+                for change in batch {
+                    let order = catalog_order(&change.table);
+                    if order < 4 {
+                        let record =
+                            postcard::to_allocvec(&SyncMessage::Changes(alloc::vec![change]))
+                                .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                        catalog_stages[4 + order as usize]
+                            .append(record)
+                            .await
+                            .map_err(|error| SyncError::Staging(error.to_string()))?;
+                        catalog_changes += 1;
+                    } else {
+                        let key = (change.table.clone(), change.row.clone());
+                        if current_change_key
+                            .as_ref()
+                            .is_some_and(|current| current != &key)
+                        {
+                            let record = postcard::to_allocvec(&SyncMessage::Changes(
+                                core::mem::take(&mut current_changes),
+                            ))
+                            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                            data_change_stage
+                                .append(record)
+                                .await
+                                .map_err(|error| SyncError::Staging(error.to_string()))?;
+                            current_change_bytes = 0;
+                            previous_change_key = current_change_key.take();
+                            previous_change_id = None;
+                        }
+                        if current_change_key.is_none() {
+                            if previous_change_key
+                                .as_ref()
+                                .is_some_and(|previous| previous >= &key)
+                            {
+                                return Err(SyncError::Protocol(String::from(
+                                    "incremental changes are not ordered by row",
+                                )));
+                            }
+                            current_change_key = Some(key);
+                        }
+                        if previous_change_id
+                            .as_ref()
+                            .is_some_and(|previous| previous >= &change.id)
+                        {
+                            return Err(SyncError::Protocol(String::from(
+                                "row changes are not ordered by change ID",
+                            )));
+                        }
+                        let change_bytes = incremental_change_estimate(&change);
+                        current_change_bytes = current_change_bytes.saturating_add(change_bytes);
+                        if current_change_bytes > MAX_APPLY_BATCH_BYTES {
+                            return Err(SyncError::SessionTooLarge {
+                                size: current_change_bytes,
+                                max: MAX_APPLY_BATCH_BYTES,
+                            });
+                        }
+                        previous_change_id = Some(change.id.clone());
+                        current_changes.push(change);
+                    }
+                }
+            }
             SyncMessage::Done => {
-                count.snapshots = snapshots.len();
-                let change_count = changes.len();
-                let snapshot_batch = Arc::new(snapshots);
-                let change_batch = Arc::new(changes);
-                if let Err(error) = apply_received_batch(
+                if !current_changes.is_empty() {
+                    let record = postcard::to_allocvec(&SyncMessage::Changes(current_changes))
+                        .map_err(|error| SyncError::Protocol(error.to_string()))?;
+                    data_change_stage
+                        .append(record)
+                        .await
+                        .map_err(|error| SyncError::Staging(error.to_string()))?;
+                }
+                for stage in &mut catalog_stages {
+                    stage
+                        .finish()
+                        .await
+                        .map_err(|error| SyncError::Staging(error.to_string()))?;
+                }
+                data_snapshot_stage
+                    .finish()
+                    .await
+                    .map_err(|error| SyncError::Staging(error.to_string()))?;
+                data_change_stage
+                    .finish()
+                    .await
+                    .map_err(|error| SyncError::Staging(error.to_string()))?;
+                if catalog_snapshots > 0 || catalog_changes > 0 {
+                    if let Err(error) = apply_catalog_stages(engine, catalog_stages, manifest).await
+                    {
+                        return abort(transport, error, String::from("catalog batch")).await;
+                    }
+                }
+                let staged_snapshots =
+                    match apply_staged_data(engine, &mut data_snapshot_stage, manifest, true).await
+                    {
+                        Ok(applied) => applied,
+                        Err(error) => {
+                            return abort(transport, error, String::from("data state batch")).await;
+                        }
+                    };
+                count.snapshots = catalog_snapshots + staged_snapshots.snapshots;
+                count.requests.extend(staged_snapshots.requests);
+
+                let staged_changes = match apply_staged_data(
                     engine,
-                    Arc::clone(&snapshot_batch),
-                    Arc::clone(&change_batch),
-                    Some(manifest),
+                    &mut data_change_stage,
+                    manifest,
+                    false,
                 )
                 .await
                 {
-                    if matches!(error, EngineError::SyncDependencyUnavailable) {
-                        count.pending_snapshots = Arc::try_unwrap(snapshot_batch)
-                            .expect("sync apply releases its snapshot batch before returning");
-                        for change in Arc::try_unwrap(change_batch)
-                            .expect("sync apply releases its change batch before returning")
-                        {
-                            count.requests.push(SyncSnapshotRequest {
-                                table: change.table.clone(),
-                                row: change.row.clone(),
-                            });
-                            count.pending.push(change);
-                        }
-                    } else {
-                        return abort(transport, error, String::from("incremental batch")).await;
+                    Ok(applied) => applied,
+                    Err(error) => {
+                        return abort(transport, error, String::from("data change batch")).await;
                     }
-                } else {
-                    count.changes = change_count;
-                }
+                };
+                count.changes = catalog_changes + staged_changes.changes;
+                count.requests.extend(staged_changes.requests);
+
                 count.requests.sort_unstable();
                 count.requests.dedup();
                 return Ok(count);
@@ -1563,6 +1967,19 @@ where
     }
 }
 
+fn incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
+    let identity_bytes = match &change.row {
+        RowIdentity::User(_) => 16,
+        RowIdentity::ScopedUser { .. } => 32,
+        RowIdentity::Catalog(bytes) => bytes.len(),
+    };
+    core::mem::size_of::<SyncIncrementalChange>()
+        .saturating_add(change.table.len())
+        .saturating_add(identity_bytes)
+        .saturating_add(change.id.0.len())
+        .saturating_add(change.payload.len())
+}
+
 fn state_unit_payload_size(unit: &SyncStateUnit) -> usize {
     let SyncKey::Row { table, row } = &unit.key;
     unit.state
@@ -1584,17 +2001,62 @@ fn account_engine_payload(used: usize, incoming: usize, max: usize) -> Result<us
     }
 }
 
+fn retained_message_bytes(message: &SyncMessage) -> usize {
+    match message {
+        SyncMessage::State(units) => units.iter().fold(0usize, |used, unit| {
+            let SyncKey::Row { table, row } = &unit.key;
+            used.saturating_add(core::mem::size_of::<SyncStateUnit>())
+                .saturating_add(
+                    unit.state
+                        .len()
+                        .saturating_add(unit.metadata.len())
+                        .saturating_add(table.len())
+                        .saturating_add(row.to_bytes().len())
+                        .saturating_mul(2),
+                )
+                .saturating_add(128)
+        }),
+        SyncMessage::Changes(changes) => changes.iter().fold(0usize, |used, change| {
+            used.saturating_add(core::mem::size_of::<SyncIncrementalChange>())
+                .saturating_add(
+                    change
+                        .table
+                        .len()
+                        .saturating_add(change.row.to_bytes().len())
+                        .saturating_add(change.id.0.len())
+                        .saturating_add(change.payload.len())
+                        .saturating_mul(2),
+                )
+                .saturating_add(128)
+        }),
+        SyncMessage::RequestSnapshots(requests) => requests.iter().fold(0usize, |used, request| {
+            used.saturating_add(core::mem::size_of::<SyncSnapshotRequest>())
+                .saturating_add(
+                    request
+                        .table
+                        .len()
+                        .saturating_add(request.row.to_bytes().len()),
+                )
+                .saturating_add(128)
+        }),
+        _ => 0,
+    }
+}
+
 async fn account_message<T>(
     transport: &mut T,
     used: usize,
     message_bytes: usize,
+    retained_bytes: usize,
     max: usize,
 ) -> Result<usize, SyncError<T::Error>>
 where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let size = used.saturating_add(message_bytes);
+    let size = used
+        .saturating_add(message_bytes)
+        .saturating_add(retained_bytes);
     if size > max {
         let error = SyncError::SessionTooLarge { size, max };
         let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
@@ -1643,7 +2105,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::String, vec, vec::Vec};
+    use alloc::{
+        collections::{BTreeMap, BTreeSet},
+        string::{String, ToString},
+        vec,
+        vec::Vec,
+    };
 
     use engine::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
@@ -1652,8 +2119,9 @@ mod tests {
     use futures::executor::block_on;
 
     use super::{
-        MAX_MESSAGE_BYTES, SyncError, catalog_order, receive_message, send_message, validate_hello,
-        validate_recovery_snapshots, validate_state_batch,
+        MAX_MESSAGE_BYTES, SyncError, account_message, catalog_order, consume_recovery_snapshot,
+        insert_table_identity, receive_message, retained_message_bytes, send_message,
+        validate_hello, validate_recovery_complete, validate_state_batch,
     };
     use crate::{
         PROTOCOL_VERSION, SyncHello, SyncKey, SyncManifest, SyncMessage, SyncSnapshotRequest,
@@ -1703,6 +2171,25 @@ mod tests {
     }
 
     #[test]
+    fn table_identity_index_is_bounded_and_selects_the_greatest_id() {
+        let mut index = BTreeMap::new();
+        let mut used_bytes = 0;
+        insert_table_identity(&mut index, &mut used_bytes, "people", &[1], 263)
+            .expect("insert table name");
+        let first_size = used_bytes;
+        insert_table_identity(&mut index, &mut used_bytes, "people", &[2], 263)
+            .expect("replace older concurrent table identity");
+        assert_eq!(used_bytes, first_size);
+        assert_eq!(index.get("people"), Some(&vec![2]));
+
+        let error = insert_table_identity(&mut index, &mut used_bytes, "animals", &[3], 263)
+            .expect_err("reject name index beyond its byte budget");
+        assert!(error.to_string().contains("validation limit"));
+        assert_eq!(index.len(), 1);
+        assert_eq!(used_bytes, first_size);
+    }
+
+    #[test]
     fn recovery_requires_exactly_one_snapshot_for_each_requested_row() {
         let requests = vec![
             SyncSnapshotRequest {
@@ -1725,14 +2212,22 @@ mod tests {
             )
         };
 
-        assert!(validate_recovery_snapshots(&requests, &[snapshot(1)]).is_err());
-        assert!(validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(2)]).is_ok());
-        assert!(validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(1)]).is_err());
-        assert!(
-            validate_recovery_snapshots(&requests, &[snapshot(1), snapshot(2), snapshot(3)])
-                .is_err()
-        );
-        assert!(validate_recovery_snapshots(&[], &[snapshot(1)]).is_err());
+        let remaining = || requests.iter().cloned().collect::<BTreeSet<_>>();
+        let mut received = remaining();
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
+        assert!(validate_recovery_complete(&received).is_err());
+
+        let mut received = remaining();
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(2)).is_ok());
+        assert!(validate_recovery_complete(&received).is_ok());
+
+        let mut received = remaining();
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_err());
+
+        let mut received = remaining();
+        assert!(consume_recovery_snapshot(&mut received, &snapshot(3)).is_err());
     }
 
     #[test]
@@ -1785,6 +2280,32 @@ mod tests {
         assert!(
             matches!(error, SyncError::MessageTooLarge { size, max } if size == MAX_MESSAGE_BYTES + 1 && max == MAX_MESSAGE_BYTES)
         );
+    }
+
+    #[test]
+    fn retained_record_estimate_counts_decoded_overhead_against_session_budget() {
+        let message = SyncMessage::State(vec![SyncStateUnit::new(
+            SyncKey::Row {
+                table: String::from("rows"),
+                row: RowIdentity::user(uuid::Uuid::from_bytes([1; 16])),
+            },
+            vec![1; 600_000],
+            Vec::new(),
+        )]);
+        let retained = retained_message_bytes(&message);
+        assert!(retained > 600_000);
+
+        let mut transport = Transport::default();
+        let error = block_on(account_message(
+            &mut transport,
+            0,
+            600_000,
+            retained,
+            MAX_MESSAGE_BYTES,
+        ))
+        .expect_err("decoded storage must count against the bounded session budget");
+        assert!(matches!(error, SyncError::SessionTooLarge { .. }));
+        assert!(transport.outbound.is_some(), "send an abort to the peer");
     }
 
     #[test]

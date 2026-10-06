@@ -1,4 +1,4 @@
-#![cfg(any(feature = "in-memory", feature = "redb"))]
+#![cfg(all(any(feature = "in-memory", feature = "redb"), feature = "sql"))]
 
 use futures::executor::block_on;
 use ofdb_sql::{

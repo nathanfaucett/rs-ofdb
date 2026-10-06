@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+use core::ops::Bound;
+
 use futures::Stream;
 
 use crate::EngineResult;
@@ -13,10 +15,15 @@ pub trait KernelTransaction: Send + Sync {
         table: &str,
         key: &[u8],
     ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
-    fn scan_bytes(
-        &self,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send;
+    fn scan_bytes<'a>(
+        &'a self,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a;
+    fn scan_bytes_range<'a>(
+        &'a self,
+        table: &'a str,
+        range: (Bound<Vec<u8>>, Bound<Vec<u8>>),
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a;
     fn put_bytes(
         &mut self,
         table: &str,

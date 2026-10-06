@@ -199,6 +199,8 @@ where
 {
     endpoint: Endpoint,
     service: KvService<S>,
+    tls_identity: Option<tonic::transport::Identity>,
+    tls_client_ca: Option<tonic::transport::Certificate>,
 }
 
 impl<S> Server<S>
@@ -209,6 +211,8 @@ where
         Self {
             endpoint: Endpoint::Tcp(address),
             service: KvService::new(store),
+            tls_identity: None,
+            tls_client_ca: None,
         }
     }
 
@@ -216,6 +220,8 @@ where
         Self {
             endpoint: Endpoint::TcpListener(listener),
             service: KvService::new(store),
+            tls_identity: None,
+            tls_client_ca: None,
         }
     }
 
@@ -224,7 +230,22 @@ where
         Self {
             endpoint: Endpoint::Unix(path.into()),
             service: KvService::new(store),
+            tls_identity: None,
+            tls_client_ca: None,
         }
+    }
+
+    pub fn tls_identity(mut self, certificate: Vec<u8>, private_key: Vec<u8>) -> Self {
+        self.tls_identity = Some(tonic::transport::Identity::from_pem(
+            certificate,
+            private_key,
+        ));
+        self
+    }
+
+    pub fn tls_client_ca(mut self, certificate: Vec<u8>) -> Self {
+        self.tls_client_ca = Some(tonic::transport::Certificate::from_pem(certificate));
+        self
     }
 
     pub fn max_decoding_message_size(mut self, size: usize) -> Self {
@@ -240,15 +261,23 @@ where
         S: BTree<Vec<u8>, Vec<u8>> + Send + Sync + 'static,
     {
         let service = self.service.into_tonic_service();
+        let mut builder = tonic::transport::Server::builder();
+        if let Some(identity) = self.tls_identity {
+            let mut tls = tonic::transport::ServerTlsConfig::new().identity(identity);
+            if let Some(client_ca) = self.tls_client_ca {
+                tls = tls.client_ca_root(client_ca);
+            }
+            builder = builder.tls_config(tls)?;
+        }
         match self.endpoint {
-            Endpoint::Tcp(address) => tonic::transport::Server::builder()
+            Endpoint::Tcp(address) => builder
                 .add_service(service)
                 .serve_with_shutdown(address, shutdown)
                 .await
                 .map_err(Into::into),
             Endpoint::TcpListener(listener) => {
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-                tonic::transport::Server::builder()
+                builder
                     .add_service(service)
                     .serve_with_incoming_shutdown(incoming, shutdown)
                     .await
@@ -258,7 +287,7 @@ where
             Endpoint::Unix(path) => {
                 let listener = tokio::net::UnixListener::bind(path)?;
                 let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-                tonic::transport::Server::builder()
+                builder
                     .add_service(service)
                     .serve_with_incoming_shutdown(incoming, shutdown)
                     .await

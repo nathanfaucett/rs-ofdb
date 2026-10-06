@@ -235,6 +235,33 @@ impl Client {
         })
     }
 
+    #[cfg(feature = "remote")]
+    pub async fn connect_with_ca(
+        endpoint: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+    ) -> Result<Self, QueryError> {
+        Ok(Self {
+            backend: Backend::Remote(SqlClient::tcp_with_ca(endpoint, ca_certificate).await?),
+            request_deadline: None,
+        })
+    }
+
+    #[cfg(feature = "remote")]
+    pub async fn connect_with_identity(
+        endpoint: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+        certificate: impl AsRef<[u8]>,
+        private_key: impl AsRef<[u8]>,
+    ) -> Result<Self, QueryError> {
+        Ok(Self {
+            backend: Backend::Remote(
+                SqlClient::tcp_with_identity(endpoint, ca_certificate, certificate, private_key)
+                    .await?,
+            ),
+            request_deadline: None,
+        })
+    }
+
     #[cfg(all(unix, feature = "remote"))]
     pub async fn connect_unix(path: impl Into<std::path::PathBuf>) -> Result<Self, QueryError> {
         Ok(Self {

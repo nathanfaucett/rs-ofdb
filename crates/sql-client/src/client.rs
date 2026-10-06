@@ -3,7 +3,7 @@ use protocol::{decode_error_detail, query_result_from_proto, statement_to_proto}
 use query::{QueryError, QueryErrorKind, QueryResult, Statement};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use crate::Transaction;
 
@@ -20,10 +20,56 @@ impl Client {
                 format!("invalid gRPC endpoint: {error}"),
             )
         })?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    pub async fn tcp_with_ca(
+        uri: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+    ) -> Result<Self, QueryError> {
+        let endpoint = Endpoint::from_shared(uri.as_ref().to_string()).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::Validation,
+                format!("invalid gRPC endpoint: {error}"),
+            )
+        })?;
+        let endpoint = endpoint
+            .tls_config(
+                ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca_certificate)),
+            )
+            .map_err(|error| QueryError::new(QueryErrorKind::Validation, error.to_string()))?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    pub async fn tcp_with_identity(
+        uri: impl AsRef<str>,
+        ca_certificate: impl AsRef<[u8]>,
+        certificate: impl AsRef<[u8]>,
+        private_key: impl AsRef<[u8]>,
+    ) -> Result<Self, QueryError> {
+        let endpoint = Endpoint::from_shared(uri.as_ref().to_string()).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::Validation,
+                format!("invalid gRPC endpoint: {error}"),
+            )
+        })?;
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(ca_certificate))
+            .identity(tonic::transport::Identity::from_pem(
+                certificate,
+                private_key,
+            ));
+        let endpoint = endpoint
+            .tls_config(tls)
+            .map_err(|error| QueryError::new(QueryErrorKind::Validation, error.to_string()))?;
+        Self::connect_endpoint(endpoint).await
+    }
+
+    async fn connect_endpoint(endpoint: Endpoint) -> Result<Self, QueryError> {
         let channel = endpoint
             .connect()
             .await
-            .map_err(|error| QueryError::new(QueryErrorKind::Transport, error.to_string()))?;
+            .map_err(|error| QueryError::new(QueryErrorKind::Transport, format!("{error:?}")))?;
         Ok(Self { channel })
     }
 

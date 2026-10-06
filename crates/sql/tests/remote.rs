@@ -183,3 +183,57 @@ async fn remote_client_executes_typed_queries_over_tcp() {
     shutdown.send(()).expect("server is awaiting shutdown");
     server.await.expect("server task should complete");
 }
+
+#[tokio::test]
+async fn sql_mtls_requires_and_accepts_client_identity() {
+    let address = free_address();
+    let database = Database::in_memory();
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        database
+            .serve_tcp_with_mtls(
+                address,
+                Some((
+                    include_bytes!("../../../test-fixtures/sql-mtls/server.crt").to_vec(),
+                    include_bytes!("../../../test-fixtures/sql-mtls/server.key").to_vec(),
+                )),
+                Some(include_bytes!("../../../test-fixtures/sql-mtls/ca.crt").to_vec()),
+                async {
+                    let _ = signal.await;
+                },
+            )
+            .await
+            .expect("mTLS server stops cleanly");
+    });
+
+    let endpoint = format!("https://localhost:{}", address.port());
+    let missing_identity_client = Client::connect_with_ca(
+        &endpoint,
+        include_bytes!("../../../test-fixtures/sql-mtls/ca.crt"),
+    )
+    .await
+    .expect("TLS channel can be created before the handshake completes");
+    assert!(
+        missing_identity_client
+            .execute_sql("CREATE TABLE unauthorized (id UUID PRIMARY KEY)", None)
+            .await
+            .is_err(),
+        "server rejects RPCs from clients without a certificate"
+    );
+
+    let client = Client::connect_with_identity(
+        &endpoint,
+        include_bytes!("../../../test-fixtures/sql-mtls/ca.crt"),
+        include_bytes!("../../../test-fixtures/sql-mtls/client.crt"),
+        include_bytes!("../../../test-fixtures/sql-mtls/client.key"),
+    )
+    .await
+    .expect("authorized client connects with mTLS");
+    client
+        .execute_sql("CREATE TABLE mtls_items (id UUID PRIMARY KEY)", None)
+        .await
+        .expect("authorized client executes query");
+
+    shutdown.send(()).expect("server is awaiting shutdown");
+    server.await.expect("server task should complete");
+}

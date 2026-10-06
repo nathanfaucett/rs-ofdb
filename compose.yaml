@@ -1,0 +1,32 @@
+services:
+  kv:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        SERVER: kv
+    ports:
+      - "8080:8080"
+    environment:
+      OFDB_DATA: /data/ofdb-kv.redb
+    volumes:
+      - kv-data:/data
+    restart: unless-stopped
+
+  sql:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        SERVER: sql
+    ports:
+      - "8081:8081"
+    environment:
+      OFDB_DATA: /data/ofdb-sql.redb
+    volumes:
+      - sql-data:/data
+    restart: unless-stopped
+
+volumes:
+  kv-data:
+  sql-data:

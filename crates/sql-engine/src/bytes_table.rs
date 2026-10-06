@@ -36,20 +36,16 @@ impl<'a, T> BytesTableTransaction<'a, T> {
     }
 }
 
-fn contains<R>(range: &R, key: &[u8]) -> bool
+fn owned_bounds<R>(range: R) -> (Bound<Vec<u8>>, Bound<Vec<u8>>)
 where
     R: RangeBounds<Vec<u8>>,
 {
-    match range.start_bound() {
-        Bound::Included(start) if key < start => return false,
-        Bound::Excluded(start) if key <= start => return false,
-        _ => {}
-    }
-    match range.end_bound() {
-        Bound::Included(end) if key > end => false,
-        Bound::Excluded(end) if key >= end => false,
-        _ => true,
-    }
+    let own = |bound: Bound<&Vec<u8>>| match bound {
+        Bound::Included(key) => Bound::Included(key.clone()),
+        Bound::Excluded(key) => Bound::Excluded(key.clone()),
+        Bound::Unbounded => Bound::Unbounded,
+    };
+    (own(range.start_bound()), own(range.end_bound()))
 }
 
 macro_rules! read {
@@ -74,14 +70,13 @@ macro_rules! read {
             where
                 R: RangeBounds<Vec<u8>> + Send,
             {
-                let entries = self.transaction.scan_bytes(&self.table);
+                let entries = self
+                    .transaction
+                    .scan_bytes_range(&self.table, owned_bounds(range));
                 stream! {
                     pin_mut!(entries);
                     while let Some(entry) = entries.next().await {
-                        let (key, value) = entry.map_err(BTreeError::custom)?;
-                        if contains(&range, &key) {
-                            yield Ok((key, value));
-                        }
+                        yield entry.map_err(BTreeError::custom);
                     }
                 }
             }

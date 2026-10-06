@@ -9,10 +9,10 @@ use ofdb_kv::{Client, Database};
 use tokio::{net::TcpStream, sync::oneshot, time::sleep};
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_kv-cli"))
+    Command::new(env!("CARGO_BIN_EXE_kv-client-cli"))
         .args(args)
         .output()
-        .expect("run kv-cli")
+        .expect("run kv-client-cli")
 }
 
 fn temporary_path(label: &str) -> PathBuf {
@@ -97,6 +97,160 @@ fn local_cli_preserves_tagged_file_values_and_emits_json_scans() {
 
     std::fs::remove_file(input).expect("remove test value file");
     std::fs::remove_file(database).expect("remove test database");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_cli_verifies_tls_with_the_configured_ca() {
+    let address = free_address();
+    let database = Database::in_memory();
+    let (shutdown, shutdown_signal) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        database
+            .serve_tcp_with_tls(
+                address,
+                Some((
+                    include_bytes!("../../../test-fixtures/tls/server.crt").to_vec(),
+                    include_bytes!("../../../test-fixtures/tls/server.key").to_vec(),
+                )),
+                async {
+                    let _ = shutdown_signal.await;
+                },
+            )
+            .await
+            .expect("TLS server stops cleanly");
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while TcpStream::connect(address).await.is_err() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("TLS server starts");
+
+    let endpoint = format!("https://{address}");
+    let ca_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/tls/ca.crt")
+        .into_os_string()
+        .into_string()
+        .expect("CA path is UTF-8");
+    let output = tokio::task::spawn_blocking(move || {
+        run(&[
+            "--endpoint",
+            &endpoint,
+            "--tls-ca",
+            &ca_path,
+            "set",
+            "tls-key",
+            "--value",
+            r#"{"type":"text","value":"verified"}"#,
+        ])
+    })
+    .await
+    .expect("TLS CLI process completes");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    shutdown.send(()).expect("server awaits shutdown");
+    server.await.expect("server task completes");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_cli_requires_and_accepts_a_client_certificate() {
+    let address = free_address();
+    let database = Database::in_memory();
+    let (shutdown, shutdown_signal) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        database
+            .serve_tcp_with_client_ca(
+                address,
+                Some((
+                    include_bytes!("../../../test-fixtures/kv-mtls/server.crt").to_vec(),
+                    include_bytes!("../../../test-fixtures/kv-mtls/server.key").to_vec(),
+                )),
+                Some(include_bytes!("../../../test-fixtures/kv-mtls/ca.crt").to_vec()),
+                async {
+                    let _ = shutdown_signal.await;
+                },
+            )
+            .await
+            .expect("mTLS server stops cleanly");
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while TcpStream::connect(address).await.is_err() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("mTLS server starts");
+
+    let endpoint = format!("https://{address}");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/kv-mtls");
+    let ca = fixture
+        .join("ca.crt")
+        .into_os_string()
+        .into_string()
+        .expect("CA path UTF-8");
+    let certificate = fixture
+        .join("client.crt")
+        .into_os_string()
+        .into_string()
+        .expect("certificate path UTF-8");
+    let key = fixture
+        .join("client.key")
+        .into_os_string()
+        .into_string()
+        .expect("key path UTF-8");
+    let endpoint_without_identity = endpoint.clone();
+    let ca_without_identity = ca.clone();
+    let rejected = tokio::task::spawn_blocking(move || {
+        run(&[
+            "--endpoint",
+            &endpoint_without_identity,
+            "--tls-ca",
+            &ca_without_identity,
+            "get",
+            "key",
+        ])
+    })
+    .await
+    .expect("unauthorized CLI process completes");
+    assert!(
+        !rejected.status.success(),
+        "client without identity must fail"
+    );
+
+    let accepted = tokio::task::spawn_blocking(move || {
+        run(&[
+            "--endpoint",
+            &endpoint,
+            "--tls-ca",
+            &ca,
+            "--tls-cert",
+            &certificate,
+            "--tls-key",
+            &key,
+            "set",
+            "mtls-key",
+            "--value",
+            r#"{"type":"text","value":"authorized"}"#,
+        ])
+    })
+    .await
+    .expect("authorized CLI process completes");
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+
+    shutdown.send(()).expect("server awaits shutdown");
+    server.await.expect("server task completes");
 }
 
 #[tokio::test(flavor = "multi_thread")]

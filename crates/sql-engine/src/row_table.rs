@@ -21,17 +21,20 @@ pub trait RowTable: KernelTransaction {
         }
     }
 
-    fn scan_entries(&self, table: &str) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send {
+    fn scan_entries<'a>(
+        &'a self,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send + 'a {
         self.scan_bytes(table).map(|entry| {
             let (key, value) = entry?;
             Ok((decode_key(&key)?, decode_value(value)?))
         })
     }
 
-    fn scan_entries_owned(
-        &self,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send {
+    fn scan_entries_owned<'a>(
+        &'a self,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send + 'a {
         stream! {
             let entries = self.scan_bytes(table);
             pin_mut!(entries);

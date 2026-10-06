@@ -15,9 +15,9 @@ use futures::{
 };
 use support::TestCodec;
 use sync::{
-    SessionConfig, SyncChangeId, SyncIncrementalChange, SyncKey, SyncMessage, SyncRole,
-    SyncStateUnit, SyncTransport, apply_sync_state_batch_for, export_sync_state_for,
-    sync_manifest_for, synchronize,
+    MAX_APPLY_BATCH_BYTES, SessionConfig, SyncChangeId, SyncIncrementalChange, SyncKey,
+    SyncMessage, SyncRole, SyncStateUnit, SyncTransport, apply_sync_state_batch_for,
+    export_sync_state_for, sync_manifest_for, synchronize,
 };
 use value::{Row, Value, ValueType};
 
@@ -427,6 +427,30 @@ fn session_payload_limit_rejects_before_catalog_commit() {
 }
 
 #[test]
+fn syncs_four_thousand_rows_with_default_session_budget() {
+    block_on(async {
+        let source = source_with_rows(4_096).await;
+        let destination = destination();
+        let config = SessionConfig::default();
+        let (mut left, mut right) = transport_pair(false);
+        let (sent, received) = futures::join!(
+            synchronize(&source, &mut left, &config, SyncRole::Initiator),
+            synchronize(&destination, &mut right, &config, SyncRole::Responder)
+        );
+
+        sent.expect("large source sync completes");
+        received.expect("large destination sync completes");
+        assert_eq!(
+            destination
+                .table_names()
+                .await
+                .expect("destination catalog"),
+            vec!["people"]
+        );
+    });
+}
+
+#[test]
 fn cumulative_inbound_budget_aborts_multiframe_catalog_before_apply() {
     block_on(async {
         let source = source_with_rows(2048).await;
@@ -505,7 +529,7 @@ fn outbound_payload_limit_aborts_peer_and_preserves_both_catalogs() {
 }
 
 #[test]
-fn dependent_incremental_failure_does_not_commit_catalog_snapshots() {
+fn dependent_incremental_failure_keeps_completed_catalog_batch() {
     block_on(async {
         let source = source().await;
         let destination = destination();
@@ -517,12 +541,98 @@ fn dependent_incremental_failure_does_not_commit_catalog_snapshots() {
             synchronize(&destination, &mut right, &config, SyncRole::Responder)
         );
         assert!(received.is_err(), "unavailable recovery must fail");
-        assert!(
+        assert_eq!(
             destination
                 .table_names()
                 .await
-                .expect("destination catalog")
-                .is_empty()
+                .expect("destination catalog"),
+            vec!["people"]
+        );
+    });
+}
+
+#[test]
+fn failed_data_row_keeps_prior_row_batch_and_rolls_back_failed_row() {
+    block_on(async {
+        let source = source().await;
+        let destination = destination();
+        let source_units = export_sync_state_for(&source).await.expect("source state");
+        let catalog = source_units
+            .into_iter()
+            .filter(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table != "people"))
+            .collect();
+        apply_sync_state_batch_for(&destination, catalog)
+            .await
+            .expect("apply catalog first");
+
+        let earlier = RowIdentity::User([1; 16]);
+        let failing = RowIdentity::User([2; 16]);
+        let batch = vec![
+            SyncStateUnit::new(
+                SyncKey::Row {
+                    table: String::from("people"),
+                    row: earlier.clone(),
+                },
+                postcard::to_allocvec(&Row::new(vec![Value::from("committed")]))
+                    .expect("encode earlier row"),
+                Vec::new(),
+            ),
+            SyncStateUnit::new(
+                SyncKey::Row {
+                    table: String::from("people"),
+                    row: failing.clone(),
+                },
+                vec![0xff],
+                Vec::new(),
+            ),
+        ];
+
+        assert!(
+            apply_sync_state_batch_for(&destination, batch)
+                .await
+                .is_err()
+        );
+        let applied = export_sync_state_for(&destination)
+            .await
+            .expect("destination state");
+        assert!(applied.iter().any(|unit| matches!(
+            &unit.key,
+            SyncKey::Row { table, row } if table == "people" && row == &earlier
+        )));
+        assert!(!applied.iter().any(|unit| matches!(
+            &unit.key,
+            SyncKey::Row { table, row } if table == "people" && row == &failing
+        )));
+    });
+}
+
+#[test]
+fn oversized_data_row_is_rejected_before_apply() {
+    block_on(async {
+        let engine = source().await;
+        let row = RowIdentity::User([9; 16]);
+        let unit = SyncStateUnit::new(
+            SyncKey::Row {
+                table: String::from("people"),
+                row: row.clone(),
+            },
+            vec![0; MAX_APPLY_BATCH_BYTES + 1],
+            Vec::new(),
+        );
+        let error = apply_sync_state_batch_for(&engine, vec![unit])
+            .await
+            .expect_err("oversized row batch must be rejected");
+        assert!(error.to_string().contains("Sync row batch"));
+        assert!(
+            export_sync_state_for(&engine)
+                .await
+                .expect("export state")
+                .iter()
+                .all(|unit| !matches!(
+                    &unit.key,
+                    SyncKey::Row { table, row: candidate }
+                        if table == "people" && candidate == &row
+                ))
         );
     });
 }

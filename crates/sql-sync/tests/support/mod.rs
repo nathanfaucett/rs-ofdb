@@ -31,11 +31,11 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
             .transpose()
     }
 
-    fn scan_rows(
-        &self,
-        transaction: &T,
-        table: &str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send {
+    fn scan_rows<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a {
         transaction.scan_bytes(table).map(|entry| {
             let (id, value) = entry?;
             Ok((
@@ -148,35 +148,23 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
 }
 
 impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
-    async fn row_ids(
-        &self,
-        transaction: &T,
-        table: &str,
-        max_bytes: usize,
-    ) -> EngineResult<Vec<RowIdentity>> {
-        let mut used_bytes = 0usize;
-        let mut ids = Vec::new();
+    fn row_ids<'a>(
+        &'a self,
+        transaction: &'a T,
+        table: &'a str,
+    ) -> impl futures::Stream<Item = EngineResult<RowIdentity>> + Send + 'a {
         let entries = transaction.scan_bytes(table);
-        futures::pin_mut!(entries);
-        while let Some(entry) = entries.next().await {
-            let (id, _) = match entry {
-                Ok(entry) => entry,
-                Err(EngineError::Custom(message)) if message == "Table not found" => {
-                    return Ok(ids);
-                }
-                Err(error) => return Err(error),
-            };
-            let row =
-                RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity"))?;
-            used_bytes = used_bytes
-                .saturating_add(row.to_bytes().len())
-                .saturating_add(128);
-            if used_bytes > max_bytes {
-                return Err(EngineError::custom("sync row identities exceed budget"));
+        futures::stream::unfold(Box::pin(entries), |mut entries| async move {
+            match entries.as_mut().next().await {
+                None => None,
+                Some(Err(EngineError::Custom(message))) if message == "Table not found" => None,
+                Some(Err(error)) => Some((Err(error), entries)),
+                Some(Ok((id, _))) => Some((
+                    RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity")),
+                    entries,
+                )),
             }
-            ids.push(row);
-        }
-        Ok(ids)
+        })
     }
 
     async fn export_state(
