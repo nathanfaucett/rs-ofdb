@@ -1,0 +1,26 @@
+[package]
+name = "storage-sync-consumer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+path = "consumer.rs"
+
+[dependencies]
+# Public facades
+ofdb-kv = { version = "0.1", path = "../../crates/kv", default-features = false, features = ["redb", "in-memory", "sync"] }
+ofdb-sql = { version = "0.1", path = "../../crates/sql", default-features = false, features = ["redb", "in-memory", "sql", "native-stage"] }
+
+# Test runtime
+[dev-dependencies]
+tempfile = { version = "3.27", default-features = false, features = [] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "rt", "sync"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

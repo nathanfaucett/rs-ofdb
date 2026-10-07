@@ -50,14 +50,14 @@ impl SyncTransport for Transport {
     async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
         let mut message: SyncMessage = postcard::from_bytes(&frame).expect("decode frame");
         let mut frame = frame;
-        if self.omit_recoverable_row {
-            if let SyncMessage::State(units) = &mut message {
-                let before = units.len();
-                units.retain(|unit| !matches!(&unit.key, SyncKey::Row { table, row } if table == "people" && *row == row_uuid(7)));
-                if before != units.len() {
-                    self.omit_recoverable_row = false;
-                    frame = postcard::to_allocvec(&message).expect("omit initial snapshot");
-                }
+        if self.omit_recoverable_row
+            && let SyncMessage::State(units) = &mut message
+        {
+            let before = units.len();
+            units.retain(|unit| !matches!(&unit.key, SyncKey::Row { table, row } if table == "people" && *row == row_uuid(7)));
+            if before != units.len() {
+                self.omit_recoverable_row = false;
+                frame = postcard::to_allocvec(&message).expect("omit initial snapshot");
             }
         }
         if self.reverse_states && matches!(message, SyncMessage::State(_)) {
@@ -632,7 +632,12 @@ fn checks_retries_and_recovery_before_each_operation_in_both_roles() {
                 let (mut left, mut right) = transport_pair(false);
                 left.inject_change = true;
                 left.omit_recoverable_row = true;
+                #[cfg(not(feature = "native-stage"))]
                 let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+                #[cfg(feature = "native-stage")]
+                let directory = tempfile::tempdir().expect("native recovery directory");
+                #[cfg(feature = "native-stage")]
+                let factory = sync::FileSyncStageFactory::new(directory.path());
                 let mut calls = 0;
                 let check = || {
                     calls += 1;
@@ -654,6 +659,13 @@ fn checks_retries_and_recovery_before_each_operation_in_both_roles() {
                     )
                 );
                 assert_eq!(calls, (allowed + 1).min(6));
+                #[cfg(feature = "native-stage")]
+                assert_eq!(
+                    std::fs::read_dir(directory.path())
+                        .expect("cleanup")
+                        .count(),
+                    0
+                );
                 let state = export_sync_state_for(&target)
                     .await
                     .expect("partial progress");

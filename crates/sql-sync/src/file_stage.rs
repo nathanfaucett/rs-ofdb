@@ -111,10 +111,10 @@ impl SyncStage for FileSyncStage {
 }
 impl Drop for FileSyncStage {
     fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
-            if let Err(error) = file.close() {
-                std::eprintln!("ofdb sync stage cleanup failed: {error}");
-            }
+        if let Some(file) = self.file.take()
+            && let Err(error) = file.close()
+        {
+            std::eprintln!("ofdb sync stage cleanup failed: {error}");
         }
     }
 }

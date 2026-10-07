@@ -1588,8 +1588,7 @@ where
                                     if catalog_order(table) != (stage_index % 4) as u8 {
                                         return Err(EngineError::custom(
                                             "Staged catalog state has an invalid apply order",
-                                        )
-                                        .into());
+                                        ));
                                     }
                                     merge_snapshot(codec, transaction, &unit).await?;
                                     mutations.record_table(table);
@@ -1600,8 +1599,7 @@ where
                                     if catalog_order(&change.table) != (stage_index % 4) as u8 {
                                         return Err(EngineError::custom(
                                             "Staged catalog change has an invalid apply order",
-                                        )
-                                        .into());
+                                        ));
                                     }
                                     merge_change(codec, transaction, &change).await?;
                                     mutations.record_table(&change.table);
@@ -1610,8 +1608,7 @@ where
                             _ => {
                                 return Err(EngineError::custom(
                                     "Unexpected message in catalog stage",
-                                )
-                                .into());
+                                ));
                             }
                         }
                     }
