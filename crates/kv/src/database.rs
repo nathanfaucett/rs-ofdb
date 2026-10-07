@@ -271,8 +271,9 @@ impl Database {
         }
     }
 
-    /// Unchecked sync: caller owns admission. Use `synchronize_checked` for decisions
-    /// that can change between incoming batches.
+    /// Checks caller authorization/cancellation before each incoming snapshot batch.
+    /// Earlier commits remain on denial. Abort delivery does not wait for the peer;
+    /// discard the transport after failure.
     #[cfg(feature = "sync")]
     pub async fn synchronize_checked<T, Q, U>(
         &self,

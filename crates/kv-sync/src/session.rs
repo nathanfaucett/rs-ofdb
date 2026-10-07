@@ -1,3 +1,9 @@
+use core::{
+    future::Future,
+    pin::pin,
+    task::{Context, Waker},
+};
+
 use btree::{BTree, BTreeResult};
 use kv::KvStore;
 
@@ -25,6 +31,7 @@ where
 
 /// Checks caller authorization/cancellation before each complete snapshot batch.
 /// Earlier commits remain on failure; the denied batch never opens a transaction.
+/// Abort delivery is attempted once without waiting. Discard the transport after failure.
 pub async fn synchronize_checked<B, T, Q, U>(
     store: &KvStore<B>,
     transport: &mut T,
@@ -97,7 +104,10 @@ where
         match receive(transport, config).await? {
             Message::Snapshots(snapshots) => {
                 if let Err(reason) = check().await {
-                    let _ = send(transport, Message::Abort, config).await;
+                    let mut notification = pin!(send(transport, Message::Abort, config));
+                    let _ = notification
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()));
                     return Err(Error::PreApply(reason));
                 }
                 import_batch(store, snapshots)

@@ -1,5 +1,14 @@
 #![cfg(all(feature = "sync", feature = "in-memory"))]
 
+use core::{
+    future::{Future, poll_fn},
+    task::Poll,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 use ofdb_kv::{Database, SyncConfig, SyncRole, SyncTransport, Value};
 use tokio::sync::mpsc;
 
@@ -16,6 +25,113 @@ impl SyncTransport for Channel {
         self.sender.send(frame).map_err(|_| ())
     }
 }
+struct PendingAbort {
+    inner: Channel,
+    denied: Arc<AtomicBool>,
+    polls: Arc<AtomicUsize>,
+}
+impl SyncTransport for PendingAbort {
+    type Error = ();
+    async fn receive(&mut self) -> Result<Vec<u8>, ()> {
+        self.inner.receive().await
+    }
+    async fn send(&mut self, frame: Vec<u8>) -> Result<(), ()> {
+        if self.denied.load(Ordering::SeqCst) {
+            return poll_fn(|_| {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                Poll::Pending
+            })
+            .await;
+        }
+        self.inner.send(frame).await
+    }
+}
+
+#[tokio::test]
+async fn pending_abort_does_not_block_local_denial_or_cancellation() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        for stop_at in [1, 2] {
+            for reason in ["denied", "canceled"] {
+                let source = Database::in_memory();
+                let target = Database::in_memory();
+                for (key, value) in [("a", 1), ("b", 2)] {
+                    source
+                        .client()
+                        .set(key, Value::Integer(value), None)
+                        .await
+                        .expect("source write");
+                }
+                let denied = Arc::new(AtomicBool::new(false));
+                let polls = Arc::new(AtomicUsize::new(0));
+                let (mut st, tt) = channels();
+                let mut tt = PendingAbort {
+                    inner: tt,
+                    denied: denied.clone(),
+                    polls: polls.clone(),
+                };
+                let mut calls = 0;
+                let check = || {
+                    calls += 1;
+                    let stop = calls == stop_at;
+                    denied.store(stop, Ordering::SeqCst);
+                    core::future::ready(if stop {
+                        Err(reason.to_string())
+                    } else {
+                        Ok(())
+                    })
+                };
+                let config = SyncConfig {
+                    max_snapshots_per_batch: 1,
+                    ..SyncConfig::default()
+                };
+                let source_role = if role == SyncRole::Initiator {
+                    SyncRole::Responder
+                } else {
+                    SyncRole::Initiator
+                };
+                let mut sender = Box::pin(source.synchronize(&mut st, source_role, config));
+                let mut receiver =
+                    Box::pin(target.synchronize_checked(&mut tt, role, config, check));
+                let result = poll_fn(|cx| {
+                    assert!(sender.as_mut().poll(cx).is_pending());
+                    match receiver.as_mut().poll(cx) {
+                        Poll::Ready(result) => Poll::Ready(result),
+                        Poll::Pending => {
+                            assert_eq!(
+                                polls.load(Ordering::SeqCst),
+                                0,
+                                "local failure must not await Abort send"
+                            );
+                            Poll::Pending
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    matches!(result, Err(ofdb_kv::SyncError::PreApply(detail)) if detail == reason)
+                );
+                assert_eq!(polls.load(Ordering::SeqCst), 1);
+                drop(receiver);
+                drop(sender);
+                assert_eq!(calls, stop_at);
+                assert_eq!(
+                    target.client().scan_all().await.expect("prior progress"),
+                    if stop_at == 1 {
+                        vec![]
+                    } else {
+                        vec![("a".into(), Value::Integer(1))]
+                    }
+                );
+                exchange(&source, &target).await;
+                assert_eq!(
+                    source.export_snapshots().await.expect("source"),
+                    target.export_snapshots().await.expect("retry")
+                );
+            }
+        }
+    }
+}
+
 fn channels() -> (Channel, Channel) {
     let (a, ar) = mpsc::unbounded_channel();
     let (b, br) = mpsc::unbounded_channel();
