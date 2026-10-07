@@ -259,6 +259,8 @@ impl Database {
     }
 
     /// Imports all snapshots atomically. A failed import commits no changes.
+    /// Caller must authorize this direct atomic apply; production received operations
+    /// should use `synchronize_checked` for per-batch authorization/cancellation.
     #[cfg(feature = "sync")]
     pub async fn import_snapshots(&self, snapshots: Vec<crate::KvSnapshot>) -> Result<(), Error> {
         match &self.storage {
@@ -269,6 +271,34 @@ impl Database {
         }
     }
 
+    /// Unchecked sync: caller owns admission. Use `synchronize_checked` for decisions
+    /// that can change between incoming batches.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        role: crate::SyncRole,
+        config: crate::SyncConfig,
+        check: Q,
+    ) -> Result<(), crate::SyncError<T::Error>>
+    where
+        T: crate::SyncTransport,
+        Q: FnMut() -> U,
+        U: core::future::Future<Output = Result<(), String>>,
+    {
+        match &self.storage {
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(store) => {
+                kv_sync::synchronize_checked(store, transport, role, config, check).await
+            }
+            #[cfg(feature = "redb")]
+            Storage::Redb(store) => {
+                kv_sync::synchronize_checked(store, transport, role, config, check).await
+            }
+        }
+    }
+
+    /// Unchecked sync: caller owns admission; prefer `synchronize_checked`.
     #[cfg(feature = "sync")]
     pub async fn synchronize<T: kv_sync::SyncTransport>(
         &self,

@@ -17,6 +17,27 @@ where
     B: BTree<Vec<u8>, Vec<u8>>,
     T: SyncTransport,
 {
+    synchronize_checked(store, transport, role, config, || {
+        core::future::ready(Ok(()))
+    })
+    .await
+}
+
+/// Checks caller authorization/cancellation before each complete snapshot batch.
+/// Earlier commits remain on failure; the denied batch never opens a transaction.
+pub async fn synchronize_checked<B, T, Q, U>(
+    store: &KvStore<B>,
+    transport: &mut T,
+    role: SyncRole,
+    config: Config,
+    mut check: Q,
+) -> Result<(), Error<T::Error>>
+where
+    B: BTree<Vec<u8>, Vec<u8>>,
+    T: SyncTransport,
+    Q: FnMut() -> U,
+    U: core::future::Future<Output = Result<(), String>>,
+{
     match role {
         SyncRole::Initiator => {
             send(transport, Message::Hello { version: VERSION }, config).await?;
@@ -27,14 +48,14 @@ where
                 config,
             )
             .await?;
-            receive_snapshots(store, transport, config).await?;
+            receive_snapshots(store, transport, config, &mut check).await?;
             send(transport, Message::Finished, config).await?;
             expect_finished(receive(transport, config).await?)?;
         }
         SyncRole::Responder => {
             expect_hello(receive(transport, config).await?)?;
             send(transport, Message::Hello { version: VERSION }, config).await?;
-            receive_snapshots(store, transport, config).await?;
+            receive_snapshots(store, transport, config, &mut check).await?;
             send_snapshots(
                 transport,
                 export(store).await.map_err(storage_error)?,
@@ -60,20 +81,29 @@ async fn export<B: BTree<Vec<u8>, Vec<u8>>>(store: &KvStore<B>) -> BTreeResult<V
     Ok(snapshots)
 }
 
-async fn receive_snapshots<B, T>(
+async fn receive_snapshots<B, T, Q, U>(
     store: &KvStore<B>,
     transport: &mut T,
     config: Config,
+    check: &mut Q,
 ) -> Result<(), Error<T::Error>>
 where
     B: BTree<Vec<u8>, Vec<u8>>,
     T: SyncTransport,
+    Q: FnMut() -> U,
+    U: core::future::Future<Output = Result<(), String>>,
 {
     loop {
         match receive(transport, config).await? {
-            Message::Snapshots(snapshots) => import_batch(store, snapshots)
-                .await
-                .map_err(storage_error)?,
+            Message::Snapshots(snapshots) => {
+                if let Err(reason) = check().await {
+                    let _ = send(transport, Message::Abort, config).await;
+                    return Err(Error::PreApply(reason));
+                }
+                import_batch(store, snapshots)
+                    .await
+                    .map_err(storage_error)?;
+            }
             Message::End => return Ok(()),
             _ => return Err(Error::UnexpectedMessage),
         }

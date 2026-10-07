@@ -40,6 +40,8 @@ impl Default for Config {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error<E> {
+    /// Caller authorization/cancellation check failed before the batch began.
+    PreApply(String),
     Transport(E),
     Codec(String),
     InvalidFrame,

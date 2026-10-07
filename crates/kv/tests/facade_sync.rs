@@ -40,6 +40,164 @@ async fn exchange(left: &Database, right: &Database) {
     b.expect("responder");
 }
 #[tokio::test]
+async fn checks_buffered_batches_in_both_roles_and_retry_converges() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        for allowed in [0, 1, 3] {
+            let source = Database::in_memory();
+            let target = Database::in_memory();
+            for (key, value) in [("a", 1), ("b", 2), ("c", 3)] {
+                source
+                    .client()
+                    .set(key, Value::Integer(value), None)
+                    .await
+                    .expect("offline write");
+            }
+            let config = SyncConfig {
+                max_snapshots_per_batch: 1,
+                ..SyncConfig::default()
+            };
+            let (mut st, mut tt) = channels();
+            let mut calls = 0;
+            let mut check = || {
+                calls += 1;
+                core::future::ready(if calls <= allowed {
+                    Ok(())
+                } else {
+                    Err("caller denied/canceled".to_string())
+                })
+            };
+            let source_role = if role == SyncRole::Initiator {
+                SyncRole::Responder
+            } else {
+                SyncRole::Initiator
+            };
+            let (_, result) = tokio::join!(
+                source.synchronize(&mut st, source_role, config),
+                target.synchronize_checked(&mut tt, role, config, &mut check)
+            );
+            assert_eq!(calls, (allowed + 1).min(3));
+            if allowed == 3 {
+                result.expect("allow");
+            } else {
+                assert!(matches!(result, Err(ofdb_kv::SyncError::PreApply(_))));
+            }
+            let visible = target.client().scan_all().await.expect("partial state");
+            assert_eq!(visible.len(), allowed);
+            if allowed == 1 {
+                assert_eq!(visible, vec![("a".into(), Value::Integer(1))]);
+            }
+            exchange(&source, &target).await;
+            assert_eq!(
+                source.export_snapshots().await.expect("source"),
+                target.export_snapshots().await.expect("converged retry")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn decision_changes_after_authorization_and_cancellation_preserve_atomic_batches() {
+    for cancel in [false, true] {
+        let source = Database::in_memory();
+        let target = Database::in_memory();
+        source
+            .client()
+            .set("a", Value::Integer(1), None)
+            .await
+            .expect("first");
+        source
+            .client()
+            .set("b", Value::Integer(2), None)
+            .await
+            .expect("second");
+        let config = SyncConfig {
+            max_snapshots_per_batch: 1,
+            ..SyncConfig::default()
+        };
+        let (mut st, mut tt) = channels();
+        let mut allowed = true;
+        let mut calls = 0;
+        let (ready, waiting) = tokio::sync::oneshot::channel();
+        let mut ready = Some(ready);
+        let check = || {
+            calls += 1;
+            if calls == 2 {
+                ready.take().expect("signal once").send(()).expect("waiter");
+            }
+            let decision = allowed;
+            allowed = false;
+            async move {
+                if decision {
+                    Ok(())
+                } else if cancel {
+                    core::future::pending().await
+                } else {
+                    Err("changed after authorization".into())
+                }
+            }
+        };
+        let mut future = Box::pin(async {
+            tokio::join!(
+                source.synchronize(&mut st, SyncRole::Initiator, config),
+                target.synchronize_checked(&mut tt, SyncRole::Responder, config, check)
+            )
+        });
+        if cancel {
+            tokio::select! {
+                _ = &mut future => panic!("canceled hook must remain pending"),
+                result = waiting => result.expect("second check reached"),
+            }
+        } else {
+            assert!(matches!(
+                future.as_mut().await.1,
+                Err(ofdb_kv::SyncError::PreApply(_))
+            ));
+        }
+        drop(future);
+        assert_eq!(calls, 2);
+        assert_eq!(
+            target.client().scan_all().await.expect("prior commit"),
+            vec![("a".into(), Value::Integer(1))]
+        );
+        exchange(&source, &target).await;
+        assert_eq!(
+            target.client().scan_all().await.expect("retry"),
+            vec![
+                ("a".into(), Value::Integer(1)),
+                ("b".into(), Value::Integer(2))
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_snapshot_rolls_back_the_entire_direct_atomic_import() {
+    let source = Database::in_memory();
+    let target = Database::in_memory();
+    source
+        .client()
+        .set("a", Value::Integer(1), None)
+        .await
+        .expect("first");
+    source
+        .client()
+        .set("b", Value::Integer(2), None)
+        .await
+        .expect("second");
+    let mut snapshots = source.export_snapshots().await.expect("snapshots");
+    snapshots[1].payload = vec![255];
+    assert!(target.import_snapshots(snapshots).await.is_err());
+    assert!(
+        target
+            .client()
+            .scan_all()
+            .await
+            .expect("rollback")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn facade_only_offline_sync_preserves_generations_tombstones_and_expiry() {
     let left = Database::in_memory();
     let right = Database::in_memory();
