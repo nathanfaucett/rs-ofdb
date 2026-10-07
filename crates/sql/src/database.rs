@@ -17,7 +17,7 @@ use sync::{
     SyncTransport, apply_sync_state_for, export_sync_state_for, sync_manifest_for,
     synchronize as synchronize_engine, synchronize_with_stage_factory as synchronize_staged_engine,
 };
-use value::FromRow;
+use value::{FromRow, Row, Value};
 
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use engine_automerge::AutomergeRowCodec;
@@ -46,6 +46,40 @@ pub(crate) enum EmbeddedTransaction {
 }
 
 impl EmbeddedTransaction {
+    pub(crate) async fn row_conflicts(&self, table: &str, key: &Row) -> SqlResult<Vec<String>> {
+        match self {
+            #[cfg(feature = "redb")]
+            Self::File(transaction) => transaction
+                .row_conflicts(table, key)
+                .await
+                .map_err(crate::error::from_engine),
+            #[cfg(feature = "in-memory")]
+            Self::InMemory(transaction) => transaction
+                .row_conflicts(table, key)
+                .await
+                .map_err(crate::error::from_engine),
+        }
+    }
+
+    pub(crate) async fn row_conflict_values(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> SqlResult<Vec<(String, Vec<Value>)>> {
+        match self {
+            #[cfg(feature = "redb")]
+            Self::File(transaction) => transaction
+                .row_conflict_values(table, key)
+                .await
+                .map_err(crate::error::from_engine),
+            #[cfg(feature = "in-memory")]
+            Self::InMemory(transaction) => transaction
+                .row_conflict_values(table, key)
+                .await
+                .map_err(crate::error::from_engine),
+        }
+    }
+
     pub(crate) async fn execute(
         &mut self,
         statements: Vec<Statement>,
@@ -151,6 +185,31 @@ impl Database {
                 .map(EmbeddedTransaction::InMemory)
                 .map_err(crate::error::from_engine),
         }
+    }
+
+    pub(crate) async fn query_row_conflicts(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> SqlResult<Vec<String>> {
+        database_call!(self, |engine| engine.row_conflicts(table, key).await)
+    }
+
+    pub(crate) async fn query_row_conflict_values(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> SqlResult<Vec<(String, Vec<Value>)>> {
+        database_call!(self, |engine| engine.row_conflict_values(table, key).await)
+    }
+
+    pub(crate) async fn query_resolve_row(
+        &self,
+        table: &str,
+        key: &Row,
+        values: Vec<(String, Value)>,
+    ) -> SqlResult<()> {
+        database_call!(self, |engine| engine.resolve_row(table, key, values).await)
     }
 
     pub(crate) async fn query_execute_untimed(

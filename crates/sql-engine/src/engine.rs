@@ -125,6 +125,32 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + Send + Sync,
 {
+    pub async fn row_conflicts(&self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
+        if self.failed {
+            return Err(EngineError::InvalidQuery("Transaction is aborted"));
+        }
+        let transaction = self
+            .transaction
+            .as_ref()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
+        conflicted_row_columns(transaction, self.engine.reconciler.as_ref(), table, key).await
+    }
+
+    pub async fn row_conflict_values(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> EngineResult<Vec<(String, Vec<Value>)>> {
+        if self.failed {
+            return Err(EngineError::InvalidQuery("Transaction is aborted"));
+        }
+        let transaction = self
+            .transaction
+            .as_ref()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
+        conflicted_row_values(transaction, self.engine.reconciler.as_ref(), table, key).await
+    }
+
     pub async fn execute(&mut self, statements: Vec<Statement>) -> EngineResult<Vec<QueryResult>> {
         if self.failed {
             return Err(EngineError::InvalidQuery("Transaction is aborted"));

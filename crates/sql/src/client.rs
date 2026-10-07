@@ -4,7 +4,7 @@ use std::{fmt, time::Duration, vec::Vec};
 #[cfg(feature = "remote")]
 use client::Client as SqlClient;
 use query::{QueryError, QueryErrorKind, QueryParams, QueryResult, Statement, Translator};
-use value::FromRow;
+use value::{FromRow, Row, Value};
 
 /// A query client for embedded or remote databases.
 ///
@@ -82,6 +82,52 @@ enum TransactionBackend {
 }
 
 impl Transaction {
+    /// Inspects conflicts in this embedded transaction's snapshot, including local writes.
+    /// Aborted transactions fail; remote conflict operations are unsupported.
+    pub async fn row_conflicts(&self, table: &str, key: &Row) -> Result<Vec<String>, QueryError> {
+        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+        let _ = (table, key);
+        Self::run(self.request_deadline, async {
+            match &self.backend {
+                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                TransactionBackend::Embedded(transaction) => {
+                    transaction.row_conflicts(table, key).await
+                }
+                #[cfg(feature = "remote")]
+                TransactionBackend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "remote conflict inspection is unsupported",
+                )),
+            }
+        })
+        .await
+    }
+
+    /// Returns concurrent values from this embedded transaction's snapshot.
+    /// Aborted transactions fail; remote conflict operations are unsupported.
+    pub async fn row_conflict_values(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> Result<Vec<(String, Vec<Value>)>, QueryError> {
+        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+        let _ = (table, key);
+        Self::run(self.request_deadline, async {
+            match &self.backend {
+                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                TransactionBackend::Embedded(transaction) => {
+                    transaction.row_conflict_values(table, key).await
+                }
+                #[cfg(feature = "remote")]
+                TransactionBackend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "remote conflict inspection is unsupported",
+                )),
+            }
+        })
+        .await
+    }
+
     async fn run<F, T>(deadline: Option<Duration>, operation: F) -> Result<T, QueryError>
     where
         F: Future<Output = Result<T, QueryError>>,
@@ -197,6 +243,76 @@ impl Transaction {
 }
 
 impl Client {
+    /// Returns conflicted column names from one embedded read snapshot.
+    /// An empty result means no conflicts, not that the row exists or is authorized.
+    /// Remote conflict operations are unsupported.
+    pub async fn row_conflicts(&self, table: &str, key: &Row) -> Result<Vec<String>, QueryError> {
+        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+        let _ = (table, key);
+        self.run(async {
+            match &self.backend {
+                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                Backend::Embedded(database) => database.query_row_conflicts(table, key).await,
+                #[cfg(feature = "remote")]
+                Backend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "remote conflict inspection is unsupported",
+                )),
+            }
+        })
+        .await
+    }
+
+    /// Returns all concurrent values for each conflicted column, not just its projection.
+    /// Caller-owned security policy decides whether a conflict permits an operation.
+    /// Remote conflict operations are unsupported.
+    pub async fn row_conflict_values(
+        &self,
+        table: &str,
+        key: &Row,
+    ) -> Result<Vec<(String, Vec<Value>)>, QueryError> {
+        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+        let _ = (table, key);
+        self.run(async {
+            match &self.backend {
+                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                Backend::Embedded(database) => database.query_row_conflict_values(table, key).await,
+                #[cfg(feature = "remote")]
+                Backend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "remote conflict inspection is unsupported",
+                )),
+            }
+        })
+        .await
+    }
+
+    /// Resolves only the specified conflicted columns in one atomic operation.
+    /// Invalid assignments roll back the operation; other conflicts remain intact.
+    /// Caller must authorize resolution and enforce lifecycle/audit policy.
+    /// Remote conflict operations are unsupported.
+    pub async fn resolve_row(
+        &self,
+        table: &str,
+        key: &Row,
+        values: Vec<(String, Value)>,
+    ) -> Result<(), QueryError> {
+        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+        let _ = (table, key, &values);
+        self.run(async {
+            match &self.backend {
+                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                Backend::Embedded(database) => database.query_resolve_row(table, key, values).await,
+                #[cfg(feature = "remote")]
+                Backend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "remote conflict resolution is unsupported",
+                )),
+            }
+        })
+        .await
+    }
+
     pub async fn transaction(&self) -> Result<Transaction, QueryError> {
         self.run(async {
             let backend = match &self.backend {
