@@ -124,6 +124,104 @@ async fn diverge(left: &Database, right: &Database) {
     exchange(left, right).await;
 }
 
+#[cfg(all(feature = "redb", feature = "in-memory"))]
+#[tokio::test]
+async fn sequential_concurrent_updates_and_partial_resolution_sync_after_reopen() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("left.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::in_memory();
+    left.client().execute_sql("CREATE TABLE security (id UUID PRIMARY KEY, admin_allowed BOOLEAN, owner_subject TEXT)", None).await.expect("schema");
+    left.client()
+        .execute_sql(
+            &format!("INSERT INTO security VALUES (CAST('{ID}' AS UUID), true, 'original')"),
+            None,
+        )
+        .await
+        .expect("baseline");
+    exchange(&left, &right).await;
+    left.client()
+        .execute_sql(
+            "UPDATE security SET admin_allowed = false, owner_subject = 'alice'",
+            None,
+        )
+        .await
+        .expect("left offline");
+    right
+        .client()
+        .execute_sql("UPDATE security SET admin_allowed = false", None)
+        .await
+        .expect("right first update");
+    right
+        .client()
+        .execute_sql(
+            "UPDATE security SET admin_allowed = true, owner_subject = 'bob'",
+            None,
+        )
+        .await
+        .expect("right second update");
+    exchange(&left, &right).await;
+    let row = key();
+    let values = left
+        .client()
+        .row_conflict_values("security", &row)
+        .await
+        .expect("all concurrent values");
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].0, "admin_allowed");
+    assert!(values[0].1.contains(&Value::Bool(false)));
+    assert!(values[0].1.contains(&Value::Bool(true)));
+    assert!(values[1].1.contains(&Value::Text("alice".into())));
+    assert!(values[1].1.contains(&Value::Text("bob".into())));
+    left.client()
+        .resolve_row(
+            "security",
+            &row,
+            vec![("admin_allowed".into(), Value::Bool(false))],
+        )
+        .await
+        .expect("partial explicit resolution");
+    drop(left);
+    let left = Database::open(&path).expect("reopen partial resolution");
+    exchange(&left, &right).await;
+    for database in [&left, &right] {
+        assert_eq!(
+            database
+                .client()
+                .row_conflicts("security", &row)
+                .await
+                .expect("ownership remains ambiguous"),
+            vec!["owner_subject"]
+        );
+        assert_eq!(
+            database
+                .client()
+                .execute_sql("SELECT admin_allowed FROM security", None)
+                .await
+                .expect("resolved projection")[0]
+                .rows,
+            vec![Row::new(vec![Value::Bool(false)])]
+        );
+    }
+    assert_eq!(
+        left.export_sync_state().await.expect("left state"),
+        right.export_sync_state().await.expect("right state")
+    );
+    drop(left);
+    let left = Database::open(&path).expect("reopen converged history");
+    assert_eq!(
+        left.client()
+            .row_conflict_values("security", &row)
+            .await
+            .expect("durable unresolved ownership"),
+        right
+            .client()
+            .row_conflict_values("security", &row)
+            .await
+            .expect("peer ownership")
+    );
+}
+
 #[cfg(feature = "redb")]
 #[tokio::test]
 async fn transaction_conflict_checks_use_local_snapshot_and_reject_aborted_state() {
@@ -452,16 +550,7 @@ async fn native_conflicts_and_explicit_resolution_survive_reopen_and_converge() 
             Value::Text("alice".into())
         ])]
     );
-    for unit in left
-        .export_sync_state()
-        .await
-        .expect("trusted resolved state")
-    {
-        right
-            .apply_sync_state(unit)
-            .await
-            .expect("merge resolved state");
-    }
+    exchange(&left, &right).await;
     assert!(
         right
             .client()

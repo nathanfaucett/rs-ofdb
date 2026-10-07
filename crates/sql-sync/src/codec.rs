@@ -44,6 +44,7 @@ where
         row: Uuid,
         metadata: &[u8],
     ) -> impl Future<Output = EngineResult<()>> + Send;
+    /// Returns unique change IDs in dependency order, not ID sort order.
     fn change_inventory(
         &self,
         transaction: &T,

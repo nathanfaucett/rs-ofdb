@@ -1252,6 +1252,93 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
 }
 
 #[test]
+fn sequential_updates_export_only_the_identified_change() {
+    let source_path = database_path();
+    let destination_path = database_path();
+    block_on(async {
+        let source = replica(&source_path);
+        let destination = replica(&destination_path);
+        source.create_table(people_schema()).await.expect("schema");
+        source
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "people".into(),
+                row: Row::new(vec![
+                    uuid_value(1),
+                    Value::from("Ada"),
+                    Value::from("London"),
+                ]),
+                returning: None,
+            }))])
+            .await
+            .expect("baseline row");
+        sync(&source, &destination).await.expect("bootstrap");
+        update(&source, "city", Value::from("Paris")).await;
+        update(&source, "name", Value::from("Grace")).await;
+        let inventory = source
+            .read_transaction(|codec, transaction| {
+                Box::pin(codec.change_inventory(transaction, "people", row_uuid(1), usize::MAX))
+            })
+            .await
+            .expect("inventory");
+        assert_eq!(inventory.len(), 2);
+        let mut changes = Vec::new();
+        for id in inventory {
+            let export_id = id.clone();
+            let payload = source
+                .read_transaction(move |codec, transaction| {
+                    Box::pin(async move {
+                        codec
+                            .export_change(
+                                transaction,
+                                "people",
+                                row_uuid(1),
+                                &export_id,
+                                usize::MAX,
+                            )
+                            .await
+                    })
+                })
+                .await
+                .expect("export")
+                .expect("identified payload");
+            let change = automerge::Change::from_bytes(payload.clone())
+                .expect("one change, not overlapping history");
+            assert_eq!(change.hash().0.as_slice(), id.0.as_slice());
+            changes.push(SyncIncrementalChange {
+                table: "people".into(),
+                row: row_uuid(1),
+                id,
+                payload,
+            });
+        }
+        let before = sync_manifest_for(&destination).await.expect("before");
+        let mut forged = changes.clone();
+        forged[1].payload = changes[0].payload.clone();
+        assert!(
+            apply_incremental_changes_for(&destination, &forged)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            sync_manifest_for(&destination).await.expect("rollback"),
+            before
+        );
+        apply_incremental_changes_for(&destination, &changes)
+            .await
+            .expect("valid batch");
+        apply_incremental_changes_for(&destination, &changes)
+            .await
+            .expect("duplicate batch");
+        assert_eq!(
+            sync_manifest_for(&source).await.expect("source"),
+            sync_manifest_for(&destination).await.expect("destination")
+        );
+    });
+    std::fs::remove_file(source_path).expect("remove source");
+    std::fs::remove_file(destination_path).expect("remove destination");
+}
+
+#[test]
 fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
     let source_path = database_path();
     let destination_path = database_path();

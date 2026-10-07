@@ -1309,12 +1309,12 @@ where
             .cmp(&catalog_order(right_table))
             .then_with(|| left.key.cmp(&right.key))
     });
-    outbound.changes.sort_unstable_by(|left, right| {
+    // Preserve each codec inventory's dependency order within its row.
+    outbound.changes.sort_by(|left, right| {
         catalog_order(&left.table)
             .cmp(&catalog_order(&right.table))
             .then_with(|| left.table.cmp(&right.table))
             .then_with(|| left.row.cmp(&right.row))
-            .then_with(|| left.id.cmp(&right.id))
     });
     Ok(outbound)
 }
@@ -1950,7 +1950,7 @@ where
     let mut current_change_bytes = 0usize;
     let mut current_change_key: Option<(String, Uuid)> = None;
     let mut previous_change_key: Option<(String, Uuid)> = None;
-    let mut previous_change_id = None;
+    let mut current_change_ids = BTreeSet::new();
     loop {
         let (message, message_bytes) = receive_message(transport).await?;
         count.received_bytes = account_message(
@@ -2012,7 +2012,7 @@ where
                                 .map_err(|error| SyncError::Staging(error.to_string()))?;
                             current_change_bytes = 0;
                             previous_change_key = current_change_key.take();
-                            previous_change_id = None;
+                            current_change_ids.clear();
                         }
                         if current_change_key.is_none() {
                             if previous_change_key
@@ -2025,12 +2025,9 @@ where
                             }
                             current_change_key = Some(key);
                         }
-                        if previous_change_id
-                            .as_ref()
-                            .is_some_and(|previous| previous >= &change.id)
-                        {
+                        if !current_change_ids.insert(change.id.clone()) {
                             return Err(SyncError::Protocol(String::from(
-                                "row changes are not ordered by change ID",
+                                "duplicate row change ID",
                             )));
                         }
                         let change_bytes = incremental_change_estimate(&change);
@@ -2041,7 +2038,6 @@ where
                                 max: MAX_APPLY_BATCH_BYTES,
                             });
                         }
-                        previous_change_id = Some(change.id.clone());
                         current_changes.push(change);
                     }
                 }

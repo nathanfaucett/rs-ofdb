@@ -696,8 +696,9 @@ where
                 "Logical row column is conflicted",
             ));
         }
+        let previous_heads = document.get_heads();
         Self::update_document_columns(&mut document, row, &columns, changed_columns)?;
-        Self::encode_incremental(columns.len(), document.save_incremental())
+        Self::encode_incremental(columns.len(), document.save_after(&previous_heads))
     }
 
     async fn conflicted_columns(
@@ -772,8 +773,9 @@ where
             .unwrap_or_else(AutoCommit::new)
             .with_actor(self.actor.clone());
         let columns = Self::columns(transaction, table_name, row.values.len()).await?;
+        let previous_heads = document.get_heads();
         Self::update_document_columns(&mut document, row, &columns, changed_columns)?;
-        Self::encode_incremental(columns.len(), document.save_incremental())
+        Self::encode_incremental(columns.len(), document.save_after(&previous_heads))
     }
 
     async fn merge_row(

@@ -519,6 +519,64 @@ fn synchronizes_concurrent_branches() {
 }
 
 #[test]
+fn incremental_session_preserves_dependency_order_not_hash_order() {
+    block_on(async {
+        let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let translator = SqlTranslator;
+        left.create_table(people_table()).await.expect("schema");
+        left.translate_and_execute(
+            "INSERT INTO people (id, name) VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')",
+            &translator,
+        ).await.expect("baseline");
+        let config = SessionConfig {
+            max_units_per_frame: 1,
+            ..SessionConfig::default()
+        };
+        sync(&left, &right, &config).await;
+        let row = uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("row UUID");
+        let mut inventory = Vec::new();
+        for index in 0..256 {
+            left.translate_and_execute(
+                &format!("UPDATE people SET name = 'name-{index}'"),
+                &translator,
+            )
+            .await
+            .expect("sequential update");
+            inventory = left
+                .read_transaction(|codec, transaction| {
+                    Box::pin(codec.change_inventory(transaction, "people", row, usize::MAX))
+                })
+                .await
+                .expect("causal inventory");
+            if inventory.windows(2).any(|pair| pair[0] > pair[1]) {
+                break;
+            }
+        }
+        assert!(
+            inventory.windows(2).any(|pair| pair[0] > pair[1]),
+            "fixture must contain a hash-order inversion"
+        );
+        let messages = sync(&left, &right, &config).await;
+        let sent = messages
+            .into_iter()
+            .filter_map(|message| match message {
+                SyncMessage::Changes(changes) => Some(changes),
+                _ => None,
+            })
+            .flatten()
+            .filter(|change| change.table == "people" && change.row == row)
+            .map(|change| change.id)
+            .collect::<Vec<_>>();
+        assert_eq!(sent, inventory);
+        assert_eq!(
+            sync_manifest_for(&left).await.expect("left"),
+            sync_manifest_for(&right).await.expect("right")
+        );
+    });
+}
+
+#[test]
 fn duplicate_incremental_frames_are_idempotent() {
     block_on(async {
         let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());

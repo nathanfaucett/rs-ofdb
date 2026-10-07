@@ -60,7 +60,9 @@ Normal graph `cargo tree -p ofdb-sql --no-default-features -e normal --prefix no
 
 ## Failures, limits and broad outcomes
 
-### Observed incremental-session gap (not repaired or claimed passing)
+### Observed incremental-session gap at 07 (superseded by 08)
+
+Follow-up 08 reproduced this owner-baseline failure and the consumer-like pre-resolution failure, repaired overlapping incremental payload production and discarded causal ordering, and restored this facade test's final real incremental exchange. Native/reopen/partial-resolution and dependency-inversion scenarios now pass repeated owner qualification. See [exact root cause, red/green, commands and remaining limits](storage-sync-incremental-identity.md). The following records 07's historical finding, not the current status; no hash validation bypass or whole-state workaround is retained in the regression.
 
 After explicit conflict resolution and native reopen, an initial version of the facade test's final **incremental sync session** failed with `RemoteAbort("Error: Incremental change hash does not match key (data change batch)")`. It reproduced with `RUST_BACKTRACE=1 RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features redb,sync,sql --test conflicts native_conflicts -- --nocapture`; the backtrace points to the final exchange after resolution/reopen, not initial divergence.
 
