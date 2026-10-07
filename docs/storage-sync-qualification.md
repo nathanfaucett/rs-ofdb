@@ -111,3 +111,47 @@ Smaller package-scoped qualification:
 - `RUST_MIN_STACK=16777216 cargo llvm-cov -p ofdb-sql-sync --features native-stage --lcov --output-path target/storage-sync-sql-sync.lcov` followed by `cargo crap -p ofdb-sql-sync --lcov target/storage-sync-sql-sync.lcov --summary`: both commands completed within 300s, coverage tests 9 + 17 + 4 passed. Scoped report: **85 functions, 5 above threshold 30, worst `validate_catalog` CRAP 163.3**. Analyzer warned of a source/LCOV scope mismatch: optional `iroh_transport.rs` had no coverage entry, while trait-only `codec.rs` had no matched analyzed source. This is a scoped risk report, not a threshold-quality pass or substitute for full workspace complexity qualification. No broad complexity refactor was made.
 
 The default-stack limitation remains recorded from the initial run; subsequent SQL tests used the stated 16 MiB stack, not a claimed default-stack pass. Full powerset and full workspace complexity remain ticket 05 gaps. The optional existing Iroh adapter still belongs to the external coordinated extraction; updating an existing in-repo caller does not claim extraction or real domain-auth acceptance.
+
+## Merger P1 correction: local failure must not wait for Abort
+
+The earlier best-effort Abort implementation awaited peer progress. That invalidated the prompt local-failure/stage-release claim: a pending send could retain native stages indefinitely. Tickets 03/04 were reopened and claimed at `a6e5f6a`; this section supersedes that behavior and its earlier acceptance evidence.
+
+Fix commits: KV `f506052dceb1ee0e20f984364de158f912a06a15`; SQL `378f87e285b822e2550ddfcaa89d311ce10d98f0`.
+
+KV now polls the existing Abort send once using core polling; SQL uses the existing futures dependency's `now_or_never()` for all error-path Abort notifications, including catalog/data replay, fallback retry, recovery validation/apply, engine failure and session accounting. Pending notifications are dropped, preserving the primary local error and allowing owned stages to drop before local completion. No timers, tasks, dependencies, policy or wire changes were added. Checked facade documentation now explains the non-waiting Abort attempt; KV no longer incorrectly labels checked sync unchecked.
+
+**Caller obligation:** Abort delivery is not guaranteed. A canceled send may have partially written a frame; discard/close the failed session transport, and retry using a fresh transport. Local completion does not imply the remote peer has observed failure. Existing stage cleanup IO/failure limitations above still apply.
+
+### Deterministic red → green evidence
+
+Each command was bounded at 120s, not by test timers:
+
+- `cargo test -p ofdb-kv --features sync,in-memory --test facade_sync pending_abort`: red assertion `local failure must not await Abort send` (one pending send poll); after the minimal KV fix, 1 test passed.
+- `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features native-stage,in-memory,sql --test facade_sync pending_abort`: same red assertion; after fixing shared replay abort, 1 test passed.
+- `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-sync --features native-stage --test catalog pending_abort`: test-driver assumption first failed because a recovery sender can complete before the receiver; driver was corrected to stop polling completed senders. Then the intended red assertion reproduced awaited recovery Abort. After the recovery/error-notification fix, 1 test passed.
+
+Regressions cover both roles, explicit caller denial and cancellation decisions, first/later KV batches, SQL catalog/data checks and checks 3–6 (grouped changes, fallback retry, recovery validation/data). The SQL tests assert native directories empty **while the completed receiver future is still held**, without closing the peer transport. Denied operations are absent; prior KV batch or SQL catalog/three data rows remain committed. Fresh-transport retry converges. Existing pending-hook/session-drop cancellation tests also reran successfully.
+
+### Post-fix focused qualification
+
+One `&&`-chained run bounded at 300s completed every command below successfully:
+
+| Exact command                                                                                                                      | Result                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `cargo check -p ofdb-sql-sync --no-default-features`                                                                               | Passed                                            |
+| `cargo check -p ofdb-sql-sync --no-default-features --features native-stage`                                                       | Passed                                            |
+| `cargo test -p ofdb-kv --features sync,in-memory,redb --test facade_sync --test embedded_client --test embedded_redb_client`       | 5 facade + 3 memory + 3 Redb passed               |
+| `cargo test -p ofdb-kv-sync --all-targets`                                                                                         | 8 unit + 1 restart passed                         |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features sync,in-memory,sql --test facade_sync`                                  | 2 memory facade passed                            |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features native-stage,in-memory,redb,sql --test facade_sync --test cluster_sync` | 7 native facade + 9 cluster passed                |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-sync --lib --test catalog`                                                         | 9 unit + 18 memory catalog passed                 |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-sync --features native-stage --lib --test catalog --test native_stage`             | 9 unit + 18 native catalog + 4 stage passed       |
+| `RUST_MIN_STACK=16777216 cargo test --manifest-path test-fixtures/storage-sync-consumer/Cargo.toml --offline --target-dir target`  | 1 public-only persisted SQL/KV composition passed |
+| `cargo fmt --all -- --check` and `git diff --check`                                                                                | Passed                                            |
+
+Additional bounded runs:
+
+- `cargo clippy --workspace --all-targets --all-features` (300s): passed, with the same two unchanged KV CLI useless-conversion warnings at `p2p.rs:268/:332`.
+- `cargo check -p ofdb-kv-sync --no-default-features` followed by `RUST_MIN_STACK=16777216 cargo hack test -p ofdb-sql-sync -p ofdb-kv-sync --feature-powerset --all-targets` (300s chain): check passed; all 5 combinations passed (SQL-sync 4, KV-sync 1).
+
+03/04 owner-local acceptance is restored by these regressions and existing focused coverage. Native stage implementation/lifecycle in 02 needed no change; composed failure ownership was fixed in SQL session code. 05 remains incomplete: the earlier full workspace powerset/CRAP timeouts and scoped complexity risks remain gaps, not passes; full powerset/CRAP were not rerun for this P1 fix. The default-stack limitation remains. Integration tip is inspected read-only; no integration merge is performed under the latest instruction. Prior owner commits are preserved, and no other repository or original dirty design/goal document is changed.
