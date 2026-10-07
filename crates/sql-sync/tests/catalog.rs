@@ -35,6 +35,7 @@ struct Transport {
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
     interrupt_after_state: bool,
     inject_change: bool,
+    omit_recoverable_row: bool,
     reverse_states: bool,
     buffered: Vec<Vec<u8>>,
 }
@@ -47,7 +48,18 @@ impl SyncTransport for Transport {
     }
 
     async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
-        let message: SyncMessage = postcard::from_bytes(&frame).expect("decode frame");
+        let mut message: SyncMessage = postcard::from_bytes(&frame).expect("decode frame");
+        let mut frame = frame;
+        if self.omit_recoverable_row {
+            if let SyncMessage::State(units) = &mut message {
+                let before = units.len();
+                units.retain(|unit| !matches!(&unit.key, SyncKey::Row { table, row } if table == "people" && *row == row_uuid(7)));
+                if before != units.len() {
+                    self.omit_recoverable_row = false;
+                    frame = postcard::to_allocvec(&message).expect("omit initial snapshot");
+                }
+            }
+        }
         if self.reverse_states && matches!(message, SyncMessage::State(_)) {
             self.buffered.push(frame);
             return Ok(());
@@ -95,6 +107,7 @@ fn transport_pair(interrupt: bool) -> (Transport, Transport) {
         outgoing,
         interrupt_after_state,
         inject_change: false,
+        omit_recoverable_row: false,
         reverse_states: false,
         buffered: Vec::new(),
     };
@@ -602,6 +615,60 @@ fn outbound_payload_limit_aborts_peer_and_preserves_both_catalogs() {
                 .expect("destination catalog")
                 .is_empty()
         );
+    });
+}
+
+#[test]
+fn checks_retries_and_recovery_before_each_operation_in_both_roles() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for allowed in [3, 4, 5, 6] {
+                let source = source_with_rows(4).await;
+                let target = destination();
+                let config = SessionConfig {
+                    max_units_per_frame: 1,
+                    ..SessionConfig::default()
+                };
+                let (mut left, mut right) = transport_pair(false);
+                left.inject_change = true;
+                left.omit_recoverable_row = true;
+                let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+                let mut calls = 0;
+                let check = || {
+                    calls += 1;
+                    core::future::ready(if calls <= allowed {
+                        Ok(())
+                    } else {
+                        Err("denied retry/recovery".into())
+                    })
+                };
+                let source_role = if role == SyncRole::Initiator {
+                    SyncRole::Responder
+                } else {
+                    SyncRole::Initiator
+                };
+                let (_sent, received) = futures::join!(
+                    synchronize(&source, &mut left, &config, source_role),
+                    sync::synchronize_with_stage_factory_checked(
+                        &target, &mut right, &config, role, &factory, check
+                    )
+                );
+                assert_eq!(calls, (allowed + 1).min(6));
+                let state = export_sync_state_for(&target)
+                    .await
+                    .expect("partial progress");
+                let recovered = state.iter().any(|unit| matches!(&unit.key, SyncKey::Row { table, row } if table == "people" && *row == row_uuid(7)));
+                if allowed == 6 {
+                    received.expect("complete recovery");
+                    assert!(recovered);
+                    assert_eq!(state, export_sync_state_for(&source).await.expect("source"));
+                } else {
+                    assert!(matches!(received, Err(sync::SyncError::PreApply(_))));
+                    assert!(!recovered, "denied recovery row cannot be visible");
+                    assert_eq!(target.table_names().await.expect("catalog"), vec!["people"]);
+                }
+            }
+        }
     });
 }
 

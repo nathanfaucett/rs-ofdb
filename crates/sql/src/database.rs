@@ -295,6 +295,8 @@ impl Database {
         }
     }
 
+    /// Unchecked sync. Caller owns admission; use `synchronize_checked` for per-apply
+    /// authorization/cancellation that can change during the session.
     #[cfg(feature = "sync")]
     pub async fn synchronize<T>(
         &self,
@@ -321,6 +323,7 @@ impl Database {
         }
     }
 
+    /// Unchecked custom staging; use the checked variant for changing caller decisions.
     #[cfg(feature = "sync")]
     pub async fn synchronize_with_stage_factory<T, F>(
         &self,
@@ -369,6 +372,83 @@ impl Database {
             .await
     }
 
+    /// Checks caller authorization/cancellation immediately before every atomic incoming apply.
+    /// Returning Err stops subsequent applies; earlier committed operations remain.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
+            .await
+    }
+
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_with_stage_factory_checked<T, F, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        factory: &F,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        F: SyncStageFactory,
+        F::Stage: 'static,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        match &self.backend {
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(engine) => {
+                sync::synchronize_with_stage_factory_checked(
+                    engine, transport, config, role, factory, check,
+                )
+                .await
+            }
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(engine) => {
+                sync::synchronize_with_stage_factory_checked(
+                    engine, transport, config, role, factory, check,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Native staging plus the same per-operation caller check as memory sync.
+    #[cfg(feature = "native-stage")]
+    pub async fn synchronize_with_stage_directory_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = crate::FileSyncStageFactory::new(directory);
+        self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
+            .await
+    }
+
     #[cfg(feature = "sync")]
     pub async fn sync_manifest(&self) -> SqlResult<SyncManifest> {
         database_call!(self, |engine| sync_manifest_for(engine).await)
@@ -380,6 +460,7 @@ impl Database {
     }
 
     #[cfg(feature = "sync")]
+    /// Direct unchecked apply: caller must authorize each atomic operation. Prefer checked sync.
     pub async fn apply_sync_state(&self, unit: SyncStateUnit) -> SqlResult<()> {
         database_call!(self, |engine| apply_sync_state_for(engine, unit).await)
     }

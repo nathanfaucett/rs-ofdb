@@ -9,6 +9,7 @@ use alloc::{
 
 use futures::{StreamExt, pin_mut};
 
+use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
     ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
@@ -61,6 +62,9 @@ pub struct SyncResult {
 
 #[derive(Debug, Error)]
 pub enum SyncError<E> {
+    #[error("pre-apply check failed: {0}")]
+    PreApply(String),
+
     #[error("engine error: {0}")]
     Engine(#[from] EngineError),
 
@@ -108,6 +112,8 @@ where
     synchronize_with_stage_factory(engine, transport, config, role, &factory).await
 }
 
+/// Unchecked sync: the caller is responsible for admission of every atomic apply.
+/// Production callers with changing authorization or cancellation use the checked variant.
 pub async fn synchronize_with_stage_factory<K, R, T, F>(
     engine: &Engine<K, R>,
     transport: &mut T,
@@ -123,6 +129,31 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
+    synchronize_with_stage_factory_checked(engine, transport, config, role, stage_factory, || {
+        core::future::ready(Ok(()))
+    })
+    .await
+}
+
+pub async fn synchronize_with_stage_factory_checked<K, R, T, F, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    mut check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
+    let mut check = || Box::pin(check()) as CheckFuture<'_>;
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
@@ -170,6 +201,7 @@ where
                 &remote_manifest,
                 config.max_session_bytes,
                 stage_factory,
+                &mut check,
             )
             .await?;
             (sent, received)
@@ -181,6 +213,7 @@ where
                 &remote_manifest,
                 config.max_session_bytes,
                 stage_factory,
+                &mut check,
             )
             .await?;
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
@@ -206,6 +239,7 @@ where
                 &remote_manifest,
                 config.max_session_bytes,
                 stage_factory,
+                &mut check,
             )
             .await?;
             (sent, received)
@@ -219,6 +253,7 @@ where
                 &remote_manifest,
                 config.max_session_bytes,
                 stage_factory,
+                &mut check,
             )
             .await?;
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
@@ -415,6 +450,8 @@ where
     Ok(units)
 }
 
+/// Direct unchecked apply. The caller must authorize each atomic catalog/data apply;
+/// use checked sync for received production operations with changing decisions.
 pub async fn apply_sync_state_for<K, R>(
     engine: &Engine<K, R>,
     unit: SyncStateUnit,
@@ -426,6 +463,8 @@ where
     apply_sync_state_batch_for(engine, alloc::vec![unit]).await
 }
 
+/// Direct unchecked apply; this batch may contain multiple atomic operations.
+/// The caller is responsible for authorizing each operation; prefer checked sync.
 pub async fn apply_sync_state_batch_for<K, R>(
     engine: &Engine<K, R>,
     batch: Vec<SyncStateUnit>,
@@ -434,7 +473,16 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    apply_received_batch(engine, Arc::new(batch), Arc::new(Vec::new()), None, false).await
+    apply_received_batch(
+        engine,
+        Arc::new(batch),
+        Arc::new(Vec::new()),
+        None,
+        false,
+        &mut || Box::pin(core::future::ready(Ok(()))),
+    )
+    .await
+    .map_err(ApplyError::into_engine)
 }
 
 async fn apply_received_batch<K, R>(
@@ -443,7 +491,8 @@ async fn apply_received_batch<K, R>(
     changes: Arc<Vec<SyncIncrementalChange>>,
     manifest: Option<&SyncManifest>,
     catalog_already_validated: bool,
-) -> Result<(), EngineError>
+    check: &mut Check<'_>,
+) -> Result<(), ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -482,6 +531,7 @@ where
         let expected = expected.clone();
         let batch_snapshots = Arc::clone(&snapshots);
         let batch_changes = Arc::clone(&changes);
+        check_apply(check).await?;
         engine
             .mutate_tables(tables.as_slice(), move |codec, transaction| {
                 let snapshots = batch_snapshots;
@@ -544,7 +594,8 @@ where
             if bytes > MAX_APPLY_BATCH_BYTES {
                 return Err(EngineError::custom(format!(
                     "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
-                )));
+                ))
+                .into());
             }
             if !batch.is_empty() && batch_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES {
                 Box::pin(apply_data_row_batch(
@@ -552,6 +603,7 @@ where
                     Arc::clone(&snapshots),
                     Arc::clone(&changes),
                     core::mem::take(&mut batch),
+                    check,
                 ))
                 .await?;
                 batch_bytes = 0;
@@ -560,7 +612,10 @@ where
             batch.push((table, snapshot_indices, change_indices));
         }
         if !batch.is_empty() {
-            Box::pin(apply_data_row_batch(engine, snapshots, changes, batch)).await?;
+            Box::pin(apply_data_row_batch(
+                engine, snapshots, changes, batch, check,
+            ))
+            .await?;
         }
     }
 
@@ -572,7 +627,8 @@ async fn apply_data_row_batch<K, R>(
     snapshots: Arc<Vec<SyncStateUnit>>,
     changes: Arc<Vec<SyncIncrementalChange>>,
     rows: Vec<(String, Vec<usize>, Vec<usize>)>,
-) -> Result<(), EngineError>
+    check: &mut Check<'_>,
+) -> Result<(), ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -582,6 +638,7 @@ where
         tables.insert(table.clone());
     }
     let tables = tables.into_iter().collect::<Vec<_>>();
+    check_apply(check).await?;
     engine
         .mutate_tables(tables.as_slice(), move |codec, transaction| {
             Box::pin(async move {
@@ -600,6 +657,7 @@ where
             })
         })
         .await
+        .map_err(ApplyError::from)
 }
 
 fn sync_state_unit_estimate(unit: &SyncStateUnit) -> usize {
@@ -1026,6 +1084,7 @@ fn validate_state_batch(batch: &[SyncStateUnit]) -> Result<(), EngineError> {
     }
 }
 
+/// Direct unchecked apply; caller authorization is required for each atomic operation.
 pub async fn apply_incremental_changes_for<K, R>(
     engine: &Engine<K, R>,
     batch: &[SyncIncrementalChange],
@@ -1040,8 +1099,10 @@ where
         Arc::new(batch.to_vec()),
         None,
         false,
+        &mut || Box::pin(core::future::ready(Ok(()))),
     )
     .await
+    .map_err(ApplyError::into_engine)
 }
 
 fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineError> {
@@ -1387,6 +1448,7 @@ async fn receive_recovery<K, R, T, F>(
     manifest: &SyncManifest,
     max_session_bytes: usize,
     stage_factory: &F,
+    check: &mut Check<'_>,
 ) -> Result<(usize, usize), SyncError<T::Error>>
 where
     K: Kernel,
@@ -1472,6 +1534,7 @@ where
             Arc::new(Vec::new()),
             Some(manifest),
             false,
+            check,
         ))
         .await
         {
@@ -1490,7 +1553,8 @@ async fn apply_catalog_stages<K, R, S>(
     engine: &Engine<K, R>,
     stages: Vec<S>,
     manifest: &SyncManifest,
-) -> Result<(), EngineError>
+    check: &mut Check<'_>,
+) -> Result<(), ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -1503,6 +1567,7 @@ where
         String::from(ENGINE_INDEX_FIELDS_STORAGE),
     ];
     let manifest = manifest.clone();
+    check_apply(check).await?;
     engine
         .mutate_tables(&tables, move |codec, transaction| {
             Box::pin(async move {
@@ -1523,7 +1588,8 @@ where
                                     if catalog_order(table) != (stage_index % 4) as u8 {
                                         return Err(EngineError::custom(
                                             "Staged catalog state has an invalid apply order",
-                                        ));
+                                        )
+                                        .into());
                                     }
                                     merge_snapshot(codec, transaction, &unit).await?;
                                     mutations.record_table(table);
@@ -1534,7 +1600,8 @@ where
                                     if catalog_order(&change.table) != (stage_index % 4) as u8 {
                                         return Err(EngineError::custom(
                                             "Staged catalog change has an invalid apply order",
-                                        ));
+                                        )
+                                        .into());
                                     }
                                     merge_change(codec, transaction, &change).await?;
                                     mutations.record_table(&change.table);
@@ -1543,7 +1610,8 @@ where
                             _ => {
                                 return Err(EngineError::custom(
                                     "Unexpected message in catalog stage",
-                                ));
+                                )
+                                .into());
                             }
                         }
                     }
@@ -1553,6 +1621,7 @@ where
             })
         })
         .await
+        .map_err(ApplyError::from)
 }
 
 struct StagedDataApply {
@@ -1566,7 +1635,8 @@ async fn apply_staged_data<K, R, S>(
     stage: &mut S,
     manifest: &SyncManifest,
     snapshots: bool,
-) -> Result<StagedDataApply, EngineError>
+    check: &mut Check<'_>,
+) -> Result<StagedDataApply, ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -1591,14 +1661,15 @@ where
         match (snapshots, message) {
             (true, SyncMessage::State(units)) => {
                 if units.is_empty() {
-                    return Err(EngineError::custom("Empty state record in data stage"));
+                    return Err(EngineError::custom("Empty state record in data stage").into());
                 }
                 for unit in units {
                     let bytes = sync_state_unit_estimate(&unit);
                     if bytes > MAX_APPLY_BATCH_BYTES {
                         return Err(EngineError::custom(format!(
                             "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
-                        )));
+                        ))
+                        .into());
                     }
                     if !pending_snapshots.is_empty()
                         && pending_snapshot_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES
@@ -1607,6 +1678,7 @@ where
                             engine,
                             manifest,
                             core::mem::take(&mut pending_snapshots),
+                            check,
                         )
                         .await?;
                         merge_staged_apply(&mut applied, completed);
@@ -1618,7 +1690,7 @@ where
             }
             (false, SyncMessage::Changes(changes)) => {
                 let Some(first) = changes.first() else {
-                    return Err(EngineError::custom("Empty change record in data stage"));
+                    return Err(EngineError::custom("Empty change record in data stage").into());
                 };
                 if changes
                     .iter()
@@ -1626,7 +1698,8 @@ where
                 {
                     return Err(EngineError::custom(
                         "Change record in data stage spans multiple rows",
-                    ));
+                    )
+                    .into());
                 }
                 let bytes = changes.iter().fold(0_usize, |total, change| {
                     total.saturating_add(sync_incremental_change_estimate(change))
@@ -1634,7 +1707,8 @@ where
                 if bytes > MAX_APPLY_BATCH_BYTES {
                     return Err(EngineError::custom(format!(
                         "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
-                    )));
+                    ))
+                    .into());
                 }
                 if !pending_changes.is_empty()
                     && pending_change_bytes.saturating_add(bytes) > MAX_APPLY_BATCH_BYTES
@@ -1643,6 +1717,7 @@ where
                         engine,
                         manifest,
                         core::mem::take(&mut pending_changes),
+                        check,
                     )
                     .await?;
                     merge_staged_apply(&mut applied, completed);
@@ -1651,19 +1726,27 @@ where
                 pending_change_bytes = pending_change_bytes.saturating_add(bytes);
                 pending_changes.extend(changes);
             }
-            _ => return Err(EngineError::custom("Unexpected message in data stage")),
+            _ => return Err(EngineError::custom("Unexpected message in data stage").into()),
         }
     }
     if !pending_snapshots.is_empty() {
-        let completed =
-            apply_staged_snapshot_batch(engine, manifest, core::mem::take(&mut pending_snapshots))
-                .await?;
+        let completed = apply_staged_snapshot_batch(
+            engine,
+            manifest,
+            core::mem::take(&mut pending_snapshots),
+            check,
+        )
+        .await?;
         merge_staged_apply(&mut applied, completed);
     }
     if !pending_changes.is_empty() {
-        let completed =
-            apply_staged_change_batch(engine, manifest, core::mem::take(&mut pending_changes))
-                .await?;
+        let completed = apply_staged_change_batch(
+            engine,
+            manifest,
+            core::mem::take(&mut pending_changes),
+            check,
+        )
+        .await?;
         merge_staged_apply(&mut applied, completed);
     }
     Ok(applied)
@@ -1687,7 +1770,8 @@ async fn apply_staged_snapshot_batch<K, R>(
     engine: &Engine<K, R>,
     manifest: &SyncManifest,
     units: Vec<SyncStateUnit>,
-) -> Result<StagedDataApply, EngineError>
+    check: &mut Check<'_>,
+) -> Result<StagedDataApply, ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -1700,6 +1784,7 @@ where
         Arc::new(Vec::new()),
         Some(manifest),
         true,
+        check,
     ))
     .await
     {
@@ -1708,7 +1793,7 @@ where
             changes: 0,
             requests: Vec::new(),
         }),
-        Err(EngineError::SyncDependencyUnavailable) => {
+        Err(ApplyError::Engine(EngineError::SyncDependencyUnavailable)) => {
             let units = Arc::try_unwrap(units).unwrap_or_else(|shared| shared.as_ref().clone());
             let mut rows = BTreeMap::<(String, Uuid), Vec<SyncStateUnit>>::new();
             for unit in units {
@@ -1729,11 +1814,12 @@ where
                     Arc::new(Vec::new()),
                     Some(manifest),
                     true,
+                    check,
                 ))
                 .await
                 {
                     Ok(()) => applied.snapshots += count,
-                    Err(EngineError::SyncDependencyUnavailable) => {
+                    Err(ApplyError::Engine(EngineError::SyncDependencyUnavailable)) => {
                         applied.requests.push(request);
                     }
                     Err(error) => return Err(error),
@@ -1749,7 +1835,8 @@ async fn apply_staged_change_batch<K, R>(
     engine: &Engine<K, R>,
     manifest: &SyncManifest,
     changes: Vec<SyncIncrementalChange>,
-) -> Result<StagedDataApply, EngineError>
+    check: &mut Check<'_>,
+) -> Result<StagedDataApply, ApplyError>
 where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
@@ -1762,6 +1849,7 @@ where
         Arc::clone(&changes),
         Some(manifest),
         true,
+        check,
     ))
     .await
     {
@@ -1770,7 +1858,7 @@ where
             changes: count,
             requests: Vec::new(),
         }),
-        Err(EngineError::SyncDependencyUnavailable) => {
+        Err(ApplyError::Engine(EngineError::SyncDependencyUnavailable)) => {
             let changes = Arc::try_unwrap(changes).unwrap_or_else(|shared| shared.as_ref().clone());
             let mut rows = BTreeMap::<(String, Uuid), Vec<SyncIncrementalChange>>::new();
             for change in changes {
@@ -1792,11 +1880,12 @@ where
                     Arc::new(changes),
                     Some(manifest),
                     true,
+                    check,
                 ))
                 .await
                 {
                     Ok(()) => applied.changes += count,
-                    Err(EngineError::SyncDependencyUnavailable) => {
+                    Err(ApplyError::Engine(EngineError::SyncDependencyUnavailable)) => {
                         applied.requests.push(request);
                     }
                     Err(error) => return Err(error),
@@ -1823,6 +1912,7 @@ async fn receive_outbound<K, R, T, F>(
     manifest: &SyncManifest,
     max_session_bytes: usize,
     stage_factory: &F,
+    check: &mut Check<'_>,
 ) -> Result<Received, SyncError<T::Error>>
 where
     K: Kernel,
@@ -1983,34 +2073,38 @@ where
                     .await
                     .map_err(|error| SyncError::Staging(error.to_string()))?;
                 if (catalog_snapshots > 0 || catalog_changes > 0)
-                    && let Err(error) = apply_catalog_stages(engine, catalog_stages, manifest).await
+                    && let Err(error) =
+                        apply_catalog_stages(engine, catalog_stages, manifest, check).await
                 {
                     return abort(transport, error, String::from("catalog batch")).await;
                 }
-                let staged_snapshots =
-                    match apply_staged_data(engine, &mut data_snapshot_stage, manifest, true).await
-                    {
-                        Ok(applied) => applied,
-                        Err(error) => {
-                            return abort(transport, error, String::from("data state batch")).await;
-                        }
-                    };
-                count.snapshots = catalog_snapshots + staged_snapshots.snapshots;
-                count.requests.extend(staged_snapshots.requests);
-
-                let staged_changes = match apply_staged_data(
+                let staged_snapshots = match apply_staged_data(
                     engine,
-                    &mut data_change_stage,
+                    &mut data_snapshot_stage,
                     manifest,
-                    false,
+                    true,
+                    check,
                 )
                 .await
                 {
                     Ok(applied) => applied,
                     Err(error) => {
-                        return abort(transport, error, String::from("data change batch")).await;
+                        return abort(transport, error, String::from("data state batch")).await;
                     }
                 };
+                count.snapshots = catalog_snapshots + staged_snapshots.snapshots;
+                count.requests.extend(staged_snapshots.requests);
+
+                let staged_changes =
+                    match apply_staged_data(engine, &mut data_change_stage, manifest, false, check)
+                        .await
+                    {
+                        Ok(applied) => applied,
+                        Err(error) => {
+                            return abort(transport, error, String::from("data change batch"))
+                                .await;
+                        }
+                    };
                 count.changes = catalog_changes + staged_changes.changes;
                 count.requests.extend(staged_changes.requests);
 
@@ -2031,7 +2125,7 @@ where
 
 async fn abort<T>(
     transport: &mut T,
-    error: EngineError,
+    error: ApplyError,
     context: String,
 ) -> Result<Received, SyncError<T::Error>>
 where
