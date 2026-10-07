@@ -2943,6 +2943,7 @@ dependencies = [
  "iroh",
  "iroh-relay",
  "ofdb-sql",
+ "ofdb-sql-sync",
  "tokio",
 ]
 

@@ -14,11 +14,12 @@ path = "src/main.rs"
 
 [features]
 default = ["p2p"]
-p2p = ["dep:iroh", "ofdb-sql/sync"]
+p2p = ["dep:iroh", "dep:sql-sync", "ofdb-sql/sync"]
 
 [dependencies]
 # Internal dependencies
 ofdb-sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-features = false, features = ["redb", "server"] }
+sql-sync = { version = "0.1", package = "ofdb-sql-sync", path = "../sql-sync", default-features = false, features = ["iroh"], optional = true }
 
 # External dependencies
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "env"] }

@@ -9,6 +9,7 @@ use std::{
 
 use iroh::{Endpoint, EndpointId, SecretKey, endpoint::presets};
 use ofdb_sql::{Database, SessionConfig, SyncRole};
+use sql_sync::IrohTransport;
 use tokio::sync::watch;
 
 #[cfg(unix)]
@@ -71,7 +72,7 @@ pub async fn run(
                             return;
                         }
                     };
-                    let mut transport = ofdb_sql::IrohTransport::new(send, receive);
+                    let mut transport = IrohTransport::new(send, receive);
                     if let Err(error) = database
                         .synchronize(&mut transport, &SessionConfig::default(), SyncRole::Responder)
                         .await
@@ -99,7 +100,7 @@ pub async fn run(
                                 return;
                             }
                         };
-                        let mut transport = ofdb_sql::IrohTransport::new(send, receive);
+                        let mut transport = IrohTransport::new(send, receive);
                         if let Err(error) = database
                             .synchronize(&mut transport, &SessionConfig::default(), SyncRole::Initiator)
                             .await
@@ -155,6 +156,7 @@ mod tests {
     use iroh::{Endpoint, EndpointAddr, RelayMode, endpoint::presets};
     use iroh_relay::tls::CaTlsConfig;
     use ofdb_sql::{Database, SessionConfig, SyncRole};
+    use sql_sync::IrohTransport;
 
     use super::{ALPN, load_secret_key};
 
@@ -214,13 +216,13 @@ mod tests {
                 .any(|path| path.is_relay() && path.is_selected())
         );
         let (send, receive) = connection.open_bi().await.expect("open sync stream");
-        let mut outgoing = ofdb_sql::IrohTransport::new(send, receive);
+        let mut outgoing = IrohTransport::new(send, receive);
         let config = SessionConfig::default();
         let (left_result, right_result) = tokio::join!(
             left.synchronize(&mut outgoing, &config, SyncRole::Initiator),
             async {
                 let (send, receive) = incoming.accept_bi().await.expect("accept sync stream");
-                let mut transport = ofdb_sql::IrohTransport::new(send, receive);
+                let mut transport = IrohTransport::new(send, receive);
                 right
                     .synchronize(&mut transport, &config, SyncRole::Responder)
                     .await
