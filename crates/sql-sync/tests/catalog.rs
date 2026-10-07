@@ -1,6 +1,14 @@
 mod support;
 
-use core::fmt;
+use core::{
+    fmt,
+    future::{Future, poll_fn},
+    task::Poll,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use engine::{
     ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine,
@@ -615,6 +623,149 @@ fn outbound_payload_limit_aborts_peer_and_preserves_both_catalogs() {
                 .expect("destination catalog")
                 .is_empty()
         );
+    });
+}
+
+struct PendingAbort {
+    inner: Transport,
+    polls: Arc<AtomicUsize>,
+}
+impl SyncTransport for PendingAbort {
+    type Error = Closed;
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+        self.inner.receive().await
+    }
+    async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+        if matches!(
+            postcard::from_bytes::<SyncMessage>(&frame).expect("decode frame"),
+            SyncMessage::Abort(_)
+        ) {
+            return poll_fn(|_| {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                Poll::Pending
+            })
+            .await;
+        }
+        self.inner.send(frame).await
+    }
+}
+
+#[test]
+fn pending_abort_does_not_block_retry_or_recovery_cleanup() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for stop_at in [3, 4, 5, 6] {
+                for reason in ["denied", "canceled"] {
+                    let source = source_with_rows(4).await;
+                    let target = destination();
+                    let config = SessionConfig {
+                        max_units_per_frame: 1,
+                        ..SessionConfig::default()
+                    };
+                    let (mut left, right) = transport_pair(false);
+                    left.inject_change = true;
+                    left.omit_recoverable_row = true;
+                    let polls = Arc::new(AtomicUsize::new(0));
+                    let mut right = PendingAbort {
+                        inner: right,
+                        polls: polls.clone(),
+                    };
+                    #[cfg(not(feature = "native-stage"))]
+                    let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+                    #[cfg(feature = "native-stage")]
+                    let directory = tempfile::tempdir().expect("native recovery directory");
+                    #[cfg(feature = "native-stage")]
+                    let factory = sync::FileSyncStageFactory::new(directory.path());
+                    let mut calls = 0;
+                    let check = || {
+                        calls += 1;
+                        core::future::ready(if calls == stop_at {
+                            Err(reason.into())
+                        } else {
+                            Ok(())
+                        })
+                    };
+                    let source_role = if role == SyncRole::Initiator {
+                        SyncRole::Responder
+                    } else {
+                        SyncRole::Initiator
+                    };
+                    let mut sender =
+                        Box::pin(synchronize(&source, &mut left, &config, source_role));
+                    let mut receiver = Box::pin(sync::synchronize_with_stage_factory_checked(
+                        &target, &mut right, &config, role, &factory, check,
+                    ));
+                    let mut sender_done = false;
+                    let result = poll_fn(|cx| {
+                        if !sender_done {
+                            sender_done = sender.as_mut().poll(cx).is_ready();
+                        }
+                        match receiver.as_mut().poll(cx) {
+                            Poll::Ready(result) => Poll::Ready(result),
+                            Poll::Pending => {
+                                assert_eq!(
+                                    polls.load(Ordering::SeqCst),
+                                    0,
+                                    "local failure must not await Abort send"
+                                );
+                                Poll::Pending
+                            }
+                        }
+                    })
+                    .await;
+                    assert!(
+                        matches!(result, Err(sync::SyncError::PreApply(detail)) if detail == reason)
+                    );
+                    assert_eq!(polls.load(Ordering::SeqCst), 1);
+                    #[cfg(feature = "native-stage")]
+                    assert_eq!(
+                        std::fs::read_dir(directory.path())
+                            .expect("cleanup before future drop")
+                            .count(),
+                        0
+                    );
+                    drop(receiver);
+                    drop(sender);
+                    assert_eq!(calls, stop_at);
+                    let state = export_sync_state_for(&target)
+                        .await
+                        .expect("prior progress");
+                    assert!(!state.iter().any(|unit| matches!(&unit.key, SyncKey::Row { table, row } if table == "people" && *row == row_uuid(7))));
+                    assert_eq!(
+                        target.table_names().await.expect("prior catalog"),
+                        vec!["people"]
+                    );
+                    assert_eq!(state.iter().filter(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table == "people")).count(), 3);
+                    let (mut left, mut right) = transport_pair(false);
+                    let (sent, received) = futures::join!(
+                        synchronize(&source, &mut left, &config, source_role),
+                        sync::synchronize_with_stage_factory_checked(
+                            &target,
+                            &mut right,
+                            &config,
+                            role,
+                            &factory,
+                            || core::future::ready(Ok(()))
+                        )
+                    );
+                    sent.expect("source retry");
+                    received.expect("target retry");
+                    assert_eq!(
+                        export_sync_state_for(&source).await.expect("source"),
+                        export_sync_state_for(&target)
+                            .await
+                            .expect("retry convergence")
+                    );
+                    #[cfg(feature = "native-stage")]
+                    assert_eq!(
+                        std::fs::read_dir(directory.path())
+                            .expect("retry cleanup")
+                            .count(),
+                        0
+                    );
+                }
+            }
+        }
     });
 }
 

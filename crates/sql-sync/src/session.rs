@@ -7,7 +7,7 @@ use alloc::{
     vec::Vec,
 };
 
-use futures::{StreamExt, pin_mut};
+use futures::{FutureExt, StreamExt, pin_mut};
 
 use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
 use engine::{
@@ -1484,7 +1484,7 @@ where
                             transport,
                             &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
                         )
-                        .await;
+                        .now_or_never();
                         return Err(error.into());
                     }
                     let record = postcard::to_allocvec(&SyncMessage::State(alloc::vec![snapshot]))
@@ -1507,7 +1507,7 @@ where
             transport,
             &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
         )
-        .await;
+        .now_or_never();
         return Err(error.into());
     }
     if requested.is_empty() && count == 0 {
@@ -1539,7 +1539,7 @@ where
         .await
         {
             let reason = format!("{} (recovery snapshot batch)", error);
-            let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
+            let _ = send_message(transport, &SyncMessage::Abort(reason)).now_or_never();
             return Err(error.into());
         }
     }
@@ -2130,7 +2130,7 @@ where
     T::Error: core::fmt::Display,
 {
     let reason = format!("{} ({})", error, context);
-    let _ = send_message(transport, &SyncMessage::Abort(reason)).await;
+    let _ = send_message(transport, &SyncMessage::Abort(reason)).now_or_never();
     Err(error.into())
 }
 
@@ -2235,7 +2235,7 @@ where
     match result {
         Ok(output) => Ok(output),
         Err(error) => {
-            let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
+            let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).now_or_never();
             Err(error.into())
         }
     }
@@ -2329,7 +2329,7 @@ where
         .saturating_add(retained_bytes);
     if size > max {
         let error = SyncError::SessionTooLarge { size, max };
-        let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).await;
+        let _ = send_message(transport, &SyncMessage::Abort(error.to_string())).now_or_never();
         Err(error)
     } else {
         Ok(size)

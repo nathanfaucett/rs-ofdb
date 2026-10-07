@@ -374,6 +374,8 @@ impl Database {
 
     /// Checks caller authorization/cancellation immediately before every atomic incoming apply.
     /// Returning Err stops subsequent applies; earlier committed operations remain.
+    /// Abort delivery is attempted once without waiting for the peer. Discard the
+    /// transport after failure: a canceled send may have partially written a frame.
     #[cfg(feature = "sync")]
     pub async fn synchronize_checked<T, Q, U>(
         &self,
@@ -393,6 +395,7 @@ impl Database {
             .await
     }
 
+    /// Checked sync with caller-provided staging; see `Self::synchronize_checked`.
     #[cfg(feature = "sync")]
     pub async fn synchronize_with_stage_factory_checked<T, F, Q, U>(
         &self,
@@ -429,6 +432,8 @@ impl Database {
     }
 
     /// Native staging plus the same per-operation caller check as memory sync.
+    /// Local failure releases stages without waiting for Abort delivery; discard
+    /// the transport after failure.
     #[cfg(feature = "native-stage")]
     pub async fn synchronize_with_stage_directory_checked<T, Q, U>(
         &self,

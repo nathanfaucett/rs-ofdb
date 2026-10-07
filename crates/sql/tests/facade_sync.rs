@@ -1,5 +1,16 @@
 #![cfg(all(feature = "sync", feature = "sql", feature = "in-memory"))]
 
+#[cfg(feature = "native-stage")]
+use core::{
+    future::{Future, poll_fn},
+    task::Poll,
+};
+#[cfg(feature = "native-stage")]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 use ofdb_sql::{Database, SessionConfig, SyncRole, SyncTransport};
 
 use tokio::sync::mpsc;
@@ -31,6 +42,149 @@ fn channels() -> (Channel, Channel) {
         },
     )
 }
+#[cfg(feature = "native-stage")]
+struct PendingAbort {
+    inner: Channel,
+    denied: Arc<AtomicBool>,
+    polls: Arc<AtomicUsize>,
+}
+#[cfg(feature = "native-stage")]
+impl SyncTransport for PendingAbort {
+    type Error = &'static str;
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+        self.inner.receive().await
+    }
+    async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+        if self.denied.load(Ordering::SeqCst) {
+            return poll_fn(|_| {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                Poll::Pending
+            })
+            .await;
+        }
+        self.inner.send(frame).await
+    }
+}
+
+#[cfg(feature = "native-stage")]
+#[tokio::test]
+async fn pending_abort_does_not_block_native_denial_or_cancellation() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        for stop_at in [1, 2] {
+            for reason in ["denied", "canceled"] {
+                let source = Database::in_memory();
+                let target = Database::in_memory();
+                seed(&source).await;
+                let before = target.export_sync_state().await.expect("before");
+                let dir = tempfile::tempdir().expect("stage directory");
+                let denied = Arc::new(AtomicBool::new(false));
+                let polls = Arc::new(AtomicUsize::new(0));
+                let (mut st, tt) = channels();
+                let mut tt = PendingAbort {
+                    inner: tt,
+                    denied: denied.clone(),
+                    polls: polls.clone(),
+                };
+                let mut calls = 0;
+                let check = || {
+                    calls += 1;
+                    let stop = calls == stop_at;
+                    if stop {
+                        assert!(std::fs::read_dir(dir.path()).expect("live stages").count() > 0);
+                    }
+                    denied.store(stop, Ordering::SeqCst);
+                    core::future::ready(if stop {
+                        Err(reason.to_string())
+                    } else {
+                        Ok(())
+                    })
+                };
+                let config = SessionConfig {
+                    max_units_per_frame: 1,
+                    ..SessionConfig::default()
+                };
+                let source_role = if role == SyncRole::Initiator {
+                    SyncRole::Responder
+                } else {
+                    SyncRole::Initiator
+                };
+                let mut sender = Box::pin(source.synchronize(&mut st, &config, source_role));
+                let mut receiver = Box::pin(target.synchronize_with_stage_directory_checked(
+                    &mut tt,
+                    &config,
+                    role,
+                    dir.path(),
+                    check,
+                ));
+                let result = poll_fn(|cx| {
+                    assert!(sender.as_mut().poll(cx).is_pending());
+                    match receiver.as_mut().poll(cx) {
+                        Poll::Ready(result) => Poll::Ready(result),
+                        Poll::Pending => {
+                            assert_eq!(
+                                polls.load(Ordering::SeqCst),
+                                0,
+                                "local failure must not await Abort send"
+                            );
+                            Poll::Pending
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    matches!(result, Err(ofdb_sql::SyncError::PreApply(detail)) if detail == reason)
+                );
+                assert_eq!(polls.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    std::fs::read_dir(dir.path())
+                        .expect("cleanup before future drop")
+                        .count(),
+                    0
+                );
+                drop(receiver);
+                drop(sender);
+                assert_eq!(calls, stop_at);
+                if stop_at == 1 {
+                    assert_eq!(target.export_sync_state().await.expect("unchanged"), before);
+                } else {
+                    assert!(
+                        target
+                            .client()
+                            .execute_sql("SELECT * FROM users", None)
+                            .await
+                            .expect("prior catalog commit")[0]
+                            .rows
+                            .is_empty()
+                    );
+                }
+                let (mut st, mut tt) = channels();
+                let (sent, received) = tokio::join!(
+                    source.synchronize(&mut st, &config, source_role),
+                    target.synchronize_with_stage_directory_checked(
+                        &mut tt,
+                        &config,
+                        role,
+                        dir.path(),
+                        || core::future::ready(Ok(()))
+                    )
+                );
+                sent.expect("source retry");
+                received.expect("target retry");
+                assert_eq!(
+                    source.export_sync_state().await.expect("source"),
+                    target.export_sync_state().await.expect("retry convergence")
+                );
+                assert_eq!(
+                    std::fs::read_dir(dir.path())
+                        .expect("retry cleanup")
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+}
+
 struct FlipFactory(std::sync::Arc<std::sync::atomic::AtomicBool>);
 struct FlipStage {
     allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
