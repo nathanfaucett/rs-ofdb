@@ -21,13 +21,13 @@ mod state_transfer;
 
 pub use bytes_table::{BytesTable, BytesTableTransaction};
 pub use change::{Change, ChangeKey};
-pub use codec::{RowCodec, RowIdentity};
+pub use codec::RowCodec;
 pub use engine::{Engine, EngineError, EngineResult, EngineTransaction, TimestampProvider};
 pub use schema::{
-    CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
-    ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE,
-    catalog_table_for_storage,
+    CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
+    ENGINE_TABLES_STORAGE, catalog_table_for_storage,
 };
+pub use uuid::Uuid;
 
 #[cfg(feature = "in-memory")]
 pub use in_memory::{InMemoryKernel, InMemoryKernelTransaction};

@@ -4,8 +4,8 @@ use core::{future::Future, pin::Pin};
 use value::Row;
 
 use crate::{
-    Engine, EngineResult, Kernel, KernelTransaction, RowCodec, RowIdentity,
-    schema::{active_table_names, catalog_table_for_storage, ensure},
+    Engine, EngineResult, Kernel, KernelTransaction, RowCodec, Uuid,
+    schema::{active_table_names, catalog_table_for_storage, ensure, reconcile_schema_names},
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -27,7 +27,7 @@ impl MutationSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowMutation {
     pub table: String,
-    pub row: RowIdentity,
+    pub row: Uuid,
     pub old: Option<Row>,
     pub new: Option<Row>,
 }
@@ -54,7 +54,7 @@ where
     pub async fn mutate_transaction<F, O>(
         &self,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         operation: F,
     ) -> EngineResult<O>
     where
@@ -66,6 +66,7 @@ where
             Box<dyn Future<Output = EngineResult<(O, Option<Row>)>> + Send + 'a>,
         >,
     {
+        crate::schema::validate_row_id(&row)?;
         let mut transaction = self.kernel.transaction().await?;
         let result: EngineResult<O> = async {
             ensure(&mut transaction, self.reconciler.as_ref()).await?;
@@ -90,6 +91,13 @@ where
                     table,
                     old.as_ref(),
                     new.as_ref(),
+                    false,
+                )
+                .await?;
+                crate::index::rebuild_table(
+                    &mut transaction,
+                    self.reconciler.as_ref(),
+                    table,
                     false,
                 )
                 .await?;
@@ -127,6 +135,9 @@ where
                     .await?;
             }
             let (output, summary) = operation(self.reconciler.as_ref(), &mut transaction).await?;
+            if summary.catalog_changed || !summary.changed_tables.is_empty() {
+                reconcile_schema_names(&mut transaction, self.reconciler.as_ref()).await?;
+            }
             let active_tables = active_table_names(&transaction, self.reconciler.as_ref()).await?;
             for table in active_tables {
                 if summary.catalog_changed || summary.changed_tables.contains(&table) {
@@ -157,11 +168,7 @@ where
         }
     }
 
-    pub async fn mutate_rows<F, O>(
-        &self,
-        rows: &[(String, RowIdentity)],
-        operation: F,
-    ) -> EngineResult<O>
+    pub async fn mutate_rows<F, O>(&self, rows: &[(String, Uuid)], operation: F) -> EngineResult<O>
     where
         F: for<'a> FnOnce(
             &'a R,
@@ -170,6 +177,9 @@ where
             Box<dyn Future<Output = EngineResult<(O, Vec<RowMutation>)>> + Send + 'a>,
         >,
     {
+        for (_, row) in rows {
+            crate::schema::validate_row_id(row)?;
+        }
         let mut transaction = self.kernel.transaction().await?;
         let result: EngineResult<O> = async {
             ensure(&mut transaction, self.reconciler.as_ref()).await?;
@@ -179,9 +189,15 @@ where
                     .await?;
             }
             let (output, mutations) = operation(self.reconciler.as_ref(), &mut transaction).await?;
+            for mutation in &mutations {
+                crate::schema::validate_row_id(&mutation.row)?;
+            }
             let catalog_changed = mutations
                 .iter()
                 .any(|mutation| catalog_table_for_storage(&mutation.table).is_some());
+            if catalog_changed {
+                reconcile_schema_names(&mut transaction, self.reconciler.as_ref()).await?;
+            }
             for mutation in mutations {
                 if catalog_table_for_storage(&mutation.table).is_none()
                     && crate::schema::active_user_row(
@@ -203,8 +219,40 @@ where
                     .await?;
                 }
             }
-            if catalog_changed {
-                for table in active_table_names(&transaction, self.reconciler.as_ref()).await? {
+            let tables = if catalog_changed {
+                active_table_names(&transaction, self.reconciler.as_ref()).await?
+            } else {
+                rows.iter()
+                    .map(|(table, _)| table.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            };
+            for table in tables {
+                if catalog_changed {
+                    self.reconciler
+                        .ensure_table(&mut transaction, &table)
+                        .await?;
+                    crate::index::rebuild_table(
+                        &mut transaction,
+                        self.reconciler.as_ref(),
+                        &table,
+                        false,
+                    )
+                    .await?;
+                    continue;
+                }
+                let Some((_, row)) = rows.iter().find(|(row_table, _)| row_table == &table) else {
+                    continue;
+                };
+                if crate::schema::active_user_row(
+                    &transaction,
+                    self.reconciler.as_ref(),
+                    &table,
+                    row,
+                )
+                .await?
+                {
                     self.reconciler
                         .ensure_table(&mut transaction, &table)
                         .await?;

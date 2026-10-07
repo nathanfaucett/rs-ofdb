@@ -4,7 +4,7 @@ use core::fmt;
 
 use engine::{
     ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine,
-    InMemoryKernel, Kernel, KernelTransaction, RowIdentity,
+    InMemoryKernel, Kernel, KernelTransaction, Uuid,
 };
 use engine_redb::{RedbKernel, redb};
 use futures::{
@@ -61,7 +61,7 @@ impl SyncTransport for Transport {
                     .unbounded_send(
                         postcard::to_allocvec(&SyncMessage::Changes(vec![SyncIncrementalChange {
                             table: "people".into(),
-                            row: RowIdentity::User([7; 16]),
+                            row: row_uuid(7),
                             id: SyncChangeId(vec![1]),
                             payload: vec![1],
                         }]))
@@ -78,6 +78,13 @@ impl SyncTransport for Transport {
         }
         Ok(())
     }
+}
+
+fn row_uuid(value: u128) -> Uuid {
+    let mut bytes = value.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 fn transport_pair(interrupt: bool) -> (Transport, Transport) {
@@ -129,6 +136,26 @@ impl SyncTransport for StalledReceiveTransport {
     async fn send(&mut self, _frame: Vec<u8>) -> Result<(), Self::Error> {
         Ok(())
     }
+}
+
+#[test]
+fn rejects_non_uuidv7_row_addresses_before_applying_sync_state() {
+    block_on(async {
+        let engine = destination();
+        let row = Uuid::from_bytes([0x11; 16]);
+        let unit = SyncStateUnit::new(
+            SyncKey::Row {
+                table: String::from("people"),
+                row,
+            },
+            vec![1],
+            Vec::new(),
+        );
+        let error = apply_sync_state_batch_for(&engine, vec![unit])
+            .await
+            .expect_err("non-UUIDv7 row address must be rejected");
+        assert!(error.to_string().contains("UUIDv7"));
+    });
 }
 
 #[test]
@@ -241,6 +268,49 @@ fn waiting_for_network_frames_does_not_hold_the_redb_write_transaction() {
 }
 
 #[test]
+fn repeated_state_delivery_is_idempotent_and_manifest_canonical() {
+    block_on(async {
+        let source = source().await;
+        let destination = destination();
+        let units = export_sync_state_for(&source)
+            .await
+            .expect("export source state");
+
+        apply_sync_state_batch_for(&destination, units.clone())
+            .await
+            .expect("apply initial state");
+        let first_manifest = sync_manifest_for(&destination)
+            .await
+            .expect("build initial manifest");
+        let first_state = export_sync_state_for(&destination)
+            .await
+            .expect("export initial destination state");
+
+        apply_sync_state_batch_for(&destination, units)
+            .await
+            .expect("repeat state delivery");
+        let repeated_manifest = sync_manifest_for(&destination)
+            .await
+            .expect("build repeated manifest");
+        let repeated_state = export_sync_state_for(&destination)
+            .await
+            .expect("export repeated destination state");
+
+        assert_eq!(repeated_manifest, first_manifest);
+        assert_eq!(
+            repeated_state
+                .iter()
+                .map(|unit| (&unit.key, unit.digest))
+                .collect::<Vec<_>>(),
+            first_state
+                .iter()
+                .map(|unit| (&unit.key, unit.digest))
+                .collect::<Vec<_>>()
+        );
+    });
+}
+
+#[test]
 fn manifest_matches_exported_state_digests() {
     block_on(async {
         let source = source().await;
@@ -273,9 +343,9 @@ async fn source_with_rows(user_rows: usize) -> Engine<InMemoryKernel, TestCodec>
         .ensure_table("people")
         .await
         .expect("source data storage");
-    let table = RowIdentity::catalog(vec![1; 16]);
-    let mut field = vec![1; 16];
-    field.extend([2; 16]);
+    let table = Uuid::now_v7();
+    let field = Uuid::now_v7();
+    let payload_field = Uuid::now_v7();
     for (storage, id, value) in [
         (
             ENGINE_TABLES_STORAGE,
@@ -284,13 +354,28 @@ async fn source_with_rows(user_rows: usize) -> Engine<InMemoryKernel, TestCodec>
         ),
         (
             ENGINE_TABLE_FIELDS_STORAGE,
-            RowIdentity::catalog(field),
+            field,
             Row::new(vec![
+                Value::Uuid(table),
+                Value::from("people"),
                 Value::from("id"),
                 Value::from(ValueType::Uuid),
                 Value::Null,
                 Value::Integer(0),
                 Value::Bool(true),
+            ]),
+        ),
+        (
+            ENGINE_TABLE_FIELDS_STORAGE,
+            payload_field,
+            Row::new(vec![
+                Value::Uuid(table),
+                Value::from("people"),
+                Value::from("payload"),
+                Value::from(ValueType::Text),
+                Value::Null,
+                Value::Integer(1),
+                Value::Bool(false),
             ]),
         ),
     ] {
@@ -301,27 +386,19 @@ async fn source_with_rows(user_rows: usize) -> Engine<InMemoryKernel, TestCodec>
         transaction
             .put_bytes(
                 storage,
-                id.to_bytes(),
+                id.as_bytes().to_vec(),
                 postcard::to_allocvec(&value).expect("encode row"),
             )
             .await
             .expect("source row");
     }
     for index in 0..user_rows {
-        let row_id = if index == 0 {
-            [4; 16]
-        } else {
-            (index as u128).to_be_bytes()
-        };
-        let user = RowIdentity::ScopedUser {
-            table: [1; 16],
-            row: row_id,
-        };
+        let user = row_uuid(index as u128 + 4);
         transaction
             .put_bytes(
                 "people",
-                user.to_bytes(),
-                postcard::to_allocvec(&Row::new(vec![Value::Uuid(uuid::Uuid::from_bytes(row_id))]))
+                user.as_bytes().to_vec(),
+                postcard::to_allocvec(&Row::new(vec![Value::Uuid(user), Value::from("")]))
                     .expect("encode user row"),
             )
             .await
@@ -378,7 +455,7 @@ fn interrupted_catalog_frames_leave_no_partial_table_and_retry() {
                 .expect("recovered schema")
                 .columns
                 .len(),
-            1
+            2
         );
         assert!(
             export_sync_state_for(&destination)
@@ -565,13 +642,13 @@ fn failed_data_batch_rolls_back_all_rows() {
             .await
             .expect("apply catalog first");
 
-        let earlier = RowIdentity::User([1; 16]);
-        let failing = RowIdentity::User([2; 16]);
+        let earlier = row_uuid(1);
+        let failing = row_uuid(2);
         let batch = vec![
             SyncStateUnit::new(
                 SyncKey::Row {
                     table: String::from("people"),
-                    row: earlier.clone(),
+                    row: earlier,
                 },
                 postcard::to_allocvec(&Row::new(vec![Value::from("committed")]))
                     .expect("encode earlier row"),
@@ -580,7 +657,7 @@ fn failed_data_batch_rolls_back_all_rows() {
             SyncStateUnit::new(
                 SyncKey::Row {
                     table: String::from("people"),
-                    row: failing.clone(),
+                    row: failing,
                 },
                 vec![0xff],
                 Vec::new(),
@@ -626,19 +703,22 @@ fn prior_data_batches_remain_committed_when_a_later_batch_fails() {
                 SyncStateUnit::new(
                     SyncKey::Row {
                         table: String::from("people"),
-                        row: RowIdentity::User([identity; 16]),
+                        row: row_uuid(identity as u128),
                     },
-                    postcard::to_allocvec(&Row::new(vec![Value::from(large_value.clone())]))
-                        .expect("encode row"),
+                    postcard::to_allocvec(&Row::new(vec![
+                        Value::Uuid(row_uuid(identity as u128)),
+                        Value::from(large_value.clone()),
+                    ]))
+                    .expect("encode row"),
                     Vec::new(),
                 )
             })
             .collect::<Vec<_>>();
-        let failed = RowIdentity::User([6; 16]);
+        let failed = row_uuid(99);
         batch.push(SyncStateUnit::new(
             SyncKey::Row {
                 table: String::from("people"),
-                row: failed.clone(),
+                row: failed,
             },
             vec![0xff],
             Vec::new(),
@@ -655,15 +735,15 @@ fn prior_data_batches_remain_committed_when_a_later_batch_fails() {
         for identity in 1..=3 {
             assert!(applied.iter().any(|unit| matches!(
                 &unit.key,
-                SyncKey::Row { table, row: RowIdentity::User(row) }
-                    if table == "people" && row == &[identity; 16]
+                SyncKey::Row { table, row }
+                    if table == "people" && row == &row_uuid(identity as u128)
             )));
         }
-        for identity in 4..=6 {
+        for identity in 4..=5 {
             assert!(!applied.iter().any(|unit| matches!(
                 &unit.key,
-                SyncKey::Row { table, row: RowIdentity::User(row) }
-                    if table == "people" && row == &[identity; 16]
+                SyncKey::Row { table, row }
+                    if table == "people" && row == &row_uuid(identity as u128)
             )));
         }
     });
@@ -673,11 +753,11 @@ fn prior_data_batches_remain_committed_when_a_later_batch_fails() {
 fn oversized_data_row_is_rejected_before_apply() {
     block_on(async {
         let engine = source().await;
-        let row = RowIdentity::User([9; 16]);
+        let row = row_uuid(9);
         let unit = SyncStateUnit::new(
             SyncKey::Row {
                 table: String::from("people"),
-                row: row.clone(),
+                row,
             },
             vec![0; MAX_APPLY_BATCH_BYTES + 1],
             Vec::new(),
@@ -706,24 +786,33 @@ fn invalid_complete_catalog_definition_is_rejected_atomically() {
         let source = source().await;
         let destination = destination();
         let mut units = export_sync_state_for(&source).await.expect("export state");
-        let field = units.iter_mut().find(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table == ENGINE_TABLE_FIELDS_STORAGE)).expect("table field");
-        let SyncKey::Row {
-            row: RowIdentity::Catalog(ref mut id),
-            ..
-        } = field.key
-        else {
-            panic!("catalog identity")
-        };
-        id[0] ^= 1;
+        let field = units
+            .iter_mut()
+            .find(|unit| {
+                matches!(&unit.key, SyncKey::Row { table, .. } if table == ENGINE_TABLE_FIELDS_STORAGE)
+                    && postcard::from_bytes::<Row>(&unit.state)
+                        .ok()
+                        .and_then(|row| row.values.get(2).and_then(Value::as_text).map(String::from))
+                        .as_deref()
+                        == Some("id")
+            })
+            .expect("primary-key table field");
+        let mut value: Row = postcard::from_bytes(&field.state).expect("decode field row");
+        value.values[1] = Value::from("orphan");
         *field = SyncStateUnit::new(
             field.key.clone(),
-            field.state.clone(),
+            postcard::to_allocvec(&value).expect("encode field row"),
             field.metadata.clone(),
         );
         let error = apply_sync_state_batch_for(&destination, units)
             .await
             .expect_err("orphan field must fail");
-        assert!(error.to_string().contains("has no parent"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("table people has no UUID primary key"),
+            "{error}"
+        );
         assert!(
             destination
                 .table_names()
@@ -758,8 +847,7 @@ fn incomplete_table_and_index_definitions_are_rejected_without_commit() {
 
         let kernel = InMemoryKernel::new();
         let mut transaction = kernel.transaction().await.expect("index transaction");
-        let mut index_id = vec![1; 16];
-        index_id.extend([3; 16]);
+        let index_id = Uuid::now_v7();
         transaction
             .ensure_table(ENGINE_INDICES_STORAGE)
             .await
@@ -767,11 +855,12 @@ fn incomplete_table_and_index_definitions_are_rejected_without_commit() {
         transaction
             .put_bytes(
                 ENGINE_INDICES_STORAGE,
-                RowIdentity::catalog(index_id).to_bytes(),
+                index_id.as_bytes().to_vec(),
                 postcard::to_allocvec(&Row::new(vec![
                     Value::from("by_id"),
                     Value::from("people"),
                     Value::Bool(false),
+                    Value::Uuid(Uuid::now_v7()),
                 ]))
                 .expect("index value"),
             )

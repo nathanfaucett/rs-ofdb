@@ -58,19 +58,39 @@ A Row Reconciler stores and resolves Logical Rows through an Engine Transaction.
 
 ## Row Identity
 
-A user Logical Row has an immutable UUID primary key and belongs to a Table Generation; that pair identifies its Automerge document. A catalog row's UUIDv7 Generation is part of its primary-key identity, never a value column.
+Every SQL Logical Row, including a schema-definition row, has one immutable UUIDv7 primary key. The table name and that same UUID identify the row for storage and replication; a table's identity is its name, not its schema-definition row UUID.
+
+## Schema Definition
+
+A Schema Definition describes a named table or index and its fields. Competing table definitions select one complete schema by largest row UUID; deleting a losing definition does not drop the named table.
+
+## Schema Compatibility
+
+Compatible table schemas have equal field names, types, defaults, primary key, and unique constraints. Field order may differ, but index field order may not.
+
+## Table Drop
+
+A Table Drop deletes a named table's contents and dependent schema definitions, including stale writes made without observing its deletion. It differs from deletion of a losing schema-definition contender.
+
+## Table Recreation
+
+Table Recreation creates a new schema-definition row for the same table name after observing all relevant drops and starts with empty contents. It does not restore deleted rows or introduce a new logical table identity.
 
 ## Index Record
 
-An Index Record maps an index key to a row UUID. The engine derives and updates Index Records from canonical visible Logical Rows in the same Engine Transaction. A unique-index conflict retains all rows; index lookup selects the canonical row.
+An Index Record is a derived mapping from an index key to a row UUID. For a unique key, the largest row UUID is the canonical contender, including when that contender is deleted.
 
 ## Conflict
 
-A Conflict retains concurrent candidate values or objects that cannot all be active. A deterministic canonical ordering selects the visible candidate. An explicit Resolution is the only operation that settles a Conflict.
+A Conflict retains concurrent values within one Logical Row, with deterministic canonical ordering selecting the visible value. An explicit Resolution settles this conflict; collisions between distinct rows follow the separate Unique-Key Conflict rule.
+
+## Unique-Key Conflict
+
+A Unique-Key Conflict occurs when distinct Logical Rows claim the same unique-key value. The largest UUID wins, including tombstoned contenders; smaller contenders are permanently deleted rather than retained for promotion.
 
 ## Generation
 
-A Generation is the immutable UUIDv7 identity of a Table, Column, Index, or Index Field. A user Logical Row uses its table Generation and its own UUID. Catalog identities are scoped by parent identity and logical name or position; names may be reused by a new Generation after the former is Tombstoned. Dependents of an inactive Generation remain replication facts but are not visible.
+SQL table names identify tables. SQL table, column, index, and index-field rows have independent UUID primary keys; ownership and references are stored as ordinary values. SQL does not use table generations. KV generations remain a separate KV Store concept.
 
 ## Sync State Unit
 
@@ -82,7 +102,11 @@ A Sync Manifest maps each sync-owned state-unit identity to its digest. A Sync S
 
 ## Tombstone
 
-A Tombstone is ordinary deleted-row state for a Logical Row or catalog Generation, never a catalog value column. For reusable catalog names, it participates in selecting the greatest Generation but does not appear in search results or allow fallback to an older live Generation. Later changes to that Generation are Superseded; they are retained as replication facts but do not alter visible state. An explicit Restore creates a new Generation.
+A SQL Tombstone permanently marks one Logical Row as deleted. Its unique-key claim can be superseded only by a different row with the same unique-key value and a larger UUID; this does not restore the deleted row.
+
+## SQL Storage Compatibility
+
+UUID row IDs replace the previous tagged and composite SQL row identities. Persisted SQL data and replicated payloads that use the previous identities are incompatible; do not mix formats or migrate them implicitly.
 
 ## KV Store
 

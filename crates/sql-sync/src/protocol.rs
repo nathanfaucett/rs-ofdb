@@ -1,9 +1,9 @@
 use alloc::{string::String, vec::Vec};
 
 use crate::{SyncChangeId, SyncKey, SyncManifest, SyncStateUnit};
-use engine::RowIdentity;
+use engine::Uuid;
 use serde::{Deserialize, Serialize};
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncHello {
@@ -14,14 +14,14 @@ pub struct SyncHello {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncRowInventory {
     pub table: String,
-    pub row: RowIdentity,
+    pub row: Uuid,
     pub changes: Vec<SyncChangeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncIncrementalChange {
     pub table: String,
-    pub row: RowIdentity,
+    pub row: Uuid,
     pub id: SyncChangeId,
     pub payload: Vec<u8>,
 }
@@ -29,7 +29,7 @@ pub struct SyncIncrementalChange {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct SyncSnapshotRequest {
     pub table: String,
-    pub row: RowIdentity,
+    pub row: Uuid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -48,7 +48,7 @@ impl SyncRowInventory {
     pub fn key(&self) -> SyncKey {
         SyncKey::Row {
             table: self.table.clone(),
-            row: self.row.clone(),
+            row: self.row,
         }
     }
 }

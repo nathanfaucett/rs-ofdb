@@ -18,15 +18,14 @@ fn next_uuid(timestamp_provider: TimestampProvider) -> EngineResult<Uuid> {
 use crate::{
     Change, EngineError, EngineResult,
     change::apply_local_change,
-    codec::{RowCodec, RowIdentity},
+    codec::RowCodec,
     engine::{Engine, TimestampProvider},
     kernel::{Kernel, KernelTransaction},
     schema::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-        ENGINE_TABLES_STORAGE, catalog_id, catalog_table_for_storage, child_id, column_id,
-        columns as schema_columns, ensure as ensure_schema, index_storage, latest_named,
-        lookup_index_id, lookup_table_id, lookup_table_name, table_schema as schema_table_schema,
-        user_row_identity,
+        ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id, columns as schema_columns,
+        ensure as ensure_schema, index_storage, largest_schema_name_claim, lookup_index_id,
+        lookup_table_id, lookup_table_name, table_schema as schema_table_schema,
     },
 };
 
@@ -216,15 +215,8 @@ where
                 Err(error) => return Err(error),
             };
             let id = lookup_table_id(transaction, codec, &table).await?;
-            catalog_delete(
-                transaction,
-                codec,
-                changes,
-                timestamp_provider,
-                ENGINE_TABLES_STORAGE,
-                &id,
-            )
-            .await?;
+            drop_table_contents(transaction, codec, timestamp_provider, changes, &table, id)
+                .await?;
             Ok(QueryResult::default())
         }
         DataDefinition::AlterTable {
@@ -400,6 +392,7 @@ where
         Err(_) if if_exists => return Ok(QueryResult::default()),
         Err(error) => return Err(error),
     };
+    let table_id = lookup_table_id(transaction, codec, &table_name).await?;
     let mut names: Vec<_> = table_schema(transaction, codec, &table_name)
         .await?
         .columns
@@ -423,7 +416,8 @@ where
             codec,
             timestamp_provider,
             changes,
-            &lookup_table_id(transaction, codec, &table).await?,
+            table_id,
+            &table,
             position,
             &column,
         )
@@ -431,6 +425,137 @@ where
         names.push(column.name);
     }
     Ok(QueryResult::default())
+}
+
+async fn drop_table_contents<T, R>(
+    transaction: &mut T,
+    codec: &R,
+    timestamp_provider: TimestampProvider,
+    changes: &mut Vec<Change>,
+    table: &str,
+    table_id: Uuid,
+) -> EngineResult<()>
+where
+    T: KernelTransaction,
+    R: RowCodec<T>,
+{
+    let rows = {
+        let rows = codec.scan_rows(transaction, table);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await {
+            ids.push(row?.0);
+        }
+        ids
+    };
+    for id in rows {
+        catalog_delete(transaction, codec, changes, timestamp_provider, table, &id).await?;
+    }
+
+    let indexes = {
+        let rows = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
+        pin_mut!(rows);
+        let mut indexes = Vec::new();
+        while let Some(row) = rows.next().await {
+            let (id, value, deleted) = row?;
+            if value.values.get(1).and_then(Value::as_text) == Some(table) {
+                indexes.push((id, deleted));
+            }
+        }
+        indexes
+    };
+    for (index_id, index_deleted) in indexes {
+        let fields = {
+            let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+            pin_mut!(rows);
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await {
+                let (id, value, deleted) = row?;
+                if !deleted
+                    && value.values.first().and_then(Value::as_uuid).copied() == Some(index_id)
+                {
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+        for id in fields {
+            catalog_delete(
+                transaction,
+                codec,
+                changes,
+                timestamp_provider,
+                ENGINE_INDEX_FIELDS_STORAGE,
+                &id,
+            )
+            .await?;
+        }
+        if !index_deleted {
+            catalog_delete(
+                transaction,
+                codec,
+                changes,
+                timestamp_provider,
+                ENGINE_INDICES_STORAGE,
+                &index_id,
+            )
+            .await?;
+        }
+        let storage = index_storage(&index_id);
+        transaction.ensure_table(&storage).await?;
+        transaction.drop_table(&storage).await?;
+    }
+
+    let fields = {
+        let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await {
+            let (id, value, deleted) = row?;
+            if !deleted && crate::schema::TableFieldRow::try_from(&value)?.table == table {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    for id in fields {
+        catalog_delete(
+            transaction,
+            codec,
+            changes,
+            timestamp_provider,
+            ENGINE_TABLE_FIELDS_STORAGE,
+            &id,
+        )
+        .await?;
+    }
+    let table_definitions = {
+        let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await {
+            let (id, value, _) = row?;
+            if crate::schema::TableRow::try_from(&value)?.name == table {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    let event = catalog_delete(
+        transaction,
+        codec,
+        changes,
+        timestamp_provider,
+        ENGINE_TABLES_STORAGE,
+        &table_id,
+    )
+    .await?;
+    for definition in table_definitions {
+        codec
+            .drop_table_definition(transaction, &definition, event)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn drop_index<T, R>(
@@ -456,6 +581,29 @@ where
         };
     }
     let id = lookup_index_id(transaction, codec, name).await?;
+    let fields = {
+        let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(entry) = rows.next().await {
+            let (field_id, value, deleted) = entry?;
+            if !deleted && value.values.first().and_then(Value::as_uuid).copied() == Some(id) {
+                ids.push(field_id);
+            }
+        }
+        ids
+    };
+    for field in fields {
+        catalog_delete(
+            transaction,
+            codec,
+            changes,
+            timestamp_provider,
+            ENGINE_INDEX_FIELDS_STORAGE,
+            &field,
+        )
+        .await?;
+    }
     let storage = index_storage(&id);
     catalog_delete(
         transaction,
@@ -513,34 +661,36 @@ where
                 .ok_or(EngineError::InvalidQuery("Index column is out of range"))
         })
         .collect::<EngineResult<Vec<_>>>()?;
-    let parent = lookup_table_id(transaction, codec, &table).await?;
-    let id = next_catalog_id(
-        transaction,
-        codec,
-        timestamp_provider,
-        ENGINE_INDICES_STORAGE,
-        &schema.name,
-        Some(&parent),
-    )
-    .await?;
-    codec.ensure_table(transaction, &index_storage(&id)).await?;
+    let id = next_uuid(timestamp_provider)?;
+    if largest_schema_name_claim(transaction, codec, ENGINE_INDICES_STORAGE, &schema.name)
+        .await?
+        .is_some_and(|deleted_id| id <= deleted_id)
+    {
+        return Err(EngineError::InvalidQuery(
+            "New index identity must exceed its deleted identity",
+        ));
+    }
+    let table_id = lookup_table_id(transaction, codec, &table).await?;
+    let storage = index_storage(&id);
+    codec.ensure_table(transaction, &storage).await?;
     catalog_put(
         transaction,
         codec,
         changes,
         timestamp_provider,
         ENGINE_INDICES_STORAGE,
-        id.clone(),
+        id,
         Row::new(vec![
             Value::from(schema.name),
             Value::from(table.clone()),
             Value::Bool(schema.unique),
+            Value::Uuid(table_id),
         ]),
     )
     .await?;
     for (position, column) in index_columns.into_iter().enumerate() {
         let column_id = column_id(transaction, codec, &table, &column).await?;
-        let field = child_id(&id, next_uuid(timestamp_provider)?)?;
+        let field = next_uuid(timestamp_provider)?;
         catalog_put(
             transaction,
             codec,
@@ -549,6 +699,7 @@ where
             ENGINE_INDEX_FIELDS_STORAGE,
             field,
             Row::new(vec![
+                Value::Uuid(id),
                 Value::Integer(position as i64),
                 Value::from(column),
                 Value::Uuid(column_id),
@@ -581,15 +732,16 @@ where
         ));
     }
     let table = table_schema.name.clone();
-    let id = next_catalog_id(
-        transaction,
-        codec,
-        timestamp_provider,
-        ENGINE_TABLES_STORAGE,
-        &table,
-        None,
-    )
-    .await?;
+    let id = next_uuid(timestamp_provider)?;
+    let observed_drops = codec.table_drop_events(transaction, &table).await?;
+    if largest_schema_name_claim(transaction, codec, ENGINE_TABLES_STORAGE, &table)
+        .await?
+        .is_some_and(|deleted_id| id <= deleted_id)
+    {
+        return Err(EngineError::InvalidQuery(
+            "New table identity must exceed its deleted identity",
+        ));
+    }
     codec.ensure_table(transaction, &table).await?;
     catalog_put(
         transaction,
@@ -597,17 +749,21 @@ where
         changes,
         timestamp_provider,
         ENGINE_TABLES_STORAGE,
-        id.clone(),
+        id,
         Row::new(vec![Value::from(table.clone())]),
     )
     .await?;
+    codec
+        .set_observed_table_drops(transaction, &id, observed_drops)
+        .await?;
     for (position, column) in table_schema.columns.iter().enumerate() {
         add_column(
             transaction,
             codec,
             timestamp_provider,
             changes,
-            &id,
+            id,
+            &table,
             position,
             column,
         )
@@ -621,13 +777,14 @@ async fn add_column<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     timestamp_provider: TimestampProvider,
     changes: &mut Vec<Change>,
-    table: &RowIdentity,
+    table_id: Uuid,
+    table: &str,
     position: usize,
     column: &ColumnSchema,
 ) -> EngineResult<()> {
     let position =
         i64::try_from(position).map_err(|_| EngineError::InvalidQuery("Too many columns"))?;
-    let id = child_id(table, next_uuid(timestamp_provider)?)?;
+    let id = next_uuid(timestamp_provider)?;
     catalog_put(
         transaction,
         codec,
@@ -636,6 +793,8 @@ async fn add_column<T: KernelTransaction, R: RowCodec<T>>(
         ENGINE_TABLE_FIELDS_STORAGE,
         id,
         Row::new(vec![
+            Value::Uuid(table_id),
+            Value::from(table),
             Value::from(column.name.as_str()),
             column.r#type.into(),
             column.default.clone(),
@@ -646,40 +805,13 @@ async fn add_column<T: KernelTransaction, R: RowCodec<T>>(
     .await
 }
 
-async fn next_catalog_id<T: KernelTransaction, R: RowCodec<T>>(
-    transaction: &T,
-    codec: &R,
-    timestamp_provider: TimestampProvider,
-    storage: &str,
-    name: &str,
-    parent: Option<&RowIdentity>,
-) -> EngineResult<RowIdentity> {
-    let latest = latest_named(transaction, codec, storage, name).await?;
-    for _ in 0..64 {
-        let id = next_uuid(timestamp_provider)?;
-        let candidate = match parent {
-            Some(parent) => child_id(parent, id)?,
-            None => catalog_id(id)?,
-        };
-        if latest.as_ref().is_none_or(|(previous, _)| {
-            let RowIdentity::Catalog(previous) = previous else {
-                return false;
-            };
-            id.as_bytes().as_slice() > &previous[previous.len() - 16..]
-        }) {
-            return Ok(candidate);
-        }
-    }
-    Err(EngineError::InvalidQuery("Catalog UUIDv7 clock regressed"))
-}
-
 async fn catalog_put<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     changes: &mut Vec<Change>,
     timestamp_provider: TimestampProvider,
     storage: &str,
-    id: RowIdentity,
+    id: Uuid,
     row: Row,
 ) -> EngineResult<()> {
     let fields: Vec<_> = (0..row.values.len()).collect();
@@ -706,20 +838,17 @@ async fn catalog_delete<T: KernelTransaction, R: RowCodec<T>>(
     changes: &mut Vec<Change>,
     timestamp_provider: TimestampProvider,
     storage: &str,
-    id: &RowIdentity,
-) -> EngineResult<()> {
+    id: &Uuid,
+) -> EngineResult<Uuid> {
+    let change_id = next_uuid(timestamp_provider)?;
     apply_local_change(
         transaction,
         codec,
         changes,
-        Change::row(
-            next_uuid(timestamp_provider)?,
-            storage.into(),
-            id.clone(),
-            None,
-        ),
+        Change::row(change_id, storage.into(), *id, None),
     )
-    .await
+    .await?;
+    Ok(change_id)
 }
 
 async fn insert_row<T, R>(
@@ -741,11 +870,7 @@ where
         return Err(EngineError::InvalidQuery("Primary key was deleted"));
     }
     if reconciler
-        .get_row(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row).await?,
-        )
+        .get_row(transaction, &table, &row)
         .await?
         .is_some()
     {
@@ -753,13 +878,7 @@ where
     }
     let changed_columns: Vec<_> = (0..row_value.values.len()).collect();
     let value = reconciler
-        .encode_row(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row).await?,
-            &row_value,
-            &changed_columns,
-        )
+        .encode_row(transaction, &table, &row, &row_value, &changed_columns)
         .await?;
     apply_local_change(
         transaction,
@@ -768,7 +887,7 @@ where
         Change::row(
             next_uuid(timestamp_provider)?,
             table.clone(),
-            user_row_identity(transaction, reconciler, &table, row).await?,
+            row,
             Some(value),
         ),
     )
@@ -817,13 +936,7 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    reconciler
-        .row_is_deleted(
-            transaction,
-            table,
-            &user_row_identity(transaction, reconciler, table, row).await?,
-        )
-        .await
+    reconciler.row_is_deleted(transaction, table, &row).await
 }
 
 async fn insert_values<T, R>(
@@ -902,14 +1015,7 @@ where
         if insert.on_conflict_do_nothing.is_some() || insert.on_conflict_do_update.is_some() {
             let row_id = row_id(&schema, &row)?;
             let table = lookup_table_name(transaction, reconciler, &insert.table).await?;
-            if let Some(mut existing) = reconciler
-                .get_row(
-                    transaction,
-                    &table,
-                    &user_row_identity(transaction, reconciler, &table, row_id).await?,
-                )
-                .await?
-            {
+            if let Some(mut existing) = reconciler.get_row(transaction, &table, &row_id).await? {
                 let Some((_, assignments)) = &insert.on_conflict_do_update else {
                     continue;
                 };
@@ -951,13 +1057,7 @@ where
                     continue;
                 }
                 let encoded = reconciler
-                    .encode_row(
-                        transaction,
-                        &table,
-                        &user_row_identity(transaction, reconciler, &table, row_id).await?,
-                        &existing,
-                        &changed_columns,
-                    )
+                    .encode_row(transaction, &table, &row_id, &existing, &changed_columns)
                     .await?;
                 apply_local_change(
                     transaction,
@@ -966,7 +1066,7 @@ where
                     Change::row(
                         next_uuid(timestamp_provider)?,
                         table.clone(),
-                        user_row_identity(transaction, reconciler, &table, row_id).await?,
+                        row_id,
                         Some(encoded),
                     ),
                 )
@@ -1052,13 +1152,7 @@ where
         }
         let changed_columns: Vec<_> = assignments.iter().map(|(index, _)| *index).collect();
         let value = reconciler
-            .encode_row(
-                transaction,
-                &table,
-                &user_row_identity(transaction, reconciler, &table, id).await?,
-                &row,
-                &changed_columns,
-            )
+            .encode_row(transaction, &table, &id, &row, &changed_columns)
             .await?;
         apply_local_change(
             transaction,
@@ -1067,7 +1161,7 @@ where
             Change::row(
                 next_uuid(timestamp_provider)?,
                 table.clone(),
-                user_row_identity(transaction, reconciler, &table, id).await?,
+                id,
                 Some(value),
             ),
         )
@@ -1127,12 +1221,7 @@ where
             transaction,
             reconciler,
             changes,
-            Change::row(
-                next_uuid(timestamp_provider)?,
-                table.clone(),
-                user_row_identity(transaction, reconciler, &table, row_id).await?,
-                None,
-            ),
+            Change::row(next_uuid(timestamp_provider)?, table.clone(), row_id, None),
         )
         .await?;
         if let Some(returning) = &returning {
@@ -1168,11 +1257,7 @@ where
     let row = key_row_id(key)?;
     let schema = table_schema(transaction, reconciler, table_name).await?;
     reconciler
-        .conflicted_columns(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row).await?,
-        )
+        .conflicted_columns(transaction, &table, &row)
         .await?
         .into_iter()
         .map(|index| {
@@ -1201,11 +1286,7 @@ where
     let row = key_row_id(key)?;
     let schema = table_schema(transaction, reconciler, table_name).await?;
     reconciler
-        .conflict_values(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row).await?,
-        )
+        .conflict_values(transaction, &table, &row)
         .await?
         .into_iter()
         .map(|(index, values)| {
@@ -1242,18 +1323,10 @@ where
     let row_id = key_row_id(key)?;
     let schema = table_schema(transaction, reconciler, table_name).await?;
     let conflicts = reconciler
-        .conflicted_columns(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row_id).await?,
-        )
+        .conflicted_columns(transaction, &table, &row_id)
         .await?;
     let mut row = reconciler
-        .get_row(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row_id).await?,
-        )
+        .get_row(transaction, &table, &row_id)
         .await?
         .ok_or(EngineError::InvalidQuery("Row not found"))?;
     let mut changed_columns = Vec::with_capacity(values.len());
@@ -1278,13 +1351,7 @@ where
         changed_columns.push(index);
     }
     let value = reconciler
-        .encode_resolution(
-            transaction,
-            &table,
-            &user_row_identity(transaction, reconciler, &table, row_id).await?,
-            &row,
-            &changed_columns,
-        )
+        .encode_resolution(transaction, &table, &row_id, &row, &changed_columns)
         .await?;
     let mut changes = Vec::new();
     apply_local_change(
@@ -1294,7 +1361,7 @@ where
         Change::row(
             next_uuid(timestamp_provider)?,
             table.clone(),
-            user_row_identity(transaction, reconciler, &table, row_id).await?,
+            row_id,
             Some(value),
         ),
     )
@@ -1322,12 +1389,7 @@ where
         let (row_id, row) = item?;
         let row = materialize_defaults(schema, row);
         if predicate_matches(schema, table_name, &row, predicate)? {
-            let RowIdentity::ScopedUser { row: bytes, .. } = row_id else {
-                return Err(EngineError::InvalidQuery(
-                    "SQL rows require UUID identities",
-                ));
-            };
-            rows.push((Uuid::from_bytes(bytes), row));
+            rows.push((row_id, row));
         }
     }
 
@@ -2103,11 +2165,14 @@ pub(crate) fn row_id(schema: &TableSchema, row: &Row) -> EngineResult<Uuid> {
             "Table requires exactly one UUID primary key",
         ));
     };
-    row.values
+    let id = row
+        .values
         .get(*index)
         .and_then(Value::as_uuid)
         .copied()
-        .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))
+        .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))?;
+    crate::schema::validate_row_id(&id)?;
+    Ok(id)
 }
 
 fn key_row_id(key: &Row) -> EngineResult<Uuid> {

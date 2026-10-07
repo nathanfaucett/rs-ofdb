@@ -1,5 +1,4 @@
 use alloc::{
-    collections::BTreeMap,
     format,
     string::{String, ToString},
     vec::Vec,
@@ -7,16 +6,24 @@ use alloc::{
 
 use futures::{StreamExt, pin_mut};
 use schema::{ColumnSchema, ColumnSchemaIndex, IndexSchema, TableSchema};
-use uuid::{Uuid, Variant, Version};
+use uuid::Uuid;
 use value::{Row, Value, ValueType};
 
-use crate::{EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity};
+use crate::{EngineError, EngineResult, KernelTransaction, RowCodec};
 
 pub const ENGINE_TABLES_STORAGE: &str = "__engine_tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "__engine_table_fields";
 pub const ENGINE_INDICES_STORAGE: &str = "__engine_indices";
 pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "__engine_index_fields";
-pub const ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID: &str = "column_id";
+
+pub(crate) fn validate_row_id(id: &Uuid) -> EngineResult<()> {
+    let bytes = id.as_bytes();
+    if bytes[6] >> 4 == 7 && bytes[8] & 0xc0 == 0x80 {
+        Ok(())
+    } else {
+        Err(EngineError::InvalidQuery("Primary key must be a UUIDv7"))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableRow {
@@ -25,6 +32,8 @@ pub(crate) struct TableRow {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableFieldRow {
+    pub table_id: Uuid,
+    pub table: String,
     pub name: String,
     pub r#type: ValueType,
     pub default: Value,
@@ -37,10 +46,12 @@ pub(crate) struct IndexRow {
     pub name: String,
     pub table: String,
     pub unique: bool,
+    pub table_id: Uuid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IndexFieldRow {
+    pub index_id: Uuid,
     pub position: i64,
     pub column: String,
     pub column_id: Uuid,
@@ -66,24 +77,32 @@ impl TryFrom<&Row> for TableFieldRow {
     fn try_from(row: &Row) -> EngineResult<Self> {
         let values = &row.values;
         Ok(Self {
-            name: values
+            table_id: values
                 .first()
+                .and_then(Value::to_uuid)
+                .ok_or(EngineError::custom("Invalid column table identity"))?,
+            table: values
+                .get(1)
+                .and_then(Value::to_text)
+                .ok_or(EngineError::custom("Invalid column table"))?,
+            name: values
+                .get(2)
                 .and_then(Value::to_text)
                 .ok_or(EngineError::custom("Invalid column name"))?,
             r#type: values
-                .get(1)
+                .get(3)
                 .and_then(Value::to_type)
                 .ok_or(EngineError::custom("Invalid column type"))?,
             default: values
-                .get(2)
+                .get(4)
                 .cloned()
                 .ok_or(EngineError::custom("Invalid column default"))?,
             position: values
-                .get(3)
+                .get(5)
                 .and_then(Value::to_integer)
                 .ok_or(EngineError::custom("Invalid column position"))?,
             primary_key: values
-                .get(4)
+                .get(6)
                 .and_then(Value::to_bool)
                 .ok_or(EngineError::custom("Invalid primary key"))?,
         })
@@ -108,6 +127,10 @@ impl TryFrom<&Row> for IndexRow {
                 .get(2)
                 .and_then(Value::to_bool)
                 .ok_or(EngineError::custom("Invalid index uniqueness"))?,
+            table_id: values
+                .get(3)
+                .and_then(Value::to_uuid)
+                .ok_or(EngineError::custom("Invalid index table identity"))?,
         })
     }
 }
@@ -118,16 +141,20 @@ impl TryFrom<&Row> for IndexFieldRow {
     fn try_from(row: &Row) -> EngineResult<Self> {
         let values = &row.values;
         Ok(Self {
-            position: values
+            index_id: values
                 .first()
+                .and_then(Value::to_uuid)
+                .ok_or(EngineError::custom("Invalid index identity"))?,
+            position: values
+                .get(1)
                 .and_then(Value::to_integer)
                 .ok_or(EngineError::custom("Invalid index field position"))?,
             column: values
-                .get(1)
+                .get(2)
                 .and_then(Value::to_text)
                 .ok_or(EngineError::custom("Invalid index column"))?,
             column_id: values
-                .get(2)
+                .get(3)
                 .and_then(Value::to_uuid)
                 .ok_or(EngineError::custom("Invalid index column identity"))?,
         })
@@ -146,9 +173,17 @@ impl CatalogTable {
     pub const fn columns(self) -> &'static [&'static str] {
         match self {
             Self::Tables => &["name"],
-            Self::TableFields => &["name", "type", "default", "position", "primary_key"],
-            Self::Indices => &["name", "table", "unique"],
-            Self::IndexFields => &["position", "column", "column_id"],
+            Self::TableFields => &[
+                "table_id",
+                "table",
+                "name",
+                "type",
+                "default",
+                "position",
+                "primary_key",
+            ],
+            Self::Indices => &["name", "table", "unique", "table_id"],
+            Self::IndexFields => &["index_id", "position", "column", "column_id"],
         }
     }
 
@@ -173,35 +208,261 @@ pub fn catalog_table_for_storage(storage: &str) -> Option<CatalogTable> {
     .find(|table| table.storage() == storage)
 }
 
-pub(crate) fn catalog_id(id: Uuid) -> EngineResult<RowIdentity> {
-    if id.get_version() != Some(Version::SortRand) || id.get_variant() != Variant::RFC4122 {
-        return Err(EngineError::custom("Catalog identity must be UUIDv7"));
-    }
-    Ok(RowIdentity::catalog(id.as_bytes().to_vec()))
-}
-
-pub(crate) fn child_id(parent: &RowIdentity, id: Uuid) -> EngineResult<RowIdentity> {
-    let RowIdentity::Catalog(bytes) = parent else {
-        return Err(EngineError::custom("Invalid catalog parent"));
-    };
-    if bytes.len() != 16 && bytes.len() != 32 {
-        return Err(EngineError::custom("Invalid catalog parent identity"));
-    }
-    let RowIdentity::Catalog(child) = catalog_id(id)? else {
-        unreachable!()
-    };
-    let mut key = bytes.clone();
-    key.extend(child);
-    Ok(RowIdentity::catalog(key))
-}
-
-fn belongs_to(row: &RowIdentity, parent: &RowIdentity) -> bool {
-    match (row, parent) {
-        (RowIdentity::Catalog(row), RowIdentity::Catalog(parent)) => {
-            row.len() == parent.len() + 16 && row.starts_with(parent)
+pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &mut T,
+    codec: &R,
+) -> EngineResult<()> {
+    let states = {
+        let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+        pin_mut!(rows);
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().await {
+            let (id, value, deleted) = row?;
+            states.push((id, TableRow::try_from(&value)?.name, deleted));
         }
-        _ => false,
+        states
+    };
+    let mut states = states;
+    for (id, name, deleted) in &mut states {
+        if *deleted {
+            continue;
+        }
+        let events = codec.table_drop_events(transaction, name).await?;
+        let observed = codec.observed_table_drops(transaction, id).await?;
+        let unobserved: Vec<_> = events
+            .into_iter()
+            .filter(|event| !observed.contains(event))
+            .collect();
+        if !unobserved.is_empty() {
+            codec
+                .delete_row(transaction, ENGINE_TABLES_STORAGE, id)
+                .await?;
+            for event in unobserved {
+                codec.drop_table_definition(transaction, id, event).await?;
+            }
+            *deleted = true;
+        }
     }
+    for (id, name, _) in &states {
+        if codec.table_definition_was_dropped(transaction, id).await? {
+            delete_dropped_table_dependents(transaction, codec, name, id).await?;
+        }
+    }
+    let mut winners: Vec<(String, Uuid)> = Vec::new();
+    for (id, name, _) in &states {
+        if let Some((_, winner)) = winners.iter_mut().find(|(key, _)| key == name) {
+            if id > winner {
+                *winner = *id;
+            }
+        } else {
+            winners.push((name.clone(), *id));
+        }
+    }
+    for (id, name, deleted) in states {
+        let winner = winners
+            .iter()
+            .find(|(key, _)| key == &name)
+            .expect("schema name has a winning row")
+            .1;
+        if id != winner && !deleted {
+            codec
+                .delete_row(transaction, ENGINE_TABLES_STORAGE, &id)
+                .await?;
+        }
+    }
+    let states = {
+        let rows = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
+        pin_mut!(rows);
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().await {
+            let (id, value, deleted) = row?;
+            states.push((id, IndexRow::try_from(&value)?, deleted));
+        }
+        states
+    };
+    let mut states = states;
+    for (id, index, deleted) in &mut states {
+        if *deleted {
+            delete_index_dependents(transaction, codec, id, false).await?;
+            continue;
+        }
+        if codec
+            .table_definition_was_dropped(transaction, &index.table_id)
+            .await?
+        {
+            delete_index_dependents(transaction, codec, id, true).await?;
+            *deleted = true;
+        }
+    }
+    for (id, index, deleted) in &mut states {
+        if *deleted || lookup_index_id(transaction, codec, &index.name).await? != *id {
+            continue;
+        }
+        let invalid = match index_schema(transaction, codec, &index.name).await {
+            Ok(_) => false,
+            Err(EngineError::InvalidQuery("Index column not found")) => true,
+            Err(error) => return Err(error),
+        };
+        if !invalid {
+            continue;
+        }
+        codec
+            .delete_row(transaction, ENGINE_INDICES_STORAGE, id)
+            .await?;
+        let fields = {
+            let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+            pin_mut!(rows);
+            let mut ids = Vec::new();
+            while let Some(entry) = rows.next().await {
+                let (field_id, field, field_deleted) = entry?;
+                if !field_deleted
+                    && field.values.first().and_then(Value::as_uuid).copied() == Some(*id)
+                {
+                    ids.push(field_id);
+                }
+            }
+            ids
+        };
+        for field in fields {
+            codec
+                .delete_row(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field)
+                .await?;
+        }
+        let storage = index_storage(id);
+        transaction.ensure_table(&storage).await?;
+        transaction.drop_table(&storage).await?;
+        *deleted = true;
+    }
+    let mut winners: Vec<(String, Uuid)> = Vec::new();
+    for (id, index, _) in &states {
+        if let Some((_, winner)) = winners.iter_mut().find(|(key, _)| key == &index.name) {
+            if id > winner {
+                *winner = *id;
+            }
+        } else {
+            winners.push((index.name.clone(), *id));
+        }
+    }
+    for (id, index, deleted) in states {
+        let winner = winners
+            .iter()
+            .find(|(key, _)| key == &index.name)
+            .expect("index name has a winning row")
+            .1;
+        if id != winner {
+            delete_index_dependents(transaction, codec, &id, !deleted).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn delete_dropped_table_dependents<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &mut T,
+    codec: &R,
+    table: &str,
+    table_id: &Uuid,
+) -> EngineResult<()> {
+    let fields = {
+        let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(entry) = rows.next().await {
+            let (id, value, deleted) = entry?;
+            if !deleted && TableFieldRow::try_from(&value)?.table_id == *table_id {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    for id in fields {
+        codec
+            .delete_row(transaction, ENGINE_TABLE_FIELDS_STORAGE, &id)
+            .await?;
+    }
+    let table_is_active = match lookup_table_id(transaction, codec, table).await {
+        Ok(_) => true,
+        Err(EngineError::InvalidQuery("Table not found")) => false,
+        Err(error) => return Err(error),
+    };
+    let rows = {
+        let rows = codec.scan_row_states(transaction, table);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(entry) = rows.next().await {
+            let (id, _, deleted) = entry?;
+            if !deleted
+                && (!table_is_active
+                    || codec
+                        .row_has_dropped_definition(transaction, table, &id)
+                        .await?)
+            {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    for id in rows {
+        codec.delete_row(transaction, table, &id).await?;
+    }
+    Ok(())
+}
+
+async fn delete_index_dependents<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &mut T,
+    codec: &R,
+    index_id: &Uuid,
+    delete_definition: bool,
+) -> EngineResult<()> {
+    if delete_definition {
+        codec
+            .delete_row(transaction, ENGINE_INDICES_STORAGE, index_id)
+            .await?;
+    }
+    let fields = {
+        let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
+        pin_mut!(rows);
+        let mut ids = Vec::new();
+        while let Some(entry) = rows.next().await {
+            let (field_id, field, deleted) = entry?;
+            if !deleted && field.values.first().and_then(Value::as_uuid).copied() == Some(*index_id)
+            {
+                ids.push(field_id);
+            }
+        }
+        ids
+    };
+    for field in fields {
+        codec
+            .delete_row(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field)
+            .await?;
+    }
+    let storage = index_storage(index_id);
+    transaction.ensure_table(&storage).await?;
+    transaction.drop_table(&storage).await?;
+    Ok(())
+}
+
+pub(crate) async fn largest_schema_name_claim<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    storage: &str,
+    name: &str,
+) -> EngineResult<Option<Uuid>> {
+    let rows = codec.scan_row_states(transaction, storage);
+    pin_mut!(rows);
+    let mut largest = None;
+    while let Some(entry) = rows.next().await {
+        let (id, value, _) = entry?;
+        let row_name = match storage {
+            ENGINE_TABLES_STORAGE => TableRow::try_from(&value)?.name,
+            ENGINE_INDICES_STORAGE => IndexRow::try_from(&value)?.name,
+            _ => return Err(EngineError::custom("Invalid schema name storage")),
+        };
+        if row_name == name && largest.is_none_or(|largest_id| id > largest_id) {
+            largest = Some(id);
+        }
+    }
+    Ok(largest)
 }
 
 pub(crate) async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
@@ -219,40 +480,9 @@ pub(crate) async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) async fn find_named<T: KernelTransaction, R: RowCodec<T>>(
-    transaction: &T,
-    codec: &R,
-    storage: &str,
-    name: &str,
-) -> EngineResult<Option<RowIdentity>> {
-    Ok(latest_named(transaction, codec, storage, name)
-        .await?
-        .and_then(|(id, deleted)| (!deleted).then_some(id)))
-}
-
-pub(crate) async fn latest_named<T: KernelTransaction, R: RowCodec<T>>(
-    transaction: &T,
-    codec: &R,
-    storage: &str,
-    name: &str,
-) -> EngineResult<Option<(RowIdentity, bool)>> {
-    let rows = codec.scan_row_states(transaction, storage);
-    pin_mut!(rows);
-    let mut latest = None;
-    while let Some(row) = rows.next().await {
-        let (id, value, deleted) = row?;
-        if value.values.first().and_then(Value::as_text) == Some(name)
-            && latest.as_ref().is_none_or(|(previous, _)| &id > previous)
-        {
-            latest = Some((id, deleted));
-        }
-    }
-    Ok(latest)
-}
-
-pub(crate) fn index_storage(id: &RowIdentity) -> String {
+pub(crate) fn index_storage(id: &Uuid) -> String {
     let mut name = String::from("__engine_index_");
-    for byte in id.to_bytes() {
+    for byte in id.as_bytes() {
         name.push_str(&format!("{byte:02x}"));
     }
     name
@@ -262,51 +492,46 @@ pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
-) -> EngineResult<RowIdentity> {
-    find_named(transaction, codec, ENGINE_TABLES_STORAGE, name)
-        .await?
+) -> EngineResult<Uuid> {
+    let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+    pin_mut!(rows);
+    let mut selected = None;
+    while let Some(entry) = rows.next().await {
+        let (id, value, deleted) = entry?;
+        if deleted || TableRow::try_from(&value)?.name != name {
+            continue;
+        }
+        if selected
+            .as_ref()
+            .is_none_or(|(selected_id, _)| id > *selected_id)
+        {
+            selected = Some((id, value));
+        }
+    }
+    selected
+        .map(|(id, _)| id)
         .ok_or(EngineError::InvalidQuery("Table not found"))
-}
-
-pub(crate) async fn user_row_identity<T: KernelTransaction, R: RowCodec<T>>(
-    transaction: &T,
-    codec: &R,
-    table: &str,
-    row: Uuid,
-) -> EngineResult<RowIdentity> {
-    let RowIdentity::Catalog(parent) = lookup_table_id(transaction, codec, table).await? else {
-        return Err(EngineError::custom("Invalid table identity"));
-    };
-    let parent: [u8; 16] = parent
-        .as_slice()
-        .try_into()
-        .map_err(|_| EngineError::custom("Invalid table identity"))?;
-    Ok(RowIdentity::scoped_user(Uuid::from_bytes(parent), row))
 }
 
 pub(crate) async fn active_user_row<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
-    row: &RowIdentity,
+    row: &Uuid,
 ) -> EngineResult<bool> {
-    let RowIdentity::ScopedUser { table: owner, .. } = row else {
-        return Ok(false);
-    };
-    let active = match lookup_table_id(transaction, codec, table).await {
-        Ok(RowIdentity::Catalog(active)) => active,
-        Err(EngineError::InvalidQuery("Table not found")) => return Ok(false),
-        Err(error) => return Err(error),
-        _ => return Ok(false),
-    };
-    Ok(active.as_slice() == owner)
+    let _ = row;
+    match lookup_table_id(transaction, codec, table).await {
+        Ok(_) => Ok(true),
+        Err(EngineError::InvalidQuery("Table not found")) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) async fn lookup_index_id<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
-) -> EngineResult<RowIdentity> {
+) -> EngineResult<Uuid> {
     active_index(transaction, codec, name)
         .await?
         .map(|(id, _)| id)
@@ -317,24 +542,35 @@ async fn active_index<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
-) -> EngineResult<Option<(RowIdentity, Row)>> {
-    let Some((id, deleted)) =
-        latest_named(transaction, codec, ENGINE_INDICES_STORAGE, name).await?
-    else {
+) -> EngineResult<Option<(Uuid, Row)>> {
+    let rows = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
+    pin_mut!(rows);
+    let mut selected = None;
+    while let Some(entry) = rows.next().await {
+        let (id, value, deleted) = entry?;
+        if deleted || IndexRow::try_from(&value)?.name != name {
+            continue;
+        }
+        if selected
+            .as_ref()
+            .is_none_or(|(selected_id, _)| id > *selected_id)
+        {
+            selected = Some((id, value));
+        }
+    }
+    let Some((id, value)) = selected else {
         return Ok(None);
     };
-    if deleted {
+    let index = IndexRow::try_from(&value)?;
+    let table = index.table;
+    if codec
+        .table_definition_was_dropped(transaction, &index.table_id)
+        .await?
+        || lookup_table_id(transaction, codec, &table).await.is_err()
+    {
         return Ok(None);
     }
-    let value = codec
-        .get_row(transaction, ENGINE_INDICES_STORAGE, &id)
-        .await?
-        .ok_or(EngineError::custom("Missing index row"))?;
-    let table = IndexRow::try_from(&value)?.table;
-    let Ok(parent) = lookup_table_id(transaction, codec, &table).await else {
-        return Ok(None);
-    };
-    Ok(belongs_to(&id, &parent).then_some((id, value)))
+    Ok(Some((id, value)))
 }
 
 pub(crate) async fn lookup_table_name<T: KernelTransaction, R: RowCodec<T>>(
@@ -351,33 +587,19 @@ pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     table: &str,
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
-    let parent = lookup_table_id(transaction, codec, table).await?;
+    let table_id = lookup_table_id(transaction, codec, table).await?;
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);
-    let mut latest = BTreeMap::new();
-    while let Some(row) = rows.next().await {
-        let (id, value, deleted) = row?;
-        if !belongs_to(&id, &parent) {
-            continue;
-        }
-        let name = value
-            .values
-            .first()
-            .and_then(Value::to_text)
-            .ok_or(EngineError::custom("Invalid column name"))?;
-        let entry = latest
-            .entry(name)
-            .or_insert_with(|| (id.clone(), value.clone(), deleted));
-        if id > entry.0 {
-            *entry = (id, value, deleted);
-        }
-    }
     let mut result = Vec::new();
-    for (_, (_, value, deleted)) in latest {
+    while let Some(row) = rows.next().await {
+        let (_, value, deleted) = row?;
         if deleted {
             continue;
         }
         let field = TableFieldRow::try_from(&value)?;
+        if field.table_id != table_id || field.table != table {
+            continue;
+        }
         let column = ColumnSchema {
             name: field.name.clone(),
             r#type: field.r#type,
@@ -399,28 +621,24 @@ pub(crate) async fn column_id<T: KernelTransaction, R: RowCodec<T>>(
     table: &str,
     name: &str,
 ) -> EngineResult<Uuid> {
-    let parent = lookup_table_id(transaction, codec, table).await?;
+    let table_id = lookup_table_id(transaction, codec, table).await?;
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);
-    let mut latest: Option<(RowIdentity, bool)> = None;
-    while let Some(row) = rows.next().await {
-        let (id, value, deleted) = row?;
-        if belongs_to(&id, &parent)
-            && value.values.first().and_then(Value::as_text) == Some(name)
-            && latest.as_ref().is_none_or(|(previous, _)| id > *previous)
-        {
-            latest = Some((id, deleted));
+    let mut selected = None;
+    while let Some(entry) = rows.next().await {
+        let (id, value, deleted) = entry?;
+        if deleted {
+            continue;
+        }
+        let field = TableFieldRow::try_from(&value)?;
+        if field.table_id != table_id || field.name != name {
+            continue;
+        }
+        if selected.is_none_or(|selected_id| id > selected_id) {
+            selected = Some(id);
         }
     }
-    let Some((RowIdentity::Catalog(bytes), false)) = latest else {
-        return Err(EngineError::InvalidQuery("Index column not found"));
-    };
-    let id: [u8; 16] = bytes
-        .get(16..)
-        .ok_or(EngineError::custom("Invalid column identity"))?
-        .try_into()
-        .map_err(|_| EngineError::custom("Invalid column identity"))?;
-    Ok(Uuid::from_bytes(id))
+    selected.ok_or(EngineError::InvalidQuery("Index column not found"))
 }
 
 pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
@@ -448,6 +666,28 @@ pub(crate) async fn table_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     })
 }
 
+async fn column_reference_is_active<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    table: &str,
+    name: &str,
+    id: Uuid,
+) -> EngineResult<bool> {
+    let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+    pin_mut!(rows);
+    while let Some(entry) = rows.next().await {
+        let (field_id, value, deleted) = entry?;
+        if field_id != id || deleted {
+            continue;
+        }
+        let field = TableFieldRow::try_from(&value)?;
+        if field.table == table && field.name == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
@@ -461,37 +701,34 @@ pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
     let unique = index.unique;
     let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
     pin_mut!(rows);
-    let mut latest = BTreeMap::new();
-    while let Some(row) = rows.next().await {
-        let (field_id, field, deleted) = row?;
-        if !belongs_to(&field_id, &id) {
-            continue;
-        }
-        let position = IndexFieldRow::try_from(&field)?.position;
-        let entry = latest
-            .entry(position)
-            .or_insert_with(|| (field_id.clone(), field.clone(), deleted));
-        if field_id > entry.0 {
-            *entry = (field_id, field, deleted);
-        }
-    }
     let mut fields = Vec::new();
-    for (position, (_, field, deleted)) in latest {
+    while let Some(row) = rows.next().await {
+        let (_, value, deleted) = row?;
         if deleted {
             continue;
         }
-        let field = IndexFieldRow::try_from(&field)?;
+        let field = IndexFieldRow::try_from(&value)?;
+        if id != field.index_id {
+            continue;
+        }
+        fields.push((field.position, field));
+    }
+    fields.sort_by_key(|(position, _)| *position);
+    let mut active_fields = Vec::new();
+    for (position, field) in fields {
         let column = field.column;
         let referenced_column_id = field.column_id;
-        if referenced_column_id != column_id(transaction, codec, &table, &column).await? {
+        if !column_reference_is_active(transaction, codec, &table, &column, referenced_column_id)
+            .await?
+        {
             return Err(EngineError::InvalidQuery(
                 "Index column identity is inactive",
             ));
         }
-        fields.push((position, column));
+        active_fields.push((position, column));
     }
     let schema_columns = columns(transaction, codec, &table).await?;
-    let column_indices = fields
+    let column_indices = active_fields
         .into_iter()
         .map(|(_, column)| {
             schema_columns

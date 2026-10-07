@@ -11,8 +11,7 @@ use futures::{StreamExt, pin_mut};
 
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-    ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary,
-    RowIdentity,
+    ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
 };
 use thiserror::Error;
 
@@ -299,23 +298,23 @@ where
                         let row = row?;
                         let entry_bytes = table_for_rows
                             .len()
-                            .saturating_add(row.to_bytes().len())
+                            .saturating_add(row.as_bytes().len())
                             .saturating_add(48);
                         used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
                         let state_budget = max_bytes.saturating_sub(used_bytes);
                         let state = codec
-                            .export_state(transaction, &table_for_rows, row.clone(), state_budget)
+                            .export_state(transaction, &table_for_rows, row, state_budget)
                             .await?
                             .unwrap_or_default();
                         let metadata = codec
-                            .export_metadata(transaction, &table_for_rows, row.clone())
+                            .export_metadata(transaction, &table_for_rows, row)
                             .await?;
                         if !state.is_empty() || !metadata.is_empty() {
                             let key = SyncKey::Row {
                                 table: table_for_rows.clone(),
                                 row,
                             };
-                            let digest = SyncStateUnit::new(key.clone(), state, metadata).digest;
+                            let digest = codec.manifest_digest(&state, &metadata)?;
                             entries.push((key, digest));
                         } else {
                             used_bytes = used_bytes.saturating_sub(entry_bytes);
@@ -377,21 +376,21 @@ where
                         let state_budget = max_bytes
                             .saturating_sub(used_bytes)
                             .saturating_sub(table_for_rows.len())
-                            .saturating_sub(row.to_bytes().len())
+                            .saturating_sub(row.as_bytes().len())
                             .saturating_sub(64);
                         let state = codec
-                            .export_state(transaction, &table_for_rows, row.clone(), state_budget)
+                            .export_state(transaction, &table_for_rows, row, state_budget)
                             .await?
                             .unwrap_or_default();
                         let metadata = codec
-                            .export_metadata(transaction, &table_for_rows, row.clone())
+                            .export_metadata(transaction, &table_for_rows, row)
                             .await?;
                         if !state.is_empty() || !metadata.is_empty() {
                             let state_bytes = state
                                 .len()
                                 .saturating_add(metadata.len())
                                 .saturating_add(table_for_rows.len())
-                                .saturating_add(row.to_bytes().len())
+                                .saturating_add(row.as_bytes().len())
                                 .saturating_add(64);
                             used_bytes =
                                 account_engine_payload(used_bytes, state_bytes, max_bytes)?;
@@ -451,6 +450,7 @@ where
 {
     validate_state_batch(&snapshots)?;
     validate_change_batch(&changes)?;
+    validate_row_addresses(&snapshots, &changes)?;
     let has_catalog = snapshots.iter().any(|unit| {
         let SyncKey::Row { table, .. } = &unit.key;
         catalog_order(table) < 4
@@ -520,20 +520,18 @@ where
     }
 
     if has_data {
-        let mut rows = BTreeMap::<(String, RowIdentity), (Vec<usize>, Vec<usize>, usize)>::new();
+        let mut rows = BTreeMap::<(String, Uuid), (Vec<usize>, Vec<usize>, usize)>::new();
         for (index, unit) in snapshots.iter().enumerate() {
             let SyncKey::Row { table, row } = &unit.key;
             if catalog_order(table) == 4 {
-                let entry = rows.entry((table.clone(), row.clone())).or_default();
+                let entry = rows.entry((table.clone(), *row)).or_default();
                 entry.0.push(index);
                 entry.2 = entry.2.saturating_add(sync_state_unit_estimate(unit));
             }
         }
         for (index, change) in changes.iter().enumerate() {
             if catalog_order(&change.table) == 4 {
-                let entry = rows
-                    .entry((change.table.clone(), change.row.clone()))
-                    .or_default();
+                let entry = rows.entry((change.table.clone(), change.row)).or_default();
                 entry.1.push(index);
                 entry.2 = entry
                     .2
@@ -621,12 +619,8 @@ fn sync_incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
         .saturating_add(change.payload.len())
 }
 
-fn row_identity_estimate(row: &RowIdentity) -> usize {
-    match row {
-        RowIdentity::User(_) => 16,
-        RowIdentity::ScopedUser { .. } => 32,
-        RowIdentity::Catalog(bytes) => bytes.len(),
-    }
+fn row_identity_estimate(_: &Uuid) -> usize {
+    16
 }
 
 async fn merge_snapshot<T, R>(
@@ -641,14 +635,14 @@ where
     let SyncKey::Row { table, row } = &unit.key;
     if !unit.metadata.is_empty() {
         codec
-            .merge_metadata(transaction, table, row.clone(), &unit.metadata)
+            .merge_metadata(transaction, table, *row, &unit.metadata)
             .await?;
     }
     let new = if unit.state.is_empty() {
         None
     } else {
         codec
-            .merge_state(transaction, table, row.clone(), &unit.state)
+            .merge_state(transaction, table, *row, &unit.state)
             .await?
     };
     if new.is_none() && !codec.row_is_deleted(transaction, table, row).await? {
@@ -673,7 +667,7 @@ where
         .apply_change(
             transaction,
             &change.table,
-            change.row.clone(),
+            change.row,
             &change.id,
             &change.payload,
         )
@@ -723,61 +717,32 @@ where
             if deleted {
                 continue;
             }
-            let RowIdentity::Catalog(bytes) = &id else {
-                return Err(EngineError::custom(format!(
-                    "Invalid catalog identity in {}",
-                    table
-                )));
-            };
-            let parent = match table {
-                ENGINE_TABLES_STORAGE if bytes.len() == 16 => None,
-                ENGINE_TABLE_FIELDS_STORAGE | ENGINE_INDICES_STORAGE if bytes.len() == 32 => {
-                    Some((ENGINE_TABLES_STORAGE, 16))
-                }
-                ENGINE_INDEX_FIELDS_STORAGE if bytes.len() == 48 => {
-                    Some((ENGINE_INDICES_STORAGE, 32))
-                }
-                _ => {
-                    return Err(EngineError::custom(format!(
-                        "Invalid catalog identity length in {}",
-                        table
-                    )));
-                }
-            };
-            if let Some((storage, size)) = parent {
-                let parent_id = RowIdentity::catalog(bytes[..size].to_vec());
-                if !catalog_has_active_row(codec, transaction, storage, &parent_id).await?
-                    && !codec
-                        .row_is_deleted(transaction, storage, &parent_id)
-                        .await?
-                {
-                    return Err(EngineError::custom(format!(
-                        "Incomplete catalog: {} row {} has no parent in {}",
-                        table, id, storage
-                    )));
-                }
-            }
+
             let values = &value.values;
             let valid = match table {
                 ENGINE_TABLES_STORAGE => values.len() == 1 && values[0].as_text().is_some(),
                 ENGINE_TABLE_FIELDS_STORAGE => {
-                    values.len() == 5
-                        && values[0].as_text().is_some()
-                        && values[1].to_type().is_some()
-                        && values[3].to_integer().is_some_and(|position| position >= 0)
-                        && values[4].to_bool().is_some()
+                    values.len() == 7
+                        && values[0].to_uuid().is_some()
+                        && values[1].as_text().is_some()
+                        && values[2].as_text().is_some()
+                        && values[3].to_type().is_some()
+                        && values[5].to_integer().is_some_and(|position| position >= 0)
+                        && values[6].to_bool().is_some()
                 }
                 ENGINE_INDICES_STORAGE => {
-                    values.len() == 3
+                    values.len() == 4
                         && values[0].as_text().is_some()
                         && values[1].as_text().is_some()
                         && values[2].to_bool().is_some()
+                        && values[3].to_uuid().is_some()
                 }
                 ENGINE_INDEX_FIELDS_STORAGE => {
-                    values.len() == 3
-                        && values[0].to_integer().is_some_and(|position| position >= 0)
-                        && values[1].as_text().is_some()
-                        && values[2].to_uuid().is_some()
+                    values.len() == 4
+                        && values[0].to_uuid().is_some()
+                        && values[1].to_integer().is_some_and(|position| position >= 0)
+                        && values[2].as_text().is_some()
+                        && values[3].to_uuid().is_some()
                 }
                 _ => false,
             };
@@ -789,30 +754,31 @@ where
             }
         }
     }
-    let mut table_ids_by_name = BTreeMap::new();
+    let mut table_names = BTreeSet::new();
     let mut table_lookup_bytes = 0usize;
     let tables = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
     pin_mut!(tables);
     while let Some(state) = tables.next().await {
-        let (id, value, deleted) = state?;
+        let (table_id, value, deleted) = state?;
         if deleted {
             continue;
         }
-        let RowIdentity::Catalog(table_id) = &id else {
-            return Err(EngineError::custom("Invalid catalog table identity"));
-        };
+
         let name = value.values[0]
             .as_text()
             .expect("catalog table name was validated");
-        insert_table_identity(
-            &mut table_ids_by_name,
-            &mut table_lookup_bytes,
-            name,
-            table_id,
-            MAX_CATALOG_LOOKUP_BYTES,
-        )?;
+        let next_bytes = table_lookup_bytes
+            .saturating_add(name.len())
+            .saturating_add(256);
+        if next_bytes > MAX_CATALOG_LOOKUP_BYTES {
+            return Err(EngineError::custom(format!(
+                "Catalog table-name index exceeds the {MAX_CATALOG_LOOKUP_BYTES}-byte validation limit"
+            )));
+        }
+        table_lookup_bytes = next_bytes;
+        table_names.insert(name.to_string());
         let (has_fields, has_uuid_primary_key) =
-            table_field_status(codec, transaction, table_id).await?;
+            table_field_status(codec, transaction, table_id, name).await?;
         if !has_fields {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: table {} has no fields",
@@ -827,7 +793,13 @@ where
         }
     }
     for table in touched_tables(snapshots, changes) {
-        if catalog_order(table) == 4 && !table_ids_by_name.contains_key(table) {
+        if catalog_order(table) == 4
+            && !table_names.contains(table)
+            && codec
+                .table_drop_events(transaction, table)
+                .await?
+                .is_empty()
+        {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: data table {} has no definition",
                 table
@@ -844,39 +816,35 @@ where
         let name = value.values[1]
             .as_text()
             .expect("catalog index table name was validated");
-        let Some(table_id) = table_ids_by_name.get(name) else {
+        let table_id = value.values[3]
+            .to_uuid()
+            .expect("catalog index table identity was validated");
+        if codec
+            .table_definition_was_dropped(transaction, &table_id)
+            .await?
+        {
+            continue;
+        }
+        if !table_names.contains(name) {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: index {} references missing table {}",
                 id, name
             )));
-        };
-        let RowIdentity::Catalog(index_id) = &id else {
-            return Err(EngineError::custom("Invalid catalog index identity"));
-        };
-        if !index_id.starts_with(&table_id) {
-            return Err(EngineError::custom(format!(
-                "Invalid catalog: index {} is not scoped to table {}",
-                id, name
-            )));
         }
-        let field_prefix = RowIdentity::catalog(index_id.clone()).to_bytes();
-        let fields =
-            codec.scan_row_states_prefix(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field_prefix);
+        let index_id = id;
+        let fields = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
         pin_mut!(fields);
         let mut has_fields = false;
         while let Some(field) = fields.next().await {
-            let (field_id, field, deleted) = field?;
-            let RowIdentity::Catalog(field_key) = field_id else {
-                return Err(EngineError::custom("Invalid catalog index-field identity"));
-            };
-            if deleted || !field_key.starts_with(index_id) {
+            let (_, field, deleted) = field?;
+            if deleted || field.values.first().and_then(value::Value::to_uuid) != Some(index_id) {
                 continue;
             }
             has_fields = true;
-            let column = field.values[1]
+            let column = field.values[2]
                 .as_text()
                 .expect("catalog index field column was validated");
-            if !table_has_column(codec, transaction, &table_id, column).await? {
+            if !table_has_column(codec, transaction, name, column).await? {
                 return Err(EngineError::custom(format!(
                     "Incomplete catalog: index {} references missing column {}",
                     id, column
@@ -893,41 +861,11 @@ where
     Ok(())
 }
 
-fn insert_table_identity(
-    index: &mut BTreeMap<String, Vec<u8>>,
-    used_bytes: &mut usize,
-    name: &str,
-    id: &[u8],
-    max_bytes: usize,
-) -> Result<(), EngineError> {
-    match index.get(name) {
-        Some(current_id) if current_id.as_slice() >= id => Ok(()),
-        Some(_) => {
-            index.insert(name.to_string(), id.to_vec());
-            Ok(())
-        }
-        None => {
-            let next_bytes = used_bytes
-                .saturating_add(name.len())
-                .saturating_add(id.len())
-                .saturating_add(256);
-            if next_bytes > max_bytes {
-                return Err(EngineError::custom(format!(
-                    "Catalog table-name index exceeds the {max_bytes}-byte validation limit"
-                )));
-            }
-            *used_bytes = next_bytes;
-            index.insert(name.to_string(), id.to_vec());
-            Ok(())
-        }
-    }
-}
-
 async fn catalog_has_active_row<T, R>(
     codec: &R,
     transaction: &T,
     table: &str,
-    target: &RowIdentity,
+    target: &Uuid,
 ) -> Result<bool, EngineError>
 where
     T: KernelTransaction,
@@ -939,26 +877,28 @@ where
 async fn table_field_status<T, R>(
     codec: &R,
     transaction: &T,
-    table_id: &[u8],
+    table_id: Uuid,
+    table_name: &str,
 ) -> Result<(bool, bool), EngineError>
 where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let field_prefix = RowIdentity::catalog(table_id.to_vec()).to_bytes();
-    let fields =
-        codec.scan_row_states_prefix(transaction, ENGINE_TABLE_FIELDS_STORAGE, &field_prefix);
+    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(fields);
     let mut has_fields = false;
     let mut has_uuid_primary_key = false;
     while let Some(field) = fields.next().await {
-        let (id, value, deleted) = field?;
-        if deleted || !matches!(&id, RowIdentity::Catalog(key) if key.starts_with(table_id)) {
+        let (_, value, deleted) = field?;
+        if deleted
+            || value.values.first().and_then(value::Value::to_uuid) != Some(table_id)
+            || value.values.get(1).and_then(value::Value::as_text) != Some(table_name)
+        {
             continue;
         }
         has_fields = true;
-        has_uuid_primary_key |= value.values[1].to_type() == Some(value::ValueType::Uuid)
-            && value.values[4].to_bool() == Some(true);
+        has_uuid_primary_key |= value.values[3].to_type() == Some(value::ValueType::Uuid)
+            && value.values[6].to_bool() == Some(true);
     }
     Ok((has_fields, has_uuid_primary_key))
 }
@@ -966,22 +906,20 @@ where
 async fn table_has_column<T, R>(
     codec: &R,
     transaction: &T,
-    table_id: &[u8],
+    table_name: &str,
     column: &str,
 ) -> Result<bool, EngineError>
 where
     T: KernelTransaction,
     R: SyncRowCodec<T>,
 {
-    let field_prefix = RowIdentity::catalog(table_id.to_vec()).to_bytes();
-    let fields =
-        codec.scan_row_states_prefix(transaction, ENGINE_TABLE_FIELDS_STORAGE, &field_prefix);
+    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(fields);
     while let Some(field) = fields.next().await {
-        let (id, value, deleted) = field?;
+        let (_, value, deleted) = field?;
         if !deleted
-            && matches!(&id, RowIdentity::Catalog(key) if key.starts_with(table_id))
-            && value.values[0].as_text() == Some(column)
+            && value.values.get(1).and_then(value::Value::as_text) == Some(table_name)
+            && value.values.get(2).and_then(value::Value::as_text) == Some(column)
         {
             return Ok(true);
         }
@@ -995,8 +933,8 @@ fn touched_tables<'a>(
 ) -> impl Iterator<Item = &'a str> + 'a {
     snapshots
         .iter()
-        .filter_map(|unit| match &unit.key {
-            SyncKey::Row { table, .. } => Some(table.as_str()),
+        .map(|unit| match &unit.key {
+            SyncKey::Row { table, .. } => table.as_str(),
         })
         .chain(changes.iter().map(|change| change.table.as_str()))
 }
@@ -1018,7 +956,7 @@ fn consume_recovery_snapshot(
     let SyncKey::Row { table, row } = &snapshot.key;
     let request = SyncSnapshotRequest {
         table: table.clone(),
-        row: row.clone(),
+        row: *row,
     };
     if !remaining.remove(&request) {
         return Err(EngineError::custom(format!(
@@ -1037,6 +975,37 @@ fn validate_recovery_complete(
             "Incomplete sync: recovery snapshot missing for {} row {}",
             request.table, request.row
         )));
+    }
+    Ok(())
+}
+
+fn validate_row_addresses(
+    snapshots: &[SyncStateUnit],
+    changes: &[SyncIncrementalChange],
+) -> Result<(), EngineError> {
+    for unit in snapshots {
+        let SyncKey::Row { row, .. } = &unit.key;
+        validate_uuid_v7(row)?;
+    }
+    for change in changes {
+        validate_uuid_v7(&change.row)?;
+    }
+    Ok(())
+}
+
+fn validate_uuid_v7(id: &Uuid) -> Result<(), EngineError> {
+    let bytes = id.as_bytes();
+    if bytes[6] >> 4 == 7 && bytes[8] & 0xc0 == 0x80 {
+        Ok(())
+    } else {
+        Err(EngineError::custom("SQL row IDs must be UUIDv7"))
+    }
+}
+
+fn validate_manifest_row_addresses(manifest: &SyncManifest) -> Result<(), EngineError> {
+    for (key, _) in &manifest.entries {
+        let SyncKey::Row { row, .. } = key;
+        validate_uuid_v7(row)?;
     }
     Ok(())
 }
@@ -1097,9 +1066,9 @@ where
     let mut result = Vec::new();
     for unit in units {
         let SyncKey::Row { table, row } = unit.key.clone();
-        let key_bytes = table.len() + row.to_bytes().len() + 64;
+        let key_bytes = table.len() + row.as_bytes().len() + 64;
         let table_for_inventory = table.clone();
-        let row_for_inventory = row.clone();
+        let row_for_inventory = row;
         let inventory_budget = max_bytes.saturating_sub(used_bytes.saturating_add(key_bytes));
         let changes = engine
             .read_transaction(|codec, transaction| {
@@ -1182,7 +1151,14 @@ where
     let mut outbound = Outbound::default();
     for unit in units {
         let SyncKey::Row { table, row } = unit.key.clone();
-        if remote_manifest.contains(&unit.key, unit.digest) {
+        let state = unit.state.clone();
+        let metadata = unit.metadata.clone();
+        let digest = engine
+            .read_transaction(|codec, _| {
+                Box::pin(async move { codec.manifest_digest(&state, &metadata) })
+            })
+            .await?;
+        if remote_manifest.contains(&unit.key, digest) {
             continue;
         }
         let Some(remote) = remote_inventories.get(&unit.key) else {
@@ -1192,7 +1168,7 @@ where
             continue;
         };
         let table_for_inventory = table.clone();
-        let row_for_inventory = row.clone();
+        let row_for_inventory = row;
         let inventory_budget = max_bytes.saturating_sub(used_bytes);
         let local = engine
             .read_transaction(|codec, transaction| {
@@ -1215,12 +1191,12 @@ where
             }
             let export_id = key.clone();
             let table_for_export = table.clone();
-            let row_for_export = row.clone();
+            let row_for_export = row;
             let export_budget = max_bytes.saturating_sub(
                 used_bytes
                     .saturating_add(key.0.len())
                     .saturating_add(table.len())
-                    .saturating_add(row.to_bytes().len())
+                    .saturating_add(row.as_bytes().len())
                     .saturating_add(64),
             );
             if let Some(payload) = engine
@@ -1241,12 +1217,12 @@ where
             {
                 used_bytes = account_engine_payload(
                     used_bytes,
-                    payload.len() + key.0.len() + table.len() + row.to_bytes().len() + 64,
+                    payload.len() + key.0.len() + table.len() + row.as_bytes().len() + 64,
                     max_bytes,
                 )?;
                 outbound.changes.push(SyncIncrementalChange {
                     table: table.clone(),
-                    row: row.clone(),
+                    row,
                     id: key,
                     payload,
                 });
@@ -1357,16 +1333,11 @@ where
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     let state = codec
-                        .export_state(
-                            transaction,
-                            &request.table,
-                            request.row.clone(),
-                            state_budget,
-                        )
+                        .export_state(transaction, &request.table, request.row, state_budget)
                         .await?
                         .unwrap_or_default();
                     let metadata = codec
-                        .export_metadata(transaction, &request.table, request.row.clone())
+                        .export_metadata(transaction, &request.table, request.row)
                         .await?;
                     Ok(if state.is_empty() && metadata.is_empty() {
                         None
@@ -1739,12 +1710,10 @@ where
         }),
         Err(EngineError::SyncDependencyUnavailable) => {
             let units = Arc::try_unwrap(units).unwrap_or_else(|shared| shared.as_ref().clone());
-            let mut rows = BTreeMap::<(String, RowIdentity), Vec<SyncStateUnit>>::new();
+            let mut rows = BTreeMap::<(String, Uuid), Vec<SyncStateUnit>>::new();
             for unit in units {
                 let SyncKey::Row { table, row } = &unit.key;
-                rows.entry((table.clone(), row.clone()))
-                    .or_default()
-                    .push(unit);
+                rows.entry((table.clone(), *row)).or_default().push(unit);
             }
             let mut applied = StagedDataApply {
                 snapshots: 0,
@@ -1803,9 +1772,9 @@ where
         }),
         Err(EngineError::SyncDependencyUnavailable) => {
             let changes = Arc::try_unwrap(changes).unwrap_or_else(|shared| shared.as_ref().clone());
-            let mut rows = BTreeMap::<(String, RowIdentity), Vec<SyncIncrementalChange>>::new();
+            let mut rows = BTreeMap::<(String, Uuid), Vec<SyncIncrementalChange>>::new();
             for change in changes {
-                rows.entry((change.table.clone(), change.row.clone()))
+                rows.entry((change.table.clone(), change.row))
                     .or_default()
                     .push(change);
             }
@@ -1843,7 +1812,7 @@ fn snapshot_request(unit: &SyncStateUnit) -> SyncSnapshotRequest {
     match &unit.key {
         SyncKey::Row { table, row } => SyncSnapshotRequest {
             table: table.clone(),
-            row: row.clone(),
+            row: *row,
         },
     }
 }
@@ -1892,8 +1861,8 @@ where
 
     let mut current_changes: Vec<SyncIncrementalChange> = Vec::new();
     let mut current_change_bytes = 0usize;
-    let mut current_change_key: Option<(String, RowIdentity)> = None;
-    let mut previous_change_key: Option<(String, RowIdentity)> = None;
+    let mut current_change_key: Option<(String, Uuid)> = None;
+    let mut previous_change_key: Option<(String, Uuid)> = None;
     let mut previous_change_id = None;
     loop {
         let (message, message_bytes) = receive_message(transport).await?;
@@ -1941,7 +1910,7 @@ where
                             .map_err(|error| SyncError::Staging(error.to_string()))?;
                         catalog_changes += 1;
                     } else {
-                        let key = (change.table.clone(), change.row.clone());
+                        let key = (change.table.clone(), change.row);
                         if current_change_key
                             .as_ref()
                             .is_some_and(|current| current != &key)
@@ -2013,11 +1982,10 @@ where
                     .finish()
                     .await
                     .map_err(|error| SyncError::Staging(error.to_string()))?;
-                if catalog_snapshots > 0 || catalog_changes > 0 {
-                    if let Err(error) = apply_catalog_stages(engine, catalog_stages, manifest).await
-                    {
-                        return abort(transport, error, String::from("catalog batch")).await;
-                    }
+                if (catalog_snapshots > 0 || catalog_changes > 0)
+                    && let Err(error) = apply_catalog_stages(engine, catalog_stages, manifest).await
+                {
+                    return abort(transport, error, String::from("catalog batch")).await;
                 }
                 let staged_snapshots =
                     match apply_staged_data(engine, &mut data_snapshot_stage, manifest, true).await
@@ -2156,7 +2124,10 @@ where
     T::Error: core::fmt::Display,
 {
     match receive_message(transport).await?.0 {
-        SyncMessage::Manifest(manifest) => Ok(manifest),
+        SyncMessage::Manifest(manifest) => {
+            validate_manifest_row_addresses(&manifest)?;
+            Ok(manifest)
+        }
         SyncMessage::Abort(reason) => Err(SyncError::RemoteAbort(reason)),
         _ => Err(SyncError::UnexpectedMessage),
     }
@@ -2180,11 +2151,7 @@ where
 }
 
 fn incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
-    let identity_bytes = match &change.row {
-        RowIdentity::User(_) => 16,
-        RowIdentity::ScopedUser { .. } => 32,
-        RowIdentity::Catalog(bytes) => bytes.len(),
-    };
+    let identity_bytes = change.row.as_bytes().len();
     core::mem::size_of::<SyncIncrementalChange>()
         .saturating_add(change.table.len())
         .saturating_add(identity_bytes)
@@ -2198,7 +2165,7 @@ fn state_unit_payload_size(unit: &SyncStateUnit) -> usize {
         .len()
         .saturating_add(unit.metadata.len())
         .saturating_add(table.len())
-        .saturating_add(row.to_bytes().len())
+        .saturating_add(row.as_bytes().len())
         .saturating_add(64)
 }
 
@@ -2223,7 +2190,7 @@ fn retained_message_bytes(message: &SyncMessage) -> usize {
                         .len()
                         .saturating_add(unit.metadata.len())
                         .saturating_add(table.len())
-                        .saturating_add(row.to_bytes().len())
+                        .saturating_add(row.as_bytes().len())
                         .saturating_mul(2),
                 )
                 .saturating_add(128)
@@ -2234,7 +2201,7 @@ fn retained_message_bytes(message: &SyncMessage) -> usize {
                     change
                         .table
                         .len()
-                        .saturating_add(change.row.to_bytes().len())
+                        .saturating_add(change.row.as_bytes().len())
                         .saturating_add(change.id.0.len())
                         .saturating_add(change.payload.len())
                         .saturating_mul(2),
@@ -2247,7 +2214,7 @@ fn retained_message_bytes(message: &SyncMessage) -> usize {
                     request
                         .table
                         .len()
-                        .saturating_add(request.row.to_bytes().len()),
+                        .saturating_add(request.row.as_bytes().len()),
                 )
                 .saturating_add(128)
         }),
@@ -2317,23 +2284,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::{
-        collections::{BTreeMap, BTreeSet},
-        string::{String, ToString},
-        vec,
-        vec::Vec,
-    };
+    use alloc::{collections::BTreeSet, string::String, vec, vec::Vec};
 
     use engine::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-        ENGINE_TABLES_STORAGE, RowIdentity,
+        ENGINE_TABLES_STORAGE, Uuid,
     };
     use futures::executor::block_on;
 
     use super::{
         MAX_MESSAGE_BYTES, SyncError, account_message, catalog_order, consume_recovery_snapshot,
-        insert_table_identity, receive_message, retained_message_bytes, send_message,
-        validate_hello, validate_recovery_complete, validate_state_batch,
+        receive_message, retained_message_bytes, send_message, validate_hello,
+        validate_recovery_complete, validate_state_batch,
     };
     use crate::{
         PROTOCOL_VERSION, SyncHello, SyncKey, SyncManifest, SyncMessage, SyncSnapshotRequest,
@@ -2383,41 +2345,22 @@ mod tests {
     }
 
     #[test]
-    fn table_identity_index_is_bounded_and_selects_the_greatest_id() {
-        let mut index = BTreeMap::new();
-        let mut used_bytes = 0;
-        insert_table_identity(&mut index, &mut used_bytes, "people", &[1], 263)
-            .expect("insert table name");
-        let first_size = used_bytes;
-        insert_table_identity(&mut index, &mut used_bytes, "people", &[2], 263)
-            .expect("replace older concurrent table identity");
-        assert_eq!(used_bytes, first_size);
-        assert_eq!(index.get("people"), Some(&vec![2]));
-
-        let error = insert_table_identity(&mut index, &mut used_bytes, "animals", &[3], 263)
-            .expect_err("reject name index beyond its byte budget");
-        assert!(error.to_string().contains("validation limit"));
-        assert_eq!(index.len(), 1);
-        assert_eq!(used_bytes, first_size);
-    }
-
-    #[test]
     fn recovery_requires_exactly_one_snapshot_for_each_requested_row() {
-        let requests = vec![
+        let requests = [
             SyncSnapshotRequest {
                 table: String::from("people"),
-                row: RowIdentity::User([1; 16]),
+                row: Uuid::from_bytes([1; 16]),
             },
             SyncSnapshotRequest {
                 table: String::from("people"),
-                row: RowIdentity::User([2; 16]),
+                row: Uuid::from_bytes([2; 16]),
             },
         ];
         let snapshot = |row| {
             SyncStateUnit::new(
                 SyncKey::Row {
                     table: String::from("people"),
-                    row: RowIdentity::User([row; 16]),
+                    row: Uuid::from_bytes([row; 16]),
                 },
                 vec![1],
                 Vec::new(),
@@ -2446,7 +2389,7 @@ mod tests {
     fn catalog_row_state_uses_the_same_digest_validation_as_user_rows() {
         let key = SyncKey::Row {
             table: ENGINE_TABLES_STORAGE.into(),
-            row: RowIdentity::catalog(vec![1, 2]),
+            row: Uuid::from_bytes([1; 16]),
         };
         let unit = SyncStateUnit::new(key, vec![3], vec![4]);
         assert!(validate_state_batch(core::slice::from_ref(&unit)).is_ok());
@@ -2499,7 +2442,7 @@ mod tests {
         let message = SyncMessage::State(vec![SyncStateUnit::new(
             SyncKey::Row {
                 table: String::from("rows"),
-                row: RowIdentity::user(uuid::Uuid::from_bytes([1; 16])),
+                row: Uuid::from_bytes([1; 16]),
             },
             vec![1; 600_000],
             Vec::new(),

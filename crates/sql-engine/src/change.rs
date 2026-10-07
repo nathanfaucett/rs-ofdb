@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    EngineResult, KernelTransaction, RowCodec, RowIdentity,
+    EngineResult, KernelTransaction, RowCodec,
     index::update_row,
     schema::{active_user_row, catalog_table_for_storage, columns},
 };
@@ -17,7 +17,7 @@ pub struct Change {
 }
 
 impl Change {
-    pub fn row(id: Uuid, table: String, row: RowIdentity, value: Option<Vec<u8>>) -> Self {
+    pub fn row(id: Uuid, table: String, row: Uuid, value: Option<Vec<u8>>) -> Self {
         Self {
             id,
             key: ChangeKey::Row { table, row },
@@ -28,7 +28,7 @@ impl Change {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChangeKey {
-    Row { table: String, row: RowIdentity },
+    Row { table: String, row: Uuid },
 }
 
 pub(crate) async fn apply_local_change<T: KernelTransaction, R: RowCodec<T>>(
@@ -56,10 +56,7 @@ pub(crate) async fn materialize_change<T: KernelTransaction, R: RowCodec<T>>(
     match &change.value {
         Some(value) => {
             let old = codec.get_row(transaction, table, row).await?;
-            let Some(value) = codec
-                .merge_row(transaction, table, row.clone(), value)
-                .await?
-            else {
+            let Some(value) = codec.merge_row(transaction, table, *row, value).await? else {
                 return Ok(true);
             };
             if !catalog && active_user_row(transaction, codec, table, row).await? {

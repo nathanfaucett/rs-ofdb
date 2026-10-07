@@ -4,10 +4,13 @@ use std::{cell::RefCell, rc::Rc};
 use engine::{Engine, InMemoryKernel, RowCodec};
 use engine_automerge::AutomergeRowCodec;
 use futures::{StreamExt, channel::mpsc, executor::block_on};
-use query::{Query, QueryInsert, Statement};
-use schema::{ColumnSchema, TableSchema};
+use query::{DataDefinition, Query, QueryInsert, Statement};
+use schema::{ColumnSchema, IndexSchema, TableSchema};
 use sql_translator::SqlTranslator;
-use sync::{SessionConfig, SyncMessage, SyncRole, SyncRowCodec, SyncTransport, synchronize};
+use sync::{
+    SessionConfig, SyncKey, SyncMessage, SyncRole, SyncRowCodec, SyncTransport, sync_manifest_for,
+    synchronize,
+};
 use value::{Row, Value, ValueType};
 
 #[derive(Debug)]
@@ -67,6 +70,13 @@ fn table(name: &str) -> TableSchema {
             primary_key: true,
         }],
     }
+}
+
+fn row_uuid(value: u128) -> uuid::Uuid {
+    let mut bytes = value.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
 }
 
 fn people_table() -> TableSchema {
@@ -143,7 +153,7 @@ fn synchronizes_catalog_state_and_converges() {
         left.execute(vec![Statement::Query(Query::Insert(QueryInsert {
             table: "users".into(),
             row: Row::new(vec![
-                Value::Uuid(uuid::Uuid::from_u128(1)),
+                Value::Uuid(row_uuid(1)),
                 Value::from("ada@example.test"),
             ]),
             returning: None,
@@ -187,7 +197,7 @@ fn synchronizes_catalog_state_and_converges() {
                 .execute(vec![Statement::Query(Query::Insert(QueryInsert {
                     table: "users".into(),
                     row: Row::new(vec![
-                        Value::Uuid(uuid::Uuid::from_u128(2)),
+                        Value::Uuid(row_uuid(2)),
                         Value::from("ada@example.test"),
                     ]),
                     returning: None,
@@ -224,10 +234,7 @@ fn oversized_single_row_fails_sync_and_preserves_source_data() {
             .collect::<String>();
         left.execute(vec![Statement::Query(Query::Insert(QueryInsert {
             table: "people".into(),
-            row: Row::new(vec![
-                Value::Uuid(uuid::Uuid::from_u128(1)),
-                Value::from(oversized_value),
-            ]),
+            row: Row::new(vec![Value::Uuid(row_uuid(1)), Value::from(oversized_value)]),
             returning: None,
         }))])
         .await
@@ -387,6 +394,95 @@ fn propagates_row_deletion_without_resurrecting_the_row() {
 }
 
 #[test]
+fn independently_created_same_name_schema_rows_converge() {
+    block_on(async {
+        let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        for engine in [&left, &right] {
+            engine.create_table(people_table()).await.unwrap();
+            engine
+                .execute(vec![Statement::DataDefinition(
+                    DataDefinition::CreateIndex {
+                        schema: IndexSchema {
+                            name: "people_by_name".into(),
+                            table_name: "people".into(),
+                            column_indices: vec![1],
+                            unique: false,
+                        },
+                        if_not_exists: false,
+                    },
+                )])
+                .await
+                .unwrap();
+        }
+
+        let left_before_sync = sync_manifest_for(&left).await.unwrap();
+        let right_before_sync = sync_manifest_for(&right).await.unwrap();
+        let table_rows = |manifest: &sync::SyncManifest, table: &str| {
+            manifest
+                .entries
+                .iter()
+                .filter_map(|(key, _)| match key {
+                    SyncKey::Row {
+                        table: row_table,
+                        row,
+                    } if row_table == table => Some(*row),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            table_rows(&left_before_sync, engine::ENGINE_TABLES_STORAGE),
+            table_rows(&right_before_sync, engine::ENGINE_TABLES_STORAGE),
+            "same-name schema rows have independent UUIDv7 primary keys"
+        );
+        assert_ne!(
+            table_rows(&left_before_sync, engine::ENGINE_TABLE_FIELDS_STORAGE),
+            table_rows(&right_before_sync, engine::ENGINE_TABLE_FIELDS_STORAGE),
+            "same-name field rows have independent UUIDv7 primary keys"
+        );
+        assert_ne!(
+            table_rows(&left_before_sync, engine::ENGINE_INDICES_STORAGE),
+            table_rows(&right_before_sync, engine::ENGINE_INDICES_STORAGE),
+            "same-name index rows have independent UUIDv7 primary keys"
+        );
+        assert_ne!(
+            table_rows(&left_before_sync, engine::ENGINE_INDEX_FIELDS_STORAGE),
+            table_rows(&right_before_sync, engine::ENGINE_INDEX_FIELDS_STORAGE),
+            "same-name index-field rows have independent UUIDv7 primary keys"
+        );
+
+        sync(&left, &right, &SessionConfig::default()).await;
+
+        assert_eq!(left.table_schema("people").await.unwrap(), people_table());
+        assert_eq!(right.table_schema("people").await.unwrap(), people_table());
+        let index = IndexSchema {
+            name: "people_by_name".into(),
+            table_name: "people".into(),
+            column_indices: vec![1],
+            unique: false,
+        };
+        assert_eq!(left.index_schema("people_by_name").await.unwrap(), index);
+        assert_eq!(right.index_schema("people_by_name").await.unwrap(), index);
+        let left_keys = sync_manifest_for(&left)
+            .await
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        let right_keys = sync_manifest_for(&right)
+            .await
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        assert_eq!(left_keys, right_keys);
+    });
+}
+
+#[test]
 fn synchronizes_concurrent_branches() {
     block_on(async {
         let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
@@ -466,10 +562,10 @@ fn duplicate_incremental_frames_are_idempotent() {
         let payload = change.payload;
         let table_for_apply = table.clone();
         right
-            .mutate_transaction(&table, row.clone(), move |codec, transaction, _| {
+            .mutate_transaction(&table, row, move |codec, transaction, _| {
                 Box::pin(async move {
                     codec
-                        .apply_change(transaction, &table_for_apply, row.clone(), &id, &payload)
+                        .apply_change(transaction, &table_for_apply, row, &id, &payload)
                         .await?;
                     let value = codec.get_row(transaction, &table_for_apply, &row).await?;
                     Ok(((), value))

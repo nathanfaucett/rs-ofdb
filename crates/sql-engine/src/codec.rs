@@ -1,91 +1,11 @@
-use alloc::vec::Vec;
-
-use core::{fmt, future::Future};
+use core::future::Future;
 
 use async_stream::stream;
 use futures::{Stream, StreamExt, pin_mut};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+pub use uuid::Uuid;
 use value::Row;
 
 use crate::{EngineResult, KernelTransaction};
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub enum RowIdentity {
-    User([u8; 16]),
-    ScopedUser { table: [u8; 16], row: [u8; 16] },
-    Catalog(Vec<u8>),
-}
-
-impl RowIdentity {
-    pub fn user(id: Uuid) -> Self {
-        Self::User(*id.as_bytes())
-    }
-
-    pub fn scoped_user(table: Uuid, row: Uuid) -> Self {
-        Self::ScopedUser {
-            table: *table.as_bytes(),
-            row: *row.as_bytes(),
-        }
-    }
-
-    pub fn catalog(key: Vec<u8>) -> Self {
-        Self::Catalog(key)
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        match bytes.split_first()? {
-            (0, payload) if payload.len() == 16 => {
-                let mut id = [0; 16];
-                id.copy_from_slice(payload);
-                Some(Self::User(id))
-            }
-            (1, payload) => Some(Self::Catalog(payload.into())),
-            (2, payload) if payload.len() == 32 => {
-                let mut table = [0; 16];
-                let mut row = [0; 16];
-                table.copy_from_slice(&payload[..16]);
-                row.copy_from_slice(&payload[16..]);
-                Some(Self::ScopedUser { table, row })
-            }
-            _ => None,
-        }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            Self::User(id) => {
-                let mut bytes = Vec::with_capacity(17);
-                bytes.push(0);
-                bytes.extend_from_slice(id);
-                bytes
-            }
-            Self::ScopedUser { table, row } => {
-                let mut bytes = Vec::with_capacity(33);
-                bytes.push(2);
-                bytes.extend_from_slice(table);
-                bytes.extend_from_slice(row);
-                bytes
-            }
-            Self::Catalog(key) => {
-                let mut bytes = Vec::with_capacity(key.len() + 1);
-                bytes.push(1);
-                bytes.extend_from_slice(key);
-                bytes
-            }
-        }
-    }
-}
-
-impl fmt::Display for RowIdentity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::User(id) => write!(formatter, "{}", Uuid::from_bytes(*id)),
-            Self::ScopedUser { row, .. } => write!(formatter, "{}", Uuid::from_bytes(*row)),
-            Self::Catalog(key) => write!(formatter, "catalog key ({} bytes)", key.len()),
-        }
-    }
-}
 
 pub trait RowCodec<T>: Send + Sync
 where
@@ -105,18 +25,18 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
     fn scan_rows<'a>(
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a;
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a;
     fn scan_row_states<'a>(
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a {
         stream! {
             let rows = self.scan_rows(transaction, table);
             pin_mut!(rows);
@@ -126,41 +46,25 @@ where
             }
         }
     }
-    fn scan_row_states_prefix<'a>(
-        &'a self,
-        transaction: &'a T,
-        table: &'a str,
-        identity_prefix: &'a [u8],
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
-        stream! {
-            let rows = self.scan_row_states(transaction, table);
-            pin_mut!(rows);
-            while let Some(row) = rows.next().await {
-                let (identity, value, deleted) = row?;
-                if identity.to_bytes().starts_with(identity_prefix) {
-                    yield Ok((identity, value, deleted));
-                }
-            }
-        }
-    }
+
     fn put_row(
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: Row,
     ) -> impl Future<Output = EngineResult<()>> + Send;
     fn remove_row(
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
     fn encode_row(
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
         value: &Row,
         changed_columns: &[usize],
     ) -> impl Future<Output = EngineResult<Vec<u8>>> + Send;
@@ -168,19 +72,19 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<Vec<usize>>> + Send;
     fn conflict_values(
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<Vec<(usize, Vec<value::Value>)>>> + Send;
     fn encode_resolution(
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
         value: &Row,
         changed_columns: &[usize],
     ) -> impl Future<Output = EngineResult<Vec<u8>>> + Send;
@@ -188,48 +92,74 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: &[u8],
     ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
     fn delete_row(
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
     fn row_is_deleted(
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> impl Future<Output = EngineResult<bool>> + Send;
-}
-
-#[cfg(test)]
-mod tests {
-    use uuid::Uuid;
-
-    use super::RowIdentity;
-
-    #[test]
-    fn identities_round_trip_without_collisions() {
-        let id = Uuid::from_bytes([7; 16]);
-        let user = RowIdentity::user(id);
-        let catalog = RowIdentity::catalog(id.as_bytes().to_vec());
-        let scoped = RowIdentity::scoped_user(Uuid::from_bytes([8; 16]), id);
-
-        assert_eq!(
-            RowIdentity::from_bytes(&user.to_bytes()),
-            Some(user.clone())
-        );
-        assert_eq!(
-            RowIdentity::from_bytes(&catalog.to_bytes()),
-            Some(catalog.clone())
-        );
-        assert_ne!(user.to_bytes(), catalog.to_bytes());
-        assert_ne!(user.to_bytes(), scoped.to_bytes());
-        assert_eq!(RowIdentity::from_bytes(&scoped.to_bytes()), Some(scoped));
-        assert_eq!(RowIdentity::from_bytes(&[0, 1]), None);
-        assert_eq!(RowIdentity::from_bytes(&[2]), None);
+    fn row_has_dropped_definition(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: &Uuid,
+    ) -> impl Future<Output = EngineResult<bool>> + Send {
+        let _ = (transaction, table, row);
+        async { Ok(false) }
+    }
+    fn table_definition_was_dropped(
+        &self,
+        transaction: &T,
+        row: &Uuid,
+    ) -> impl Future<Output = EngineResult<bool>> + Send {
+        let _ = (transaction, row);
+        async { Ok(false) }
+    }
+    fn drop_table_definition(
+        &self,
+        transaction: &mut T,
+        row: &Uuid,
+        event: Uuid,
+    ) -> impl Future<Output = EngineResult<()>> + Send {
+        async move {
+            let _ = (transaction, row, event);
+            Err(crate::EngineError::Unsupported(
+                "Row codec does not support causal table drops",
+            ))
+        }
+    }
+    fn table_drop_events(
+        &self,
+        transaction: &T,
+        table: &str,
+    ) -> impl Future<Output = EngineResult<Vec<Uuid>>> + Send {
+        let _ = (transaction, table);
+        async { Ok(Vec::new()) }
+    }
+    fn set_observed_table_drops(
+        &self,
+        transaction: &mut T,
+        row: &Uuid,
+        events: Vec<Uuid>,
+    ) -> impl Future<Output = EngineResult<()>> + Send {
+        let _ = (transaction, row, events);
+        async { Ok(()) }
+    }
+    fn observed_table_drops(
+        &self,
+        transaction: &T,
+        row: &Uuid,
+    ) -> impl Future<Output = EngineResult<Vec<Uuid>>> + Send {
+        let _ = (transaction, row);
+        async { Ok(Vec::new()) }
     }
 }

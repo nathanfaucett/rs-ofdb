@@ -1,4 +1,4 @@
-use engine::{EngineError, EngineResult, KernelTransaction, RowCodec, RowIdentity};
+use engine::{EngineError, EngineResult, KernelTransaction, RowCodec, Uuid};
 use futures::{StreamExt, stream::Stream};
 use sync::{SyncChangeId, SyncRowCodec};
 use value::{Row, Value};
@@ -18,14 +18,9 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         transaction.drop_table(table).await
     }
 
-    async fn get_row(
-        &self,
-        transaction: &T,
-        table: &str,
-        row: &RowIdentity,
-    ) -> EngineResult<Option<Row>> {
+    async fn get_row(&self, transaction: &T, table: &str, row: &Uuid) -> EngineResult<Option<Row>> {
         transaction
-            .get_bytes(table, &row.to_bytes())
+            .get_bytes(table, row.as_bytes())
             .await?
             .map(|bytes| decode(&bytes))
             .transpose()
@@ -35,11 +30,11 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a {
         transaction.scan_bytes(table).map(|entry| {
             let (id, value) = entry?;
             Ok((
-                RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity"))?,
+                Uuid::from_slice(&id).map_err(EngineError::custom)?,
                 decode(&value)?,
             ))
         })
@@ -49,13 +44,13 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: Row,
     ) -> EngineResult<()> {
         transaction
             .put_bytes(
                 table,
-                row.to_bytes(),
+                row.as_bytes().to_vec(),
                 postcard::to_allocvec(&value).map_err(EngineError::custom)?,
             )
             .await
@@ -65,10 +60,10 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Option<Row>> {
         transaction
-            .remove_bytes(table, &row.to_bytes())
+            .remove_bytes(table, row.as_bytes())
             .await?
             .map(|bytes| decode(&bytes))
             .transpose()
@@ -78,7 +73,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: &RowIdentity,
+        _row: &Uuid,
         value: &Row,
         _changed_columns: &[usize],
     ) -> EngineResult<Vec<u8>> {
@@ -89,7 +84,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: &RowIdentity,
+        _row: &Uuid,
     ) -> EngineResult<Vec<usize>> {
         Ok(Vec::new())
     }
@@ -98,7 +93,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: &RowIdentity,
+        _row: &Uuid,
     ) -> EngineResult<Vec<(usize, Vec<Value>)>> {
         Ok(Vec::new())
     }
@@ -107,7 +102,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
         value: &Row,
         changed_columns: &[usize],
     ) -> EngineResult<Vec<u8>> {
@@ -119,7 +114,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: &[u8],
     ) -> EngineResult<Option<Row>> {
         let decoded = decode(value)?;
@@ -132,7 +127,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Option<Row>> {
         self.remove_row(transaction, table, row).await
     }
@@ -141,7 +136,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: &RowIdentity,
+        _row: &Uuid,
     ) -> EngineResult<bool> {
         Ok(false)
     }
@@ -152,17 +147,16 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl futures::Stream<Item = EngineResult<RowIdentity>> + Send + 'a {
+    ) -> impl futures::Stream<Item = EngineResult<Uuid>> + Send + 'a {
         let entries = transaction.scan_bytes(table);
         futures::stream::unfold(Box::pin(entries), |mut entries| async move {
             match entries.as_mut().next().await {
                 None => None,
                 Some(Err(EngineError::Custom(message))) if message == "Table not found" => None,
                 Some(Err(error)) => Some((Err(error), entries)),
-                Some(Ok((id, _))) => Some((
-                    RowIdentity::from_bytes(&id).ok_or(EngineError::custom("Invalid row identity")),
-                    entries,
-                )),
+                Some(Ok((id, _))) => {
+                    Some((Uuid::from_slice(&id).map_err(EngineError::custom), entries))
+                }
             }
         })
     }
@@ -171,10 +165,10 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         transaction: &T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
-        let state = transaction.get_bytes(table, &row.to_bytes()).await?;
+        let state = transaction.get_bytes(table, row.as_bytes()).await?;
         if state.as_ref().is_some_and(|state| state.len() > max_bytes) {
             return Err(EngineError::custom("sync state payload exceeds budget"));
         }
@@ -185,7 +179,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         state: &[u8],
     ) -> EngineResult<Option<Row>> {
         self.merge_row(transaction, table, row, state).await
@@ -195,7 +189,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: RowIdentity,
+        _row: Uuid,
     ) -> EngineResult<Vec<u8>> {
         Ok(Vec::new())
     }
@@ -204,7 +198,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         _transaction: &mut T,
         _table: &str,
-        _row: RowIdentity,
+        _row: Uuid,
         _metadata: &[u8],
     ) -> EngineResult<()> {
         Ok(())
@@ -214,7 +208,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: RowIdentity,
+        _row: Uuid,
         _max_bytes: usize,
     ) -> EngineResult<Vec<SyncChangeId>> {
         Ok(Vec::new())
@@ -224,7 +218,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         _transaction: &T,
         _table: &str,
-        _row: RowIdentity,
+        _row: Uuid,
         _id: &SyncChangeId,
         _max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
@@ -235,7 +229,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
         &self,
         _transaction: &mut T,
         _table: &str,
-        _row: RowIdentity,
+        _row: Uuid,
         _id: &SyncChangeId,
         _payload: &[u8],
     ) -> EngineResult<()> {

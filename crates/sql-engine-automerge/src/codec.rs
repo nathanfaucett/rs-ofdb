@@ -13,35 +13,23 @@ use btree_automerge::{
 use serde::{Deserialize, Serialize};
 
 use engine::{
-    BytesTable, BytesTableTransaction, ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID,
-    ENGINE_TABLE_FIELDS_STORAGE, EngineError, EngineResult, KernelTransaction, RowCodec,
-    RowIdentity, catalog_table_for_storage,
+    BytesTable, BytesTableTransaction, ENGINE_TABLE_FIELDS_STORAGE, EngineError, EngineResult,
+    KernelTransaction, RowCodec, Uuid, catalog_table_for_storage,
 };
 use futures::{Stream, StreamExt, pin_mut};
-use sync::{SyncChangeId, SyncRowCodec};
+use sync::{StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
 use value::{Row, Value};
 
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
-
-fn change_key_prefix_bounds(prefix: &[u8]) -> (Bound<DocumentChangeKey>, Bound<DocumentChangeKey>) {
-    let start = Bound::Included(DocumentChangeKey::min_for_id(prefix.to_vec()));
-    let end = prefix
-        .iter()
-        .rposition(|byte| *byte != u8::MAX)
-        .map(|index| {
-            let mut next_prefix = prefix[..=index].to_vec();
-            next_prefix[index] += 1;
-            Bound::Excluded(DocumentChangeKey::min_for_id(next_prefix))
-        })
-        .unwrap_or(Bound::Unbounded);
-    (start, end)
-}
+const DOCUMENT_SCHEMA: &str = "\0engine_schema";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RowMetadata {
     pub version: u8,
     pub deleted: bool,
+    pub drop_events: Vec<Uuid>,
+    pub observed_drops: Vec<Uuid>,
 }
 
 #[derive(Debug)]
@@ -69,41 +57,29 @@ struct Column {
 }
 
 impl AutomergeRowCodec {
-    fn document_id(row: &RowIdentity) -> DocumentId {
-        row.to_bytes()
+    fn document_id(row: &Uuid) -> DocumentId {
+        row.as_bytes().to_vec()
     }
 
-    fn row_id(id: &[u8]) -> EngineResult<RowIdentity> {
-        RowIdentity::from_bytes(id).ok_or(EngineError::custom("Invalid row identity"))
+    fn row_id(id: &[u8]) -> EngineResult<Uuid> {
+        Uuid::from_slice(id).map_err(EngineError::custom)
     }
 
     fn catalog_states<'a, T>(
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a
     where
         T: KernelTransaction,
     {
         Self::catalog_states_range(transaction, table, (Bound::Unbounded, Bound::Unbounded))
     }
 
-    fn catalog_states_prefix<'a, T>(
-        transaction: &'a T,
-        table: &'a str,
-        identity_prefix: &[u8],
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a
-    where
-        T: KernelTransaction,
-    {
-        let (start, end) = change_key_prefix_bounds(identity_prefix);
-        Self::catalog_states_range(transaction, table, (start, end))
-    }
-
     fn catalog_states_range<'a, T>(
         transaction: &'a T,
         table: &'a str,
         range: (Bound<DocumentChangeKey>, Bound<DocumentChangeKey>),
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a
     where
         T: KernelTransaction,
     {
@@ -129,35 +105,6 @@ impl AutomergeRowCodec {
         }
     }
 
-    fn active_table_id<'a, T: KernelTransaction>(
-        transaction: &'a T,
-        table: &'a str,
-    ) -> impl core::future::Future<Output = EngineResult<Option<[u8; 16]>>> + Send + 'a {
-        Box::pin(async move {
-            let states = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
-            pin_mut!(states);
-            let mut latest = None;
-            while let Some(state) = states.next().await {
-                let (RowIdentity::Catalog(id), value, deleted) = state? else {
-                    continue;
-                };
-                if value.values.first().and_then(Value::as_text) == Some(table)
-                    && latest
-                        .as_ref()
-                        .is_none_or(|(previous, _): &([u8; 16], bool)| {
-                            id.as_slice() > &previous[..]
-                        })
-                {
-                    let id: [u8; 16] = id
-                        .try_into()
-                        .map_err(|_| EngineError::custom("Invalid table identity"))?;
-                    latest = Some((id, deleted));
-                }
-            }
-            Ok(latest.and_then(|(id, deleted)| (!deleted).then_some(id)))
-        })
-    }
-
     fn columns<'a, T>(
         transaction: &'a T,
         table: &'a str,
@@ -180,54 +127,40 @@ impl AutomergeRowCodec {
 
             let tables = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
             pin_mut!(tables);
-            let mut parent = None;
+            let mut table_id = None;
             while let Some(entry) = tables.next().await {
                 let (identity, row, deleted) = entry?;
-                if row.values.first().and_then(Value::as_text) == Some(table)
-                    && parent
-                        .as_ref()
-                        .is_none_or(|(previous, _): &(RowIdentity, bool)| &identity > previous)
+                if !deleted
+                    && row.values.first().and_then(Value::as_text) == Some(table)
+                    && table_id.is_none_or(|selected| identity > selected)
                 {
-                    parent = Some((identity, deleted));
+                    table_id = Some(identity);
                 }
             }
             let mut columns = Vec::new();
-            if let Some((RowIdentity::Catalog(parent), false)) = parent {
+            if let Some(table_id) = table_id {
                 let fields = Self::catalog_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
                 pin_mut!(fields);
-                let mut latest = BTreeMap::new();
                 while let Some(field) = fields.next().await {
-                    let (identity, field, deleted) = field?;
-                    let RowIdentity::Catalog(key) = identity else {
-                        continue;
-                    };
-                    if key.len() != 32 || !key.starts_with(&parent) {
+                    let (_, field, deleted) = field?;
+                    if deleted
+                        || field.values.first().and_then(Value::as_uuid).copied() != Some(table_id)
+                    {
                         continue;
                     }
                     let id = field
                         .values
-                        .first()
+                        .get(2)
                         .and_then(Value::to_text)
-                        .ok_or(EngineError::custom(ENGINE_TABLE_FIELDS_FIELD_COLUMN_ID))?;
-                    let entry = latest
-                        .entry(id)
-                        .or_insert_with(|| (key.clone(), field.clone(), deleted));
-                    if key > entry.0 {
-                        *entry = (key, field, deleted);
-                    }
-                }
-                for (id, (_, field, deleted)) in latest {
-                    if deleted {
-                        continue;
-                    }
+                        .ok_or(EngineError::custom("Invalid table field name"))?;
                     let index = field
                         .values
-                        .get(3)
+                        .get(5)
                         .and_then(Value::to_integer)
                         .ok_or(EngineError::custom("Invalid table field column index"))?;
                     let default = field
                         .values
-                        .get(2)
+                        .get(4)
                         .cloned()
                         .ok_or(EngineError::custom("Invalid table field default"))?;
                     columns.push((index, Column { id, default }));
@@ -293,25 +226,83 @@ impl AutomergeRowCodec {
         )
     }
 
-    async fn metadata_deleted<T>(
-        transaction: &T,
-        table: &str,
-        row: &RowIdentity,
-    ) -> EngineResult<bool>
+    async fn row_metadata<T>(transaction: &T, table: &str, row: &Uuid) -> EngineResult<RowMetadata>
     where
         T: KernelTransaction,
     {
-        let storage = table;
-        let changes = AutomergeChangeStore::new(BytesTable::new(transaction, storage));
-        let Some(value) = changes
+        let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
+        let Some(bytes) = changes
             .get(&DocumentChangeKey::new_metadata(Self::document_id(row)))
             .await
             .map_err(EngineError::custom)?
         else {
-            return Ok(false);
+            return Ok(RowMetadata {
+                version: 1,
+                deleted: false,
+                drop_events: Vec::new(),
+                observed_drops: Vec::new(),
+            });
         };
-        let metadata: RowMetadata = postcard::from_bytes(&value).map_err(EngineError::custom)?;
-        Ok(metadata.deleted)
+        postcard::from_bytes(&bytes).map_err(EngineError::custom)
+    }
+
+    async fn metadata_deleted<T>(transaction: &T, table: &str, row: &Uuid) -> EngineResult<bool>
+    where
+        T: KernelTransaction,
+    {
+        Ok(Self::row_metadata(transaction, table, row).await?.deleted)
+    }
+
+    async fn document_has_dropped_definition<T>(
+        transaction: &T,
+        document: &AutoCommit,
+    ) -> EngineResult<bool>
+    where
+        T: KernelTransaction,
+    {
+        for schema_id in Self::document_schema_ids(document)? {
+            if !Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, &schema_id)
+                .await?
+                .drop_events
+                .is_empty()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn document_is_stale<T>(
+        transaction: &T,
+        table: &str,
+        document: &AutoCommit,
+    ) -> EngineResult<bool>
+    where
+        T: KernelTransaction,
+    {
+        if catalog_table_for_storage(table).is_some() {
+            return Ok(false);
+        }
+        if Self::document_has_dropped_definition(transaction, document).await? {
+            return Ok(true);
+        }
+        if !Self::document_schema_ids(document)?.is_empty() {
+            return Ok(false);
+        }
+        let tables = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
+        pin_mut!(tables);
+        while let Some(entry) = tables.next().await {
+            let (id, value, _) = entry?;
+            if value.values.first().and_then(Value::as_text) == Some(table)
+                && !Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, &id)
+                    .await?
+                    .drop_events
+                    .is_empty()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn decode_row(document: &AutoCommit, columns: &[Column]) -> EngineResult<Row> {
@@ -473,18 +464,12 @@ impl AutomergeRowCodec {
     async fn document_columns<T>(
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        _row: &Uuid,
         document: &AutoCommit,
     ) -> EngineResult<Vec<Column>>
     where
         T: KernelTransaction,
     {
-        if let RowIdentity::ScopedUser { table: owner, .. } = row
-            && Self::active_table_id(transaction, table).await? != Some(*owner)
-        {
-            return Self::stored_columns(document)?
-                .ok_or(EngineError::custom("Missing stale row layout"));
-        }
         let columns = Self::columns(transaction, table, 0).await?;
         if !columns.is_empty() {
             return Ok(columns);
@@ -502,6 +487,42 @@ impl AutomergeRowCodec {
             .collect())
     }
 
+    async fn table_definition_id<T>(transaction: &T, table: &str) -> EngineResult<Option<Uuid>>
+    where
+        T: KernelTransaction,
+    {
+        let tables = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
+        pin_mut!(tables);
+        let mut selected = None;
+        while let Some(entry) = tables.next().await {
+            let (id, row, deleted) = entry?;
+            if !deleted
+                && row.values.first().and_then(Value::as_text) == Some(table)
+                && selected.is_none_or(|selected_id| id > selected_id)
+            {
+                selected = Some(id);
+            }
+        }
+        Ok(selected)
+    }
+
+    fn document_schema_ids(document: &AutoCommit) -> EngineResult<Vec<Uuid>> {
+        let mut ids = Vec::new();
+        for (value, _) in document
+            .get_all(ROOT, DOCUMENT_SCHEMA)
+            .map_err(EngineError::custom)?
+        {
+            let AutomergeValue::Scalar(value) = value else {
+                return Err(EngineError::custom("Invalid row schema identity"));
+            };
+            let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                return Err(EngineError::custom("Invalid row schema identity"));
+            };
+            ids.push(Uuid::from_slice(bytes).map_err(EngineError::custom)?);
+        }
+        Ok(ids)
+    }
+
     async fn store_row<T>(
         &self,
         transaction: &mut T,
@@ -513,6 +534,11 @@ impl AutomergeRowCodec {
     where
         T: KernelTransaction + Send,
     {
+        let schema_id = if catalog_table_for_storage(table).is_none() {
+            Self::table_definition_id(transaction, table).await?
+        } else {
+            None
+        };
         let mut changes = Self::changes(transaction, table);
         if let Some(document) = changes.get(&id).await.map_err(EngineError::custom)? {
             let changed_columns: Vec<_> = (0..columns.len()).collect();
@@ -524,13 +550,37 @@ impl AutomergeRowCodec {
             changes
                 .update(id, |document| {
                     Self::update_document(document, value, columns)
+                        .and_then(|()| {
+                            if Self::document_schema_ids(document)?.is_empty()
+                                && let Some(schema_id) = schema_id
+                            {
+                                document
+                                    .put(
+                                        ROOT,
+                                        DOCUMENT_SCHEMA,
+                                        ScalarValue::Bytes(schema_id.as_bytes().to_vec()),
+                                    )
+                                    .map_err(EngineError::custom)?;
+                            }
+                            Ok(())
+                        })
                         .map_err(btree::BTreeError::custom)
                 })
                 .await
                 .map_err(EngineError::custom)?;
         } else {
+            let mut document = self.encode_row(value, columns)?;
+            if let Some(schema_id) = schema_id {
+                document
+                    .put(
+                        ROOT,
+                        DOCUMENT_SCHEMA,
+                        ScalarValue::Bytes(schema_id.as_bytes().to_vec()),
+                    )
+                    .map_err(EngineError::custom)?;
+            }
             changes
-                .insert(id, self.encode_row(value, columns)?)
+                .insert(id, document)
                 .await
                 .map_err(EngineError::custom)?;
         }
@@ -550,20 +600,11 @@ where
         transaction.drop_table(table).await
     }
 
-    async fn get_row(
-        &self,
-        transaction: &T,
-        table: &str,
-        row: &RowIdentity,
-    ) -> EngineResult<Option<Row>> {
+    async fn get_row(&self, transaction: &T, table: &str, row: &Uuid) -> EngineResult<Option<Row>> {
         if Self::metadata_deleted(transaction, table, row).await? {
             return Ok(None);
         }
-        if let RowIdentity::ScopedUser { table: owner, .. } = row
-            && Self::active_table_id(transaction, table).await? != Some(*owner)
-        {
-            return Ok(None);
-        }
+
         let id = Self::document_id(row);
         let Some(document) = Self::document(transaction, table, &id).await? else {
             return Ok(None);
@@ -577,7 +618,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a {
         stream! {
             let storage = table;
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, storage));
@@ -595,9 +636,7 @@ where
                 if Self::metadata_deleted(transaction, table, &row).await? {
                     continue;
                 }
-                if let RowIdentity::ScopedUser { table: owner, .. } = &row
-                    && Self::active_table_id(transaction, table).await? != Some(*owner)
-                { continue; }
+
                 let columns = Self::document_columns(transaction, table, &row, &document).await?;
                 yield Self::decode_row(&document, &columns).map(|value| (row, value));
             }
@@ -608,42 +647,30 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a {
         stream! {
             if catalog_table_for_storage(table).is_some() {
                 let states = Self::catalog_states(transaction, table);
                 pin_mut!(states);
                 while let Some(state) = states.next().await { yield state; }
             } else {
-                let rows = self.scan_rows(transaction, table);
-                pin_mut!(rows);
-                while let Some(row) = rows.next().await {
-                    let (id, value) = row?;
-                    yield Ok((id, value, false));
-                }
-            }
-        }
-    }
-
-    fn scan_row_states_prefix<'a>(
-        &'a self,
-        transaction: &'a T,
-        table: &'a str,
-        identity_prefix: &'a [u8],
-    ) -> impl Stream<Item = EngineResult<(RowIdentity, Row, bool)>> + Send + 'a {
-        stream! {
-            if catalog_table_for_storage(table).is_some() {
-                let rows = Self::catalog_states_prefix(transaction, table, identity_prefix);
-                pin_mut!(rows);
-                while let Some(row) = rows.next().await { yield row; }
-            } else {
-                let rows = self.scan_row_states(transaction, table);
-                pin_mut!(rows);
-                while let Some(row) = rows.next().await {
-                    let (identity, value, deleted) = row?;
-                    if identity.to_bytes().starts_with(identity_prefix) {
-                        yield Ok((identity, value, deleted));
+                let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
+                let documents = reconstruct_document_values(changes.range((
+                                    Bound::<DocumentChangeKey>::Unbounded,
+                                    Bound::<DocumentChangeKey>::Unbounded,
+                                )).filter_map(|entry| async {
+                    match &entry {
+                        Ok((key, _)) if key.r#type().is_metadata() => None,
+                        _ => Some(entry),
                     }
+                }));
+                pin_mut!(documents);
+                while let Some(document) = documents.next().await {
+                    let (id, document) = document.map_err(EngineError::custom)?;
+                    let row = Self::row_id(&id)?;
+                    let deleted = Self::metadata_deleted(transaction, table, &row).await?;
+                    let columns = Self::document_columns(transaction, table, &row, &document).await?;
+                    yield Self::decode_row(&document, &columns).map(|value| (row, value, deleted));
                 }
             }
         }
@@ -653,7 +680,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row_id: &RowIdentity,
+        row_id: &Uuid,
         row: &Row,
         changed_columns: &[usize],
     ) -> EngineResult<Vec<u8>> {
@@ -677,7 +704,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Vec<usize>> {
         let table_name = table;
         let id = Self::document_id(row);
@@ -694,7 +721,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Vec<(usize, Vec<Value>)>> {
         let id = Self::document_id(row);
         let Some(document) = Self::document(transaction, table, &id).await? else {
@@ -734,7 +761,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row_id: &RowIdentity,
+        row_id: &Uuid,
         row: &Row,
         changed_columns: &[usize],
     ) -> EngineResult<Vec<u8>> {
@@ -753,7 +780,7 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: &[u8],
     ) -> EngineResult<Option<Row>> {
         if Self::metadata_deleted(transaction, table, &row).await? {
@@ -772,6 +799,22 @@ where
         document
             .load_incremental(incremental)
             .map_err(EngineError::custom)?;
+        if catalog_table_for_storage(table).is_none()
+            && Self::document_schema_ids(&document)?.is_empty()
+            && let Some(schema_id) = Self::table_definition_id(transaction, table).await?
+        {
+            document
+                .put(
+                    ROOT,
+                    DOCUMENT_SCHEMA,
+                    ScalarValue::Bytes(schema_id.as_bytes().to_vec()),
+                )
+                .map_err(EngineError::custom)?;
+        }
+        if Self::document_is_stale(transaction, table, &document).await? {
+            self.delete_row(transaction, table, &row).await?;
+            return Ok(None);
+        }
         let columns = Self::columns(transaction, table_name, column_count).await?;
         let row = Self::decode_row(&document, &columns)?;
 
@@ -809,14 +852,12 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Option<Row>> {
         let value = self.get_row(transaction, table, row).await?;
         let key = DocumentChangeKey::new_metadata(Self::document_id(row)).encode_ordered();
-        let metadata = RowMetadata {
-            version: 1,
-            deleted: true,
-        };
+        let mut metadata = Self::row_metadata(transaction, table, row).await?;
+        metadata.deleted = true;
         transaction
             .put_bytes(
                 table,
@@ -827,20 +868,109 @@ where
         Ok(value)
     }
 
-    async fn row_is_deleted(
+    async fn row_is_deleted(&self, transaction: &T, table: &str, row: &Uuid) -> EngineResult<bool> {
+        Self::metadata_deleted(transaction, table, row).await
+    }
+
+    async fn row_has_dropped_definition(
         &self,
         transaction: &T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<bool> {
-        Self::metadata_deleted(transaction, table, row).await
+        let Some(document) = Self::document(transaction, table, &Self::document_id(row)).await?
+        else {
+            return Ok(false);
+        };
+        Self::document_has_dropped_definition(transaction, &document).await
+    }
+
+    async fn table_definition_was_dropped(
+        &self,
+        transaction: &T,
+        row: &Uuid,
+    ) -> EngineResult<bool> {
+        Ok(
+            !Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, row)
+                .await?
+                .drop_events
+                .is_empty(),
+        )
+    }
+
+    async fn drop_table_definition(
+        &self,
+        transaction: &mut T,
+        row: &Uuid,
+        event: Uuid,
+    ) -> EngineResult<()> {
+        let mut metadata =
+            Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, row).await?;
+        metadata.deleted = true;
+        metadata.drop_events.push(event);
+        metadata.drop_events.sort_unstable();
+        metadata.drop_events.dedup();
+        transaction
+            .put_bytes(
+                engine::ENGINE_TABLES_STORAGE,
+                DocumentChangeKey::new_metadata(Self::document_id(row)).encode_ordered(),
+                postcard::to_allocvec(&metadata).map_err(EngineError::custom)?,
+            )
+            .await
+    }
+
+    async fn table_drop_events(&self, transaction: &T, table: &str) -> EngineResult<Vec<Uuid>> {
+        let rows = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
+        pin_mut!(rows);
+        let mut events = Vec::new();
+        while let Some(entry) = rows.next().await {
+            let (id, value, _) = entry?;
+            if value.values.first().and_then(Value::as_text) == Some(table) {
+                events.extend(
+                    Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, &id)
+                        .await?
+                        .drop_events,
+                );
+            }
+        }
+        events.sort_unstable();
+        events.dedup();
+        Ok(events)
+    }
+
+    async fn set_observed_table_drops(
+        &self,
+        transaction: &mut T,
+        row: &Uuid,
+        events: Vec<Uuid>,
+    ) -> EngineResult<()> {
+        let mut metadata =
+            Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, row).await?;
+        metadata.observed_drops = events;
+        metadata.observed_drops.sort_unstable();
+        metadata.observed_drops.dedup();
+        transaction
+            .put_bytes(
+                engine::ENGINE_TABLES_STORAGE,
+                DocumentChangeKey::new_metadata(Self::document_id(row)).encode_ordered(),
+                postcard::to_allocvec(&metadata).map_err(EngineError::custom)?,
+            )
+            .await
+    }
+
+    async fn observed_table_drops(&self, transaction: &T, row: &Uuid) -> EngineResult<Vec<Uuid>> {
+        Ok(
+            Self::row_metadata(transaction, engine::ENGINE_TABLES_STORAGE, row)
+                .await?
+                .observed_drops,
+        )
     }
 
     async fn put_row(
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         value: Row,
     ) -> EngineResult<()> {
         if Self::metadata_deleted(transaction, table, &row).await? {
@@ -857,7 +987,7 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: &RowIdentity,
+        row: &Uuid,
     ) -> EngineResult<Option<Row>> {
         self.delete_row(transaction, table, row).await
     }
@@ -871,7 +1001,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<RowIdentity>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<Uuid>> + Send + 'a {
         stream! {
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
             let entries = changes.range(..);
@@ -893,7 +1023,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
         let id = Self::document_id(&row);
@@ -910,11 +1040,21 @@ where
         Ok(Some(state))
     }
 
+    fn manifest_digest(&self, state: &[u8], metadata: &[u8]) -> EngineResult<StateDigest> {
+        let heads = if state.is_empty() {
+            [0; 32]
+        } else {
+            let mut document = AutoCommit::load(state).map_err(EngineError::custom)?;
+            hash_heads(document.get_heads())
+        };
+        Ok(SyncStateUnit::digest_parts(&heads, metadata))
+    }
+
     async fn merge_state(
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         state: &[u8],
     ) -> EngineResult<Option<Row>> {
         let deleted = Self::metadata_deleted(transaction, table, &row).await?;
@@ -926,6 +1066,10 @@ where
             document.merge(&mut incoming).map_err(EngineError::custom)?;
         } else {
             document = incoming;
+        }
+        let stale_definition = Self::document_is_stale(transaction, table, &document).await?;
+        if stale_definition {
+            self.delete_row(transaction, table, &row).await?;
         }
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
         let value = Self::decode_row(&document, &columns)?;
@@ -948,14 +1092,14 @@ where
         let key =
             DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads())).encode_ordered();
         transaction.put_bytes(table, key, document.save()).await?;
-        Ok((!deleted).then_some(value))
+        Ok((!deleted && !stale_definition).then_some(value))
     }
 
     async fn export_metadata(
         &self,
         transaction: &T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
     ) -> EngineResult<Vec<u8>> {
         let key = DocumentChangeKey::new_metadata(Self::document_id(&row)).encode_ordered();
         Ok(transaction
@@ -968,7 +1112,7 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         metadata: &[u8],
     ) -> EngineResult<()> {
         let incoming: RowMetadata = postcard::from_bytes(metadata).map_err(EngineError::custom)?;
@@ -983,7 +1127,25 @@ where
             version: existing.as_ref().map_or(incoming.version, |value| {
                 value.version.max(incoming.version)
             }),
-            deleted: incoming.deleted || existing.is_some_and(|value| value.deleted),
+            deleted: incoming.deleted || existing.as_ref().is_some_and(|value| value.deleted),
+            drop_events: existing
+                .as_ref()
+                .map(|value| value.drop_events.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(incoming.drop_events)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            observed_drops: existing
+                .as_ref()
+                .map(|value| value.observed_drops.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(incoming.observed_drops)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         };
         transaction
             .put_bytes(
@@ -998,7 +1160,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         max_bytes: usize,
     ) -> EngineResult<Vec<SyncChangeId>> {
         let id = Self::document_id(&row);
@@ -1036,7 +1198,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         id: &SyncChangeId,
         max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
@@ -1064,7 +1226,7 @@ where
         &self,
         transaction: &mut T,
         table: &str,
-        row: RowIdentity,
+        row: Uuid,
         id: &SyncChangeId,
         payload: &[u8],
     ) -> EngineResult<()> {
@@ -1079,7 +1241,7 @@ where
             .await
             .map_err(EngineError::custom)?
             .is_some();
-        if already_applied {
+        if already_applied || Self::metadata_deleted(transaction, table, &row).await? {
             return Ok(());
         }
         let Some(mut document) = Self::document(transaction, table, &document_id).await? else {
@@ -1100,36 +1262,32 @@ where
         }
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
         Self::decode_row(&document, &columns)?;
+        let stale_definition = Self::document_is_stale(transaction, table, &document).await?;
         AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table))
             .insert(automerge_key, payload.to_vec())
             .await
             .map_err(EngineError::custom)?;
+        if stale_definition {
+            self.delete_row(transaction, table, &row).await?;
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use engine::RowIdentity;
     use uuid::Uuid;
 
     use super::AutomergeRowCodec;
 
     #[test]
-    fn row_identity_bytes_round_trip_through_document_ids() {
-        let identities = [
-            RowIdentity::user(Uuid::from_bytes([7; 16])),
-            RowIdentity::catalog(vec![7; 16]),
-            RowIdentity::catalog(vec![1, 2, 3]),
-        ];
-
-        for identity in identities {
-            let id = AutomergeRowCodec::document_id(&identity);
-            assert_eq!(id, identity.to_bytes());
-            assert_eq!(
-                AutomergeRowCodec::row_id(&id).expect("identity bytes were encoded"),
-                identity
-            );
-        }
+    fn uuid_round_trips_through_document_ids() {
+        let row = Uuid::from_bytes([7; 16]);
+        let id = AutomergeRowCodec::document_id(&row);
+        assert_eq!(id, row.as_bytes());
+        assert_eq!(
+            AutomergeRowCodec::row_id(&id).expect("UUID bytes were encoded"),
+            row
+        );
     }
 }

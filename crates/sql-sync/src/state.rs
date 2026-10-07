@@ -1,6 +1,6 @@
 use alloc::{string::String, vec::Vec};
 
-use engine::RowIdentity;
+use engine::Uuid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -9,7 +9,7 @@ pub struct SyncChangeId(pub Vec<u8>);
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum SyncKey {
-    Row { table: String, row: RowIdentity },
+    Row { table: String, row: Uuid },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub struct SyncStateUnit {
 
 impl SyncStateUnit {
     pub fn new(key: SyncKey, state: Vec<u8>, metadata: Vec<u8>) -> Self {
-        let digest = state_digest(&state, &metadata);
+        let digest = Self::digest_parts(&state, &metadata);
         Self {
             key,
             state,
@@ -35,17 +35,17 @@ impl SyncStateUnit {
     }
 
     pub fn verify_digest(&self) -> bool {
-        state_digest(&self.state, &self.metadata) == self.digest
+        Self::digest_parts(&self.state, &self.metadata) == self.digest
     }
-}
 
-fn state_digest(state: &[u8], metadata: &[u8]) -> StateDigest {
-    let mut hasher = Sha256::new();
-    hasher.update((state.len() as u64).to_le_bytes());
-    hasher.update(state);
-    hasher.update((metadata.len() as u64).to_le_bytes());
-    hasher.update(metadata);
-    StateDigest(hasher.finalize().into())
+    pub fn digest_parts(state: &[u8], metadata: &[u8]) -> StateDigest {
+        let mut hasher = Sha256::new();
+        hasher.update((state.len() as u64).to_le_bytes());
+        hasher.update(state);
+        hasher.update((metadata.len() as u64).to_le_bytes());
+        hasher.update(metadata);
+        StateDigest(hasher.finalize().into())
+    }
 }
 
 #[cfg(test)]
@@ -53,14 +53,14 @@ mod tests {
     use alloc::{string::String, vec};
 
     use super::{SyncKey, SyncStateUnit};
-    use engine::RowIdentity;
+    use engine::Uuid;
 
     #[test]
     fn digest_verification_does_not_require_mutating_state() {
         let mut unit = SyncStateUnit::new(
             SyncKey::Row {
                 table: String::from("items"),
-                row: RowIdentity::User([1; 16]),
+                row: Uuid::from_bytes([1; 16]),
             },
             vec![7; 1024],
             vec![9; 256],
