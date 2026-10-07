@@ -1,10 +1,14 @@
 #![no_std]
 
 extern crate alloc;
-#[cfg(feature = "iroh")]
+#[cfg(any(feature = "iroh", feature = "native-stage"))]
 extern crate std;
 
 mod codec;
+#[cfg(feature = "native-stage")]
+mod file_stage;
+#[cfg(feature = "native-stage")]
+pub use file_stage::{FileSyncStage, FileSyncStageFactory};
 #[cfg(feature = "iroh")]
 mod iroh_transport;
 mod protocol;

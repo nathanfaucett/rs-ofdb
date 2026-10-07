@@ -19,8 +19,8 @@ pub use query::{
 pub use sql_server::{EngineExecutor, Server};
 #[cfg(feature = "sql")]
 pub use sql_translator::SqlTranslator;
-#[cfg(feature = "sync")]
-pub use sync::IrohTransport;
+#[cfg(feature = "native-stage")]
+pub use sync::{FileSyncStage, FileSyncStageFactory};
 #[cfg(feature = "sync")]
 pub use sync::{
     SessionConfig, SyncError, SyncHello, SyncMessage, SyncResult, SyncRole, SyncStage,

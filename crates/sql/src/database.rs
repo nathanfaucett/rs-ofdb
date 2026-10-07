@@ -351,6 +351,24 @@ impl Database {
         }
     }
 
+    /// Uses ofdb-owned native temporary records in the caller-selected directory.
+    #[cfg(feature = "native-stage")]
+    pub async fn synchronize_with_stage_directory<T>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+    {
+        let factory = crate::FileSyncStageFactory::new(directory);
+        self.synchronize_with_stage_factory(transport, config, role, &factory)
+            .await
+    }
+
     #[cfg(feature = "sync")]
     pub async fn sync_manifest(&self) -> SqlResult<SyncManifest> {
         database_call!(self, |engine| sync_manifest_for(engine).await)
