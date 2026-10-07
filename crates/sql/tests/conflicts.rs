@@ -115,6 +115,59 @@ fn memory_conflict_operations_and_transaction_reads_work_without_runtime() {
     });
 }
 
+#[cfg(feature = "redb")]
+#[tokio::test]
+async fn unchanged_updates_commit_without_new_history_and_remain_syncable() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("left.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::open(directory.path().join("right.redb")).expect("right");
+    left.client()
+        .execute_sql(
+            "CREATE TABLE revisions (id UUID PRIMARY KEY, revision TEXT)",
+            None,
+        )
+        .await
+        .expect("schema");
+    left.client()
+        .execute_sql(
+            &format!("INSERT INTO revisions VALUES (CAST('{ID}' AS UUID), 'same')"),
+            None,
+        )
+        .await
+        .expect("row");
+    let before = left.export_sync_state().await.expect("before");
+    left.client()
+        .execute_sql("UPDATE revisions SET revision = 'same'", None)
+        .await
+        .expect("valid unchanged update");
+    let mut tx = left.client().transaction().await.expect("transaction");
+    tx.execute_sql("UPDATE revisions SET revision = 'same'", None)
+        .await
+        .expect("unchanged transactional update");
+    tx.commit().await.expect("commit no-op");
+    assert_eq!(
+        left.export_sync_state().await.expect("unchanged history"),
+        before
+    );
+    drop(left);
+    let left = Database::open(&path).expect("reopen no-op");
+    assert_eq!(
+        left.export_sync_state().await.expect("durable history"),
+        before
+    );
+    exchange(&left, &right).await;
+    left.client()
+        .execute_sql("UPDATE revisions SET revision = 'changed'", None)
+        .await
+        .expect("real change");
+    exchange(&left, &right).await;
+    assert_eq!(
+        left.export_sync_state().await.expect("left"),
+        right.export_sync_state().await.expect("right")
+    );
+}
+
 async fn diverge(left: &Database, right: &Database) {
     left.client().execute_sql("CREATE TABLE security (id UUID PRIMARY KEY, admin_allowed BOOLEAN, selected_id UUID, revoked_at INTEGER, owner_subject TEXT)", None).await.expect("schema");
     left.client().execute_sql(&format!("INSERT INTO security VALUES (CAST('{ID}' AS UUID), NULL, CAST('{ID}' AS UUID), NULL, 'original')"), None).await.expect("baseline");

@@ -828,9 +828,12 @@ where
             )
         } else {
             let changes = document.get_changes(&previous_heads);
-            let change = changes
-                .last()
-                .ok_or(EngineError::custom("Incremental payload has no change"))?;
+            let Some(change) = changes.last() else {
+                if incremental.is_empty() {
+                    return Ok(Some(row));
+                }
+                return Err(EngineError::custom("Incremental payload has no change"));
+            };
             (
                 DocumentChangeKey::new_incremental(id, change.hash().0),
                 incremental.to_vec(),
