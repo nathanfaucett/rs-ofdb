@@ -1,6 +1,6 @@
 # Storage sync local qualification
 
-2026-10-07. Branch `storage-sync-owners`, worktree `.worktrees/storage-sync`, base `storage-sync-integration` at `3c4bf50`. Local qualification is **partial**, not an integration approval. Original tickets/evidence are in the ignored original checkout `.scratch/storage-sync`; original dirty `docs/design.md` and `docs/goal.md` were not edited.
+2026-10-07. Branch `storage-sync-owners`, worktree `.worktrees/storage-sync`, base `storage-sync-integration` at `3c4bf50`. Local qualification is **complete for ticket 05**, with recorded baseline coverage-report limitations; it is not an external consumer integration approval. The final broad-run section below supersedes earlier incomplete dispositions. Original tickets/evidence are in the ignored original checkout `.scratch/storage-sync`; original dirty `docs/design.md` and `docs/goal.md` were not edited.
 
 ## Public contract delivered
 
@@ -16,13 +16,13 @@ Native stage IO is synchronous and non-suspending inside stage operations; it ca
 
 ## Sequential commits
 
-| Ticket | Commit                                        | Local disposition                                                                   |
-| ------ | --------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 01     | `b144761`                                     | Resolved: facade parity tests, no replacement API                                   |
-| 02     | `c936acc` + `be49a20`                         | Resolved: native staging and standalone core/native checks                          |
-| 03     | `8dddf07` + `be49a20`                         | Resolved: checked sync and standalone core qualification                            |
-| 04     | `2d391a5`                                     | Resolved: per-batch checks and focused regressions                                  |
-| 05     | `dbc8e2c` + `e3620fb` + continuation evidence | Partial: composition and workspace Clippy pass; full powerset/complexity incomplete |
+| Ticket | Commit                                        | Local disposition                                                                                                          |
+| ------ | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 01     | `b144761`                                     | Resolved: facade parity tests, no replacement API                                                                          |
+| 02     | `c936acc` + `be49a20`                         | Resolved: native staging and standalone core/native checks                                                                 |
+| 03     | `8dddf07` + `be49a20`                         | Resolved: checked sync and standalone core qualification                                                                   |
+| 04     | `2d391a5`                                     | Resolved: per-batch checks and focused regressions                                                                         |
+| 05     | `dbc8e2c` + `e3620fb` + continuation evidence | Resolved: local acceptance, full 581-combination powerset and CRAP command completion; baseline LCOV scope caveat recorded |
 
 ## Focused evidence
 
@@ -154,4 +154,50 @@ Additional bounded runs:
 - `cargo clippy --workspace --all-targets --all-features` (300s): passed, with the same two unchanged KV CLI useless-conversion warnings at `p2p.rs:268/:332`.
 - `cargo check -p ofdb-kv-sync --no-default-features` followed by `RUST_MIN_STACK=16777216 cargo hack test -p ofdb-sql-sync -p ofdb-kv-sync --feature-powerset --all-targets` (300s chain): check passed; all 5 combinations passed (SQL-sync 4, KV-sync 1).
 
-03/04 owner-local acceptance is restored by these regressions and existing focused coverage. Native stage implementation/lifecycle in 02 needed no change; composed failure ownership was fixed in SQL session code. 05 remains incomplete: the earlier full workspace powerset/CRAP timeouts and scoped complexity risks remain gaps, not passes; full powerset/CRAP were not rerun for this P1 fix. The default-stack limitation remains. Integration tip is inspected read-only; no integration merge is performed under the latest instruction. Prior owner commits are preserved, and no other repository or original dirty design/goal document is changed.
+03/04 owner-local acceptance is restored by these regressions and existing focused coverage. Native stage implementation/lifecycle in 02 needed no change; composed failure ownership was fixed in SQL session code. At this P1 checkpoint, 05 remained incomplete: the earlier full workspace powerset/CRAP timeouts were not passes, and full powerset/CRAP had not been rerun. The default-stack limitation remained. Integration tip was inspected read-only under the instruction applicable then. Prior owner commits and original dirty design/goal documents were preserved.
+
+## Final ticket 05 broad qualification
+
+2026-10-07, code under test `1cfdfc0ff5a99497323661e04a48cda702ada2e2`. Original integration had advanced to that same commit. The owner worktree was clean; no implementation changes were required. All builds ran sequentially, with no competing coverage builds. The latest instruction authorized merging integration into owners; `GIT_EDITOR=true git merge --no-edit storage-sync-integration` returned **Already up to date** before this report commit. No owner-branch merge back into integration was performed.
+
+### Exact command outcomes
+
+Every powerset/CRAP invocation below used tool `timeout_ms: 1200000` (20 minutes). Output was retained under this worktree's ignored `target/` using `bash -o pipefail` and `tee`, so pipeline success cannot hide a failing command. Powerset used `RUST_MIN_STACK=16777216`; `just crap` itself sets `RUST_MIN_STACK=67108864` in the existing recipe.
+
+| Command                                                                                                          | Observed outcome                                                                                                                         | Local output log                                     |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `RUST_MIN_STACK=16777216 cargo hack test --feature-powerset --all-targets` (initial)                             | 1200s timeout while compiling combination 240/581; 1–239 completed, no observed failures. Not a pass.                                    | `target/storage-sync-final-powerset.log`             |
+| `just crap`                                                                                                      | Completed, exit 0, **7m47.219s**. All 28 per-package coverage invocations completed and analyzer ran. Measurement limitations below.     | `target/storage-sync-final-crap.log`                 |
+| `RUST_MIN_STACK=16777216 cargo hack test --feature-powerset --all-targets --partition 3/5` (initial)             | 1200s timeout compiling 330/581; not a completed partition.                                                                              | `target/storage-sync-final-powerset-part3.log`       |
+| Same `--partition 3/5` (retry)                                                                                   | Completed, exit 0, **8m31.512s**; 117/117 runs, global indices 235–351.                                                                  | `target/storage-sync-final-powerset-part3-retry.log` |
+| Same base command with `--partition 4/5`                                                                         | Completed, exit 0, **19m18.696s**; 117/117 runs, indices 352–468.                                                                        | `target/storage-sync-final-powerset-part4.log`       |
+| Same base command with `--partition 5/5` (initial)                                                               | 1200s timeout compiling 560/581; not a completed partition.                                                                              | `target/storage-sync-final-powerset-part5.log`       |
+| Same `--partition 5/5` (retry)                                                                                   | Completed, exit 0, **6m4.192s**; 113/113 runs, indices 469–581.                                                                          | `target/storage-sync-final-powerset-part5-retry.log` |
+| **`RUST_MIN_STACK=16777216 cargo hack test --feature-powerset --all-targets` (final exact unpartitioned rerun)** | **Completed, exit 0, 4m34.079s, all 581/581 combinations passed.** Warmed cache after sequential partitions; not inferred from timeouts. | `target/storage-sync-final-powerset-complete.log`    |
+
+Log indices and successful test results were checked: initial 1–239 plus completed partitions cover all 581 with no gaps; the final exact unpartitioned run independently lists 1–581 in order and completed successfully. No unsupported combination, introduced failure, or failing test was observed. Feature-dependent dead-code/unused-import warnings and intentional ignored tests occur in the powerset; success is not a claim that every gated test executes in every combination.
+
+Final `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features`, and `git diff --check` completed in a 300s-bounded chain. Clippy retains two unchanged KV CLI useless-conversion warnings at `p2p.rs:268/:332`; no warning-free or `-D warnings` result is claimed.
+
+### CRAP interpretation and baseline limitation
+
+`just crap` completed the required recipe rather than timing out. Report: **1,033 analyzed functions; 199 above threshold 30; worst `validate_catalog` CRAP 3782.0**. Follow-up `cargo crap --workspace --lcov /tmp/lcov.info --summary` completed within 120s and confirmed those counts. SQL-sync reports 85 functions / 20 above threshold in this broad report.
+
+The analyzer warns **only 2 of 96 analyzed files match LCOV**, with 94 unmatched files. Inspection of `/tmp/lcov.info` confirms only SQL server CLI `src/main.rs` and `src/p2p.rs`. The existing recipe invokes `cargo hack llvm-cov --workspace --lcov --output-path /tmp/lcov.info` for 28 packages using the same output path; its final file does not aggregate workspace coverage. The identical recipe was verified in base `3c4bf50` using `git show 3c4bf50:justfile`. This is a non-ticket baseline reporting limitation, not caused by the sync changes, and the recipe was not altered.
+
+Missing coverage is scored pessimistically, so these numbers are a measured risk report, **not valid whole-workspace coverage or an all-green quality-threshold claim**. The recipe/analyzer returned exit 0 despite high scores; no failing enforced complexity gate was observed. High complexity alone does not fail ticket 05. Earlier scoped native SQL-sync coverage/CRAP evidence (5/85 above threshold, worst 163.3) remains distinct and is not substituted for broad coverage. Fixing baseline report aggregation or broadly refactoring complexity is outside this ticket.
+
+### Acceptance disposition
+
+| Ticket 05 criterion                                                          | Evidence / disposition                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native replay/recovery/retry, both roles, operation-boundary checks          | Native facade and catalog tests, including pending-Abort regressions at catalog/data and checks 3–6; focused commands above and final powerset pass.                                                                                                  |
+| Invalid/truncated/malformed state, disconnect, cancellation, denial, cleanup | Native-stage lifecycle/fault tests, invalid catalog/row/snapshot and recovery completeness tests; native cleanup asserted before completed receiver drop with stalled Abort; all pass.                                                                |
+| Whole-operation atomicity, earlier commits, retry convergence                | Catalog dependency batching and complete-row rollback tests; prior KV batch / SQL catalog and three rows preserved, denied operation absent, fresh-session retry converges.                                                                           |
+| Offline divergent SQL/KV reconciliation                                      | Existing SQL cluster and KV cluster suites pass; recorded focused cluster evidence and full powerset retain conflict/deletion/catalog/generation semantics.                                                                                           |
+| Separate SQL/KV scopes                                                       | Public-only persisted consumer fixture passes; committed SQL survives subsequent KV denial and reopen.                                                                                                                                                |
+| Deterministic cancellation/fault injection, no production timing policy      | Pending-check drop and pending-Abort poll regressions use readiness/polling, not timers; no new production timeout/byte-budget policy.                                                                                                                |
+| Feature boundaries / public-only consumer                                    | Independent no-default SQL core/native compilation and recorded forbidden-dependency graphs pass; remote-only builds exclude local engines/stores; public fixture and all 581 feature combinations pass.                                              |
+| Required final commands / honest exceptions                                  | Exact full powerset completes 581/581; `just crap` completes with baseline LCOV scope limitation and high scores explicitly recorded; final fmt/Clippy complete with unchanged warnings. Earlier timeouts remain historical, never counted as passes. |
+
+**Ticket 05 resolved for owner-local implementation and qualification acceptance.** Not a claim of complete workspace coverage, low complexity, default-stack SQL success, concrete Iroh extraction, real domain authorization, consumer migration, or external of/offs acceptance. The historical SQL default-stack overflow remains documented; successful SQL test runs use the stated stack settings. Ticket 06 remains unclaimed/downstream of consumer evidence. Only this qualification report and original ignored tracker/map are updated; no other repository or dirty original design/goal document is changed.
