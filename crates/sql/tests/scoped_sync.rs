@@ -1,0 +1,411 @@
+#![cfg(all(
+    feature = "redb",
+    feature = "in-memory",
+    feature = "native-stage",
+    feature = "sql"
+))]
+
+use ofdb_sql::{Database, Row, SessionConfig, SyncRole, SyncTransport, Uuid, Value};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use tokio::sync::mpsc;
+
+struct Channel {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+    receiver: mpsc::UnboundedReceiver<Vec<u8>>,
+    pending_send: Option<Arc<AtomicBool>>,
+}
+impl SyncTransport for Channel {
+    type Error = &'static str;
+    async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+        if self
+            .pending_send
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            return core::future::pending().await;
+        }
+        self.sender.send(frame).map_err(|_| "closed")
+    }
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+        self.receiver.recv().await.ok_or("closed")
+    }
+}
+fn pair() -> (Channel, Channel) {
+    let (a, ar) = mpsc::unbounded_channel();
+    let (b, br) = mpsc::unbounded_channel();
+    (
+        Channel {
+            sender: a,
+            receiver: br,
+            pending_send: None,
+        },
+        Channel {
+            sender: b,
+            receiver: ar,
+            pending_send: None,
+        },
+    )
+}
+async fn schema(database: &Database) {
+    database.client().execute_sql("CREATE TABLE public_rows (id UUID PRIMARY KEY, name TEXT); CREATE UNIQUE INDEX public_names ON public_rows (name); CREATE TABLE local_secrets (id UUID PRIMARY KEY, secret TEXT)", None).await.expect("schema");
+}
+#[tokio::test]
+async fn scoped_native_denial_with_pending_abort_cleans_stages_in_both_roles() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let directory = tempfile::tempdir().expect("databases");
+        let left = Database::open(directory.path().join("left.redb")).expect("left");
+        let right = Database::in_memory();
+        schema(&left).await;
+        schema(&right).await;
+        right.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')", None).await.expect("peer row");
+        let before = left.export_sync_state().await.expect("before denial");
+        let (mut lt, mut rt) = pair();
+        let denied = Arc::new(AtomicBool::new(false));
+        lt.pending_send = Some(denied.clone());
+        let config = SessionConfig::default();
+        let other = if role == SyncRole::Initiator {
+            SyncRole::Responder
+        } else {
+            SyncRole::Initiator
+        };
+        let stages = directory.path().join("stages");
+        let (l, _) = tokio::join!(
+            async {
+                let result = left
+                    .synchronize_tables_with_stage_directory_checked(
+                        &mut lt,
+                        &config,
+                        role,
+                        &stages,
+                        &["public_rows"],
+                        || {
+                            denied.store(true, Ordering::SeqCst);
+                            async { Err("cancelled".into()) }
+                        },
+                    )
+                    .await;
+                drop(lt);
+                result
+            },
+            async {
+                let result = right
+                    .synchronize_tables_checked(
+                        &mut rt,
+                        &config,
+                        other,
+                        &["public_rows"],
+                        || async { Ok(()) },
+                    )
+                    .await;
+                drop(rt);
+                result
+            }
+        );
+        assert!(matches!(l, Err(ofdb_sql::SyncError::PreApply(reason)) if reason == "cancelled"));
+        assert_eq!(
+            left.export_sync_state().await.expect("denied state"),
+            before
+        );
+        assert_eq!(std::fs::read_dir(stages).expect("stages").count(), 0);
+    }
+}
+
+async fn exchange(
+    left: &Database,
+    right: &Database,
+    left_tables: &[&str],
+    right_tables: &[&str],
+) -> (Result<(), String>, Result<(), String>) {
+    let (mut lt, mut rt) = pair();
+    let config = SessionConfig {
+        max_units_per_frame: 1,
+        ..SessionConfig::default()
+    };
+    tokio::join!(
+        async {
+            let result = left
+                .synchronize_tables_checked(
+                    &mut lt,
+                    &config,
+                    SyncRole::Initiator,
+                    left_tables,
+                    || async { Ok(()) },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            drop(lt);
+            result
+        },
+        async {
+            let result = right
+                .synchronize_tables_checked(
+                    &mut rt,
+                    &config,
+                    SyncRole::Responder,
+                    right_tables,
+                    || async { Ok(()) },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            drop(rt);
+            result
+        }
+    )
+}
+
+#[tokio::test]
+async fn scoped_native_sessions_preserve_local_tables_and_sync_full_selected_history() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("left.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::in_memory();
+    schema(&left).await;
+    schema(&right).await;
+    left.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada'); INSERT INTO local_secrets VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'never transfer')", None).await.expect("rows");
+    let config = SessionConfig::default();
+    let (mut lt, mut rt) = pair();
+    let (l, r) = tokio::join!(
+        left.synchronize_tables_with_stage_directory_checked(
+            &mut lt,
+            &config,
+            SyncRole::Initiator,
+            directory.path().join("stages"),
+            &["public_rows"],
+            || async { Ok(()) }
+        ),
+        right.synchronize_tables_checked(
+            &mut rt,
+            &config,
+            SyncRole::Responder,
+            &["public_rows"],
+            || async { Ok(()) }
+        )
+    );
+    l.expect("left scoped sync");
+    r.expect("right scoped sync");
+    assert!(
+        right
+            .client()
+            .execute_sql("SELECT * FROM local_secrets", None)
+            .await
+            .expect("local table retained")[0]
+            .rows
+            .is_empty()
+    );
+    assert_eq!(
+        right
+            .client()
+            .execute_sql("SELECT * FROM public_rows", None)
+            .await
+            .expect("selected rows")[0]
+            .rows
+            .len(),
+        1
+    );
+    assert_eq!(
+        std::fs::read_dir(directory.path().join("stages"))
+            .expect("stages")
+            .count(),
+        0
+    );
+    drop(left);
+    let left = Database::open(&path).expect("reopen");
+    assert_eq!(
+        left.client()
+            .execute_sql("SELECT * FROM local_secrets", None)
+            .await
+            .expect("local secrets persisted")[0]
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn scope_is_explicit_and_remote_schema_cannot_widen_it() {
+    let left = Database::in_memory();
+    let right = Database::in_memory();
+    schema(&left).await;
+    schema(&right).await;
+    for scope in [
+        vec![],
+        vec!["public_rows", "public_rows"],
+        vec!["missing"],
+        vec!["__engine_tables"],
+    ] {
+        let (l, r) = exchange(&left, &right, &scope, &["public_rows"]).await;
+        assert!(l.is_err());
+        assert!(r.is_err());
+    }
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["local_secrets"]).await;
+    assert!(l.expect_err("scope mismatch").contains("scopes differ"));
+    assert!(r.expect_err("scope mismatch").contains("scopes differ"));
+    left.client()
+        .execute_sql("ALTER TABLE public_rows ADD COLUMN secret TEXT", None)
+        .await
+        .expect("widen source schema");
+    let before = right.export_sync_state().await.expect("receiver before");
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["public_rows"]).await;
+    assert!(l.is_err() && r.is_err());
+    assert_eq!(
+        right.export_sync_state().await.expect("receiver unchanged"),
+        before
+    );
+}
+
+#[tokio::test]
+async fn multi_table_scope_keeps_excluded_indexes_and_rows_local() {
+    let left = Database::in_memory();
+    let right = Database::in_memory();
+    for database in [&left, &right] {
+        schema(database).await;
+        database.client().execute_sql("CREATE TABLE grants (id UUID PRIMARY KEY, token_hash TEXT, consumed_at INTEGER); CREATE UNIQUE INDEX grant_hashes ON grants (token_hash); CREATE UNIQUE INDEX local_verifiers ON local_secrets (secret)", None).await.expect("extra schemas");
+    }
+    left.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada'); INSERT INTO grants VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'lookup hash', NULL); INSERT INTO local_secrets VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abe' AS UUID), 'verifier')", None).await.expect("records");
+    let (l, r) = exchange(
+        &left,
+        &right,
+        &["public_rows", "grants"],
+        &["grants", "public_rows"],
+    )
+    .await;
+    l.expect("left");
+    r.expect("right");
+    assert_eq!(
+        right
+            .client()
+            .execute_sql("SELECT * FROM public_rows; SELECT * FROM grants", None)
+            .await
+            .expect("selected rows")
+            .iter()
+            .map(|r| r.rows.len())
+            .collect::<Vec<_>>(),
+        vec![1, 1]
+    );
+    assert!(
+        right
+            .client()
+            .execute_sql("SELECT * FROM local_secrets", None)
+            .await
+            .expect("excluded rows")[0]
+            .rows
+            .is_empty()
+    );
+    right.client().execute_sql("INSERT INTO local_secrets VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abf' AS UUID), 'verifier')", None).await.expect("local-only index remains usable");
+    let (l, r) = exchange(
+        &right,
+        &left,
+        &["grants", "public_rows"],
+        &["public_rows", "grants"],
+    )
+    .await;
+    l.expect("reverse left");
+    r.expect("reverse right");
+    assert_eq!(
+        left.client()
+            .execute_sql("SELECT * FROM local_secrets", None)
+            .await
+            .expect("only own secret")[0]
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn overwritten_secret_history_is_rejected_not_sanitized() {
+    let left = Database::in_memory();
+    let right = Database::in_memory();
+    schema(&left).await;
+    schema(&right).await;
+    left.client().execute_sql("ALTER TABLE public_rows ADD COLUMN secret TEXT; INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada', 'old verifier'); UPDATE public_rows SET secret = NULL", None).await.expect("historical mixed schema");
+    let before = right.export_sync_state().await.expect("receiver before");
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["public_rows"]).await;
+    assert!(l.is_err() && r.is_err());
+    assert_eq!(
+        right.export_sync_state().await.expect("receiver unchanged"),
+        before
+    );
+}
+
+#[tokio::test]
+async fn scoped_conflicts_resolution_and_tombstones_survive_incremental_reopen() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("left.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::in_memory();
+    schema(&left).await;
+    schema(&right).await;
+    left.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')", None).await.expect("row");
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["public_rows"]).await;
+    l.expect("bootstrap left");
+    r.expect("bootstrap right");
+    left.client()
+        .execute_sql("UPDATE public_rows SET name = 'alice'", None)
+        .await
+        .expect("left offline");
+    right
+        .client()
+        .execute_sql(
+            "UPDATE public_rows SET name = 'first'; UPDATE public_rows SET name = 'bob'",
+            None,
+        )
+        .await
+        .expect("right sequential offline");
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["public_rows"]).await;
+    l.expect("incremental left");
+    r.expect("incremental right");
+    let key = Row::new(vec![Value::Uuid(
+        Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("UUID"),
+    )]);
+    let values = left
+        .client()
+        .row_conflict_values("public_rows", &key)
+        .await
+        .expect("conflicts");
+    assert!(values[0].1.contains(&Value::Text("alice".into())));
+    assert!(values[0].1.contains(&Value::Text("bob".into())));
+    left.client()
+        .resolve_row(
+            "public_rows",
+            &key,
+            vec![("name".into(), Value::Text("alice".into()))],
+        )
+        .await
+        .expect("explicit resolution");
+    drop(left);
+    let left = Database::open(&path).expect("reopen resolution");
+    let (l, r) = exchange(&left, &right, &["public_rows"], &["public_rows"]).await;
+    l.expect("resolved left");
+    r.expect("resolved right");
+    assert!(
+        right
+            .client()
+            .row_conflicts("public_rows", &key)
+            .await
+            .expect("resolved")
+            .is_empty()
+    );
+    left.client()
+        .execute_sql("DELETE FROM public_rows", None)
+        .await
+        .expect("delete");
+    let (l, r) = exchange(&right, &left, &["public_rows"], &["public_rows"]).await;
+    l.expect("tombstone right");
+    r.expect("tombstone left");
+    assert!(
+        right
+            .client()
+            .execute_sql("SELECT * FROM public_rows", None)
+            .await
+            .expect("deleted")[0]
+            .rows
+            .is_empty()
+    );
+}

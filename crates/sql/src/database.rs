@@ -513,6 +513,91 @@ impl Database {
             .await
     }
 
+    /// Checked full-history sync restricted to predeclared, fixed-schema tables.
+    /// Rejects scope/schema/history widening; never projects or sanitizes history.
+    /// Earlier committed applies remain on failure. Discard the transport after
+    /// any failure; local stage cleanup does not wait for peer Abort delivery.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_tables_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        tables: &[&str],
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        self.synchronize_tables_staged_checked(transport, config, role, &factory, tables, check)
+            .await
+    }
+
+    /// Fixed-schema scoped sync with owner-native temporary stages.
+    /// Uses the same checks and failure/cleanup contract as `Self::synchronize_tables_checked`.
+    #[cfg(feature = "native-stage")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_tables_with_stage_directory_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+        tables: &[&str],
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = crate::FileSyncStageFactory::new(directory);
+        self.synchronize_tables_staged_checked(transport, config, role, &factory, tables, check)
+            .await
+    }
+
+    #[cfg(feature = "sync")]
+    #[allow(clippy::too_many_arguments)]
+    async fn synchronize_tables_staged_checked<T, F, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        factory: &F,
+        tables: &[&str],
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        F: SyncStageFactory,
+        F::Stage: 'static,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        match &self.backend {
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(engine) => {
+                sync::synchronize_tables_with_stage_factory_checked(
+                    engine, transport, config, role, factory, tables, check,
+                )
+                .await
+            }
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(engine) => {
+                sync::synchronize_tables_with_stage_factory_checked(
+                    engine, transport, config, role, factory, tables, check,
+                )
+                .await
+            }
+        }
+    }
+
     #[cfg(feature = "sync")]
     pub async fn sync_manifest(&self) -> SqlResult<SyncManifest> {
         database_call!(self, |engine| sync_manifest_for(engine).await)

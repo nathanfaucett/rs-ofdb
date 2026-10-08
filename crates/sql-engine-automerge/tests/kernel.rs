@@ -1252,6 +1252,137 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
 }
 
 #[test]
+fn scoped_history_inspection_rejects_hidden_deleted_and_malformed_properties() {
+    use automerge::{AutoCommit, ROOT, ScalarValue, transaction::Transactable};
+    let path = database_path();
+    block_on(async {
+        let source = replica(&path);
+        source.create_table(people_schema()).await.expect("schema");
+        source
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "people".into(),
+                row: Row::new(vec![
+                    uuid_value(1),
+                    Value::from("Ada"),
+                    Value::from("London"),
+                ]),
+                returning: None,
+            }))])
+            .await
+            .expect("baseline");
+        let original = source
+            .read_transaction(|codec, tx| {
+                Box::pin(codec.export_state(tx, "people", row_uuid(1), usize::MAX))
+            })
+            .await
+            .expect("export")
+            .expect("document");
+        let columns = people_schema()
+            .columns
+            .into_iter()
+            .map(|c| (c.name, c.r#type, c.default, c.primary_key))
+            .collect::<Vec<_>>();
+        for variant in 0..6 {
+            let mut metadata = Vec::new();
+            let mut document = AutoCommit::load(&original).expect("original");
+            let payload = match variant {
+                0 => {
+                    document
+                        .put(ROOT, "secret_hash", ScalarValue::Bytes(vec![42]))
+                        .expect("unknown property");
+                    document.get_heads();
+                    document
+                        .delete(ROOT, "secret_hash")
+                        .expect("delete hides property");
+                    document.save()
+                }
+                1 => {
+                    document
+                        .put(
+                            ROOT,
+                            "name",
+                            ScalarValue::Str("malformed unencoded value".into()),
+                        )
+                        .expect("malformed known property");
+                    document.get_heads();
+                    document
+                        .put(
+                            ROOT,
+                            "name",
+                            ScalarValue::Bytes(
+                                postcard::to_allocvec(&Value::from("Ada")).expect("valid value"),
+                            ),
+                        )
+                        .expect("overwrite hides malformed value");
+                    document.save()
+                }
+                2 => {
+                    document
+                        .put(ROOT, "secret_hash", ScalarValue::Bytes(vec![42]))
+                        .expect("unknown property");
+                    let heads = document.get_heads();
+                    document
+                        .delete(ROOT, "secret_hash")
+                        .expect("unknown delete");
+                    document.save_after(&heads)
+                }
+                4 => {
+                    let layout = columns
+                        .iter()
+                        .map(|c| (c.0.clone(), c.2.clone()))
+                        .collect::<Vec<_>>();
+                    let mut bytes = postcard::to_allocvec(&layout).expect("layout");
+                    bytes.extend_from_slice(b"trailing layout data");
+                    document
+                        .put(ROOT, "\0engine_columns", ScalarValue::Bytes(bytes))
+                        .expect("layout with trailing bytes");
+                    document.save()
+                }
+                5 => {
+                    metadata = postcard::to_allocvec(&RowMetadata {
+                        version: 1,
+                        deleted: false,
+                        drop_events: Vec::new(),
+                        observed_drops: Vec::new(),
+                    })
+                    .expect("metadata");
+                    metadata.extend_from_slice(b"trailing metadata");
+                    original.clone()
+                }
+                _ => {
+                    let mut bytes =
+                        postcard::to_allocvec(&Value::from("Ada")).expect("valid prefix");
+                    bytes.extend_from_slice(b"hidden trailing verifier");
+                    document
+                        .put(ROOT, "name", ScalarValue::Bytes(bytes))
+                        .expect("malformed trailing bytes");
+                    document.save()
+                }
+            };
+            let allowed = columns.clone();
+            let result = source
+                .read_transaction(move |codec, tx| {
+                    Box::pin(async move {
+                        codec
+                            .inspect_history(
+                                tx,
+                                "people",
+                                row_uuid(1),
+                                &payload,
+                                &metadata,
+                                &allowed,
+                            )
+                            .await
+                    })
+                })
+                .await;
+            assert!(result.is_err(), "historical variant {variant} must reject");
+        }
+    });
+    std::fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
 fn sequential_updates_export_only_the_identified_change() {
     let source_path = database_path();
     let destination_path = database_path();

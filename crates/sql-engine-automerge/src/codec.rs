@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, string::String, vec::Vec};
 use core::ops::Bound;
 
 use async_stream::stream;
+use automerge::legacy::{Key, ObjectId, OpType};
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, Value as AutomergeValue};
+use automerge::{ActorId, AutoCommit, Change, ROOT, ReadDoc, ScalarValue, Value as AutomergeValue};
 use btree::{BTreeRead, BTreeTransaction};
 use btree_automerge::{
     AutomergeBTreeTransaction, AutomergeChangeStore, DocumentChangeKey, DocumentId,
@@ -18,7 +19,7 @@ use engine::{
 };
 use futures::{Stream, StreamExt, pin_mut};
 use sync::{StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
-use value::{Row, Value};
+use value::{Row, Value, ValueType};
 
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
@@ -57,6 +58,16 @@ struct Column {
 }
 
 impl AutomergeRowCodec {
+    fn scoped_decode<'a, D: Deserialize<'a>>(bytes: &'a [u8]) -> EngineResult<D> {
+        let (value, remaining) = postcard::take_from_bytes(bytes).map_err(EngineError::custom)?;
+        if !remaining.is_empty() {
+            return Err(EngineError::InvalidQuery(
+                "Trailing bytes in scoped history value",
+            ));
+        }
+        Ok(value)
+    }
+
     fn document_id(row: &Uuid) -> DocumentId {
         row.as_bytes().to_vec()
     }
@@ -1002,6 +1013,143 @@ impl<T> SyncRowCodec<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
+    async fn inspect_history(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: Uuid,
+        payload: &[u8],
+        metadata: &[u8],
+        columns: &[(String, ValueType, Value, bool)],
+    ) -> EngineResult<(Row, Vec<Uuid>)> {
+        if !metadata.is_empty() {
+            let metadata: RowMetadata = Self::scoped_decode(metadata)?;
+            if metadata.version != 1
+                || !metadata.drop_events.is_empty()
+                || !metadata.observed_drops.is_empty()
+            {
+                return Err(EngineError::Unsupported(
+                    "Scoped sessions require immutable catalog history",
+                ));
+            }
+        }
+        let incoming_change = Change::from_bytes(payload.to_vec()).ok();
+        if incoming_change.is_none() {
+            let incoming = AutoCommit::load(payload).map_err(EngineError::custom)?;
+            if !incoming.get_missing_deps(&[]).is_empty() {
+                return Err(EngineError::Unsupported(
+                    "Scoped history contains uninspectable queued changes",
+                ));
+            }
+        }
+        let mut document = Self::document(transaction, table, &Self::document_id(&row))
+            .await?
+            .unwrap_or_else(AutoCommit::new);
+        if !document.get_missing_deps(&[]).is_empty() {
+            return Err(EngineError::Unsupported(
+                "Existing scoped history contains uninspectable queued changes",
+            ));
+        }
+        document
+            .load_incremental(payload)
+            .map_err(EngineError::custom)?;
+        let mut changes = document.get_changes(&[]);
+        if let Some(change) = incoming_change {
+            changes.push(change);
+        }
+        if changes.is_empty() {
+            return Err(EngineError::custom(
+                "Scoped payload has no inspectable history",
+            ));
+        }
+        let layout = columns
+            .iter()
+            .map(|(id, _, default, _)| Column {
+                id: id.clone(),
+                default: default.clone(),
+            })
+            .collect::<Vec<_>>();
+        let value = Self::decode_row(&document, &layout)?;
+        let catalog = catalog_table_for_storage(table).is_some();
+        let mut schema_ids = Vec::new();
+        for change in changes {
+            if !change.extra_bytes().is_empty() || change.message().is_some() {
+                return Err(EngineError::custom("Unsupported scoped change metadata"));
+            }
+            for op in change.decode().operations {
+                let Key::Map(key) = op.key else {
+                    return Err(EngineError::custom(
+                        "Scoped history contains a sequence property",
+                    ));
+                };
+                if op.obj != ObjectId::Root || op.insert {
+                    return Err(EngineError::custom(
+                        "Scoped history contains a nested property",
+                    ));
+                }
+                let name = key.as_str();
+                let column = columns.iter().position(|(id, _, _, _)| id == name);
+                if column.is_none()
+                    && name != DOCUMENT_COLUMNS
+                    && (name != DOCUMENT_SCHEMA || catalog)
+                {
+                    return Err(EngineError::custom("Unknown historical scoped column"));
+                }
+                match op.action {
+                    OpType::Put(ScalarValue::Bytes(bytes)) => {
+                        if name == DOCUMENT_COLUMNS {
+                            let stored: Vec<(String, Value)> = Self::scoped_decode(&bytes)?;
+                            if stored.len() != columns.len()
+                                || stored.iter().enumerate().any(|(i, (id, default))| {
+                                    stored[..i].iter().any(|(previous, _)| previous == id)
+                                        || !columns.iter().any(|(allowed, _, expected, _)| {
+                                            allowed == id && expected == default
+                                        })
+                                })
+                            {
+                                return Err(EngineError::custom(
+                                    "Historical scoped layout differs from local schema",
+                                ));
+                            }
+                        } else if name == DOCUMENT_SCHEMA {
+                            schema_ids.push(Uuid::from_slice(&bytes).map_err(EngineError::custom)?);
+                        } else {
+                            let index = column.expect("known column checked before decoding");
+                            let decoded: Value = Self::scoped_decode(&bytes)?;
+                            if columns[index].3 && decoded != Value::Uuid(row) {
+                                return Err(EngineError::custom(
+                                    "Historical scoped primary key differs from row identity",
+                                ));
+                            }
+                            let expected = columns[index].1;
+                            if decoded != Value::Null
+                                && expected != ValueType::Null
+                                && decoded.r#type() != expected
+                            {
+                                return Err(EngineError::custom(
+                                    "Invalid historical scoped value type",
+                                ));
+                            }
+                            if catalog && value.values[index] != decoded {
+                                return Err(EngineError::custom(
+                                    "Scoped catalog history is not immutable",
+                                ));
+                            }
+                        }
+                    }
+                    OpType::Delete if !catalog && column.is_some() => {}
+                    _ => return Err(EngineError::custom("Malformed historical scoped property")),
+                }
+            }
+        }
+        if catalog && !Self::conflicted_columns(&document, &layout)?.is_empty() {
+            return Err(EngineError::custom("Conflicted scoped catalog"));
+        }
+        schema_ids.sort_unstable();
+        schema_ids.dedup();
+        Ok((value, schema_ids))
+    }
+
     fn row_ids<'a>(
         &'a self,
         transaction: &'a T,

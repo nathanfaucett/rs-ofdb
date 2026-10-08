@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use engine::{EngineResult, KernelTransaction, RowCodec, Uuid};
-use value::Row;
+use value::{Row, Value, ValueType};
 
 use crate::{StateDigest, SyncChangeId, SyncStateUnit};
 
@@ -9,6 +9,25 @@ pub trait SyncRowCodec<T>: RowCodec<T>
 where
     T: KernelTransaction,
 {
+    /// Inspects every historical operation, including overwritten/deleted properties.
+    /// Codecs without complete-history validation must reject scoped sessions.
+    fn inspect_history(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: Uuid,
+        payload: &[u8],
+        metadata: &[u8],
+        columns: &[(String, ValueType, Value, bool)],
+    ) -> impl Future<Output = EngineResult<(Row, Vec<Uuid>)>> + Send {
+        let _ = (transaction, table, row, payload, metadata, columns);
+        async {
+            Err(engine::EngineError::Unsupported(
+                "Codec cannot inspect full scoped history",
+            ))
+        }
+    }
+
     fn row_ids<'a>(
         &'a self,
         transaction: &'a T,

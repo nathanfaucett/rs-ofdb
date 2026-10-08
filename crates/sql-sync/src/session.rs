@@ -10,6 +10,7 @@ use alloc::{
 use futures::{FutureExt, StreamExt, pin_mut};
 
 use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
+use crate::scope::TableScope;
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
     ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
@@ -141,7 +142,7 @@ pub async fn synchronize_with_stage_factory_checked<K, R, T, F, Q, U>(
     config: &SessionConfig,
     role: SyncRole,
     stage_factory: &F,
-    mut check: Q,
+    check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
     Q: FnMut() -> U + Send,
@@ -153,19 +154,134 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    let mut check = || Box::pin(check()) as CheckFuture<'_>;
+    synchronize_scoped(engine, transport, config, role, stage_factory, check, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn synchronize_tables_with_stage_factory_checked<K, R, T, F, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    tables: &[&str],
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
+    if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
+        return Err(SyncError::InvalidConfiguration);
+    }
+    let scope = TableScope::new(engine, tables).await?;
+    let frame =
+        postcard::to_allocvec(&scope.names).map_err(|e| SyncError::Protocol(e.to_string()))?;
+    if frame.len() > MAX_MESSAGE_BYTES {
+        return Err(SyncError::InvalidConfiguration);
+    }
+    let remote = match role {
+        SyncRole::Initiator => {
+            transport.send(frame).await.map_err(SyncError::Transport)?;
+            transport.receive().await.map_err(SyncError::Transport)?
+        }
+        SyncRole::Responder => {
+            let remote = transport.receive().await.map_err(SyncError::Transport)?;
+            transport.send(frame).await.map_err(SyncError::Transport)?;
+            remote
+        }
+    };
+    if remote.len() > MAX_MESSAGE_BYTES {
+        return Err(SyncError::InvalidConfiguration);
+    }
+    let (names, remaining): (Vec<String>, _) =
+        postcard::take_from_bytes(&remote).map_err(|e| SyncError::Protocol(e.to_string()))?;
+    if !remaining.is_empty() {
+        return Err(SyncError::Protocol(String::from(
+            "trailing bytes in table scope",
+        )));
+    }
+    if names != scope.names {
+        return Err(SyncError::Protocol(String::from("table scopes differ")));
+    }
+    synchronize_scoped(
+        engine,
+        transport,
+        config,
+        role,
+        stage_factory,
+        check,
+        Some(scope),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn synchronize_scoped<K, R, T, F, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    mut check: Q,
+    mut scope: Option<TableScope>,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
+    let authority = scope.clone();
+    let mut check = || {
+        let pending = check();
+        let authority = authority.as_ref();
+        Box::pin(async move {
+            pending.await?;
+            if let Some(scope) = authority {
+                scope.unchanged(engine).await.map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }) as CheckFuture<'_>
+    };
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
 
-    exchange_hello(engine, transport, role).await?;
+    let preflight_units = if scope.is_some() {
+        Some(
+            with_engine_abort(
+                transport,
+                export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref()).await,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    exchange_hello(engine, transport, role, scope.as_ref()).await?;
 
-    let remote_manifest = exchange_manifest(engine, transport, role).await?;
-    let local_units = with_engine_abort(
-        transport,
-        export_sync_state_limited(engine, config.max_session_bytes).await,
-    )
-    .await?;
+    let remote_manifest = exchange_manifest(engine, transport, role, scope.as_ref()).await?;
+    let local_units = match preflight_units {
+        Some(units) => units,
+        None => {
+            with_engine_abort(
+                transport,
+                export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref()).await,
+            )
+            .await?
+        }
+    };
 
     let local_inventories = with_engine_abort(
         transport,
@@ -175,6 +291,23 @@ where
 
     let remote_inventories = exchange_inventories(transport, role, local_inventories).await?;
 
+    if let Some(scope) = &scope {
+        for inventory in &remote_inventories {
+            if !scope.permits_address(&inventory.table) {
+                return Err(SyncError::Engine(EngineError::InvalidQuery(
+                    "Inventory outside table scope",
+                )));
+            }
+        }
+        for (key, _) in &remote_manifest.entries {
+            let SyncKey::Row { table, .. } = key;
+            if !scope.permits_address(table) {
+                return Err(SyncError::Engine(EngineError::InvalidQuery(
+                    "Manifest outside table scope",
+                )));
+            }
+        }
+    }
     let remote_inventories = remote_inventories
         .into_iter()
         .map(|inventory| (inventory.key(), inventory))
@@ -187,6 +320,7 @@ where
             &remote_manifest,
             remote_inventories,
             config.max_session_bytes,
+            scope.as_ref(),
         )
         .await,
     )
@@ -202,6 +336,7 @@ where
                 config.max_session_bytes,
                 stage_factory,
                 &mut check,
+                scope.as_mut(),
             )
             .await?;
             (sent, received)
@@ -214,6 +349,7 @@ where
                 config.max_session_bytes,
                 stage_factory,
                 &mut check,
+                scope.as_mut(),
             )
             .await?;
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
@@ -225,7 +361,13 @@ where
     let remote_requests = exchange_snapshot_requests(transport, role, &local_requests).await?;
     let recovery = with_engine_abort(
         transport,
-        recovery_snapshots(engine, remote_requests, config.max_session_bytes).await,
+        recovery_snapshots(
+            engine,
+            remote_requests,
+            config.max_session_bytes,
+            scope.as_ref(),
+        )
+        .await,
     )
     .await?;
     let (sent_recovery, (received_recovery, retried_changes)) = match role {
@@ -240,6 +382,7 @@ where
                 config.max_session_bytes,
                 stage_factory,
                 &mut check,
+                scope.as_mut(),
             )
             .await?;
             (sent, received)
@@ -254,6 +397,7 @@ where
                 config.max_session_bytes,
                 stage_factory,
                 &mut check,
+                scope.as_mut(),
             )
             .await?;
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
@@ -295,12 +439,13 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    sync_manifest_limited(engine, usize::MAX).await
+    sync_manifest_limited(engine, usize::MAX, None).await
 }
 
 async fn sync_manifest_limited<K, R>(
     engine: &Engine<K, R>,
     max_bytes: usize,
+    scope: Option<&TableScope>,
 ) -> Result<SyncManifest, EngineError>
 where
     K: Kernel,
@@ -322,6 +467,7 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
+        let scope_for_rows = scope.cloned();
         let (table_entries, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
@@ -331,6 +477,14 @@ where
                     pin_mut!(rows);
                     while let Some(row) = rows.next().await {
                         let row = row?;
+                        if scope_for_rows.as_ref().is_some_and(|scope| {
+                            !scope.permits(&SyncKey::Row {
+                                table: table_for_rows.clone(),
+                                row,
+                            })
+                        }) {
+                            continue;
+                        }
                         let entry_bytes = table_for_rows
                             .len()
                             .saturating_add(row.as_bytes().len())
@@ -372,12 +526,13 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    export_sync_state_limited(engine, usize::MAX).await
+    export_sync_state_limited(engine, usize::MAX, None).await
 }
 
 async fn export_sync_state_limited<K, R>(
     engine: &Engine<K, R>,
     max_bytes: usize,
+    scope: Option<&TableScope>,
 ) -> Result<Vec<SyncStateUnit>, EngineError>
 where
     K: Kernel,
@@ -399,6 +554,7 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
+        let scope_for_rows = scope.cloned();
         let (table_units, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
@@ -408,6 +564,14 @@ where
                     pin_mut!(rows);
                     while let Some(row) = rows.next().await {
                         let row = row?;
+                        if scope_for_rows.as_ref().is_some_and(|scope| {
+                            !scope.permits(&SyncKey::Row {
+                                table: table_for_rows.clone(),
+                                row,
+                            })
+                        }) {
+                            continue;
+                        }
                         let state_budget = max_bytes
                             .saturating_sub(used_bytes)
                             .saturating_sub(table_for_rows.len())
@@ -447,6 +611,12 @@ where
         used_bytes = next_used_bytes;
     }
     units.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    if let Some(scope) = scope {
+        let mut scope = scope.clone();
+        for unit in &units {
+            scope.validate(engine, unit).await?;
+        }
+    }
     Ok(units)
 }
 
@@ -1203,6 +1373,7 @@ async fn build_outbound<K, R>(
     remote_manifest: &SyncManifest,
     remote_inventories: BTreeMap<SyncKey, SyncRowInventory>,
     max_bytes: usize,
+    scope: Option<&TableScope>,
 ) -> Result<Outbound, EngineError>
 where
     K: Kernel,
@@ -1276,6 +1447,22 @@ where
                 })
                 .await?
             {
+                if let Some(scope) = scope {
+                    scope
+                        .clone()
+                        .validate(
+                            engine,
+                            &SyncStateUnit::new(
+                                SyncKey::Row {
+                                    table: table.clone(),
+                                    row,
+                                },
+                                payload.clone(),
+                                Vec::new(),
+                            ),
+                        )
+                        .await?;
+                }
                 used_bytes = account_engine_payload(
                     used_bytes,
                     payload.len() + key.0.len() + table.len() + row.as_bytes().len() + 64,
@@ -1381,6 +1568,7 @@ async fn recovery_snapshots<K, R>(
     engine: &Engine<K, R>,
     requests: Vec<SyncSnapshotRequest>,
     max_bytes: usize,
+    scope: Option<&TableScope>,
 ) -> Result<Vec<SyncStateUnit>, EngineError>
 where
     K: Kernel,
@@ -1389,6 +1577,16 @@ where
     let mut used_bytes = 0;
     let mut snapshots = Vec::new();
     for request in requests {
+        if scope.is_some_and(|scope| {
+            !scope.permits(&SyncKey::Row {
+                table: request.table.clone(),
+                row: request.row,
+            })
+        }) {
+            return Err(EngineError::InvalidQuery(
+                "Recovery request outside table scope",
+            ));
+        }
         let state_budget = max_bytes.saturating_sub(used_bytes);
         let snapshot = engine
             .read_transaction(|codec, transaction| {
@@ -1416,6 +1614,9 @@ where
             })
             .await?;
         if let Some(snapshot) = snapshot {
+            if let Some(scope) = scope {
+                scope.clone().validate(engine, &snapshot).await?;
+            }
             used_bytes =
                 account_engine_payload(used_bytes, state_unit_payload_size(&snapshot), max_bytes)?;
             snapshots.push(snapshot);
@@ -1449,6 +1650,7 @@ async fn receive_recovery<K, R, T, F>(
     max_session_bytes: usize,
     stage_factory: &F,
     check: &mut Check<'_>,
+    mut scope: Option<&mut TableScope>,
 ) -> Result<(usize, usize), SyncError<T::Error>>
 where
     K: Kernel,
@@ -1479,6 +1681,10 @@ where
         match message {
             SyncMessage::State(batch) => {
                 for snapshot in batch {
+                    if let Some(scope) = scope.as_deref_mut() {
+                        with_engine_abort(transport, scope.validate(engine, &snapshot).await)
+                            .await?;
+                    }
                     if let Err(error) = consume_recovery_snapshot(&mut remaining, &snapshot) {
                         let _ = send_message(
                             transport,
@@ -1910,6 +2116,7 @@ async fn receive_outbound<K, R, T, F>(
     max_session_bytes: usize,
     stage_factory: &F,
     check: &mut Check<'_>,
+    mut scope: Option<&mut TableScope>,
 ) -> Result<Received, SyncError<T::Error>>
 where
     K: Kernel,
@@ -1964,6 +2171,9 @@ where
         match message {
             SyncMessage::State(batch) => {
                 for unit in batch {
+                    if let Some(scope) = scope.as_deref_mut() {
+                        with_engine_abort(transport, scope.validate(engine, &unit).await).await?;
+                    }
                     let SyncKey::Row { table, .. } = &unit.key;
                     let order = catalog_order(table);
                     if order < 4 {
@@ -1986,6 +2196,17 @@ where
             }
             SyncMessage::Changes(batch) => {
                 for change in batch {
+                    if let Some(scope) = scope.as_deref_mut() {
+                        let unit = SyncStateUnit::new(
+                            SyncKey::Row {
+                                table: change.table.clone(),
+                                row: change.row,
+                            },
+                            change.payload.clone(),
+                            Vec::new(),
+                        );
+                        with_engine_abort(transport, scope.validate(engine, &unit).await).await?;
+                    }
                     let order = catalog_order(&change.table);
                     if order < 4 {
                         let record =
@@ -2134,6 +2355,7 @@ async fn exchange_hello<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     role: SyncRole,
+    scope: Option<&TableScope>,
 ) -> Result<(), SyncError<T::Error>>
 where
     K: Kernel,
@@ -2143,7 +2365,7 @@ where
 {
     let manifest = with_engine_abort(
         transport,
-        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64).await,
+        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64, scope).await,
     )
     .await?;
     let hello = SyncMessage::Hello(SyncHello {
@@ -2179,6 +2401,7 @@ async fn exchange_manifest<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     role: SyncRole,
+    scope: Option<&TableScope>,
 ) -> Result<SyncManifest, SyncError<T::Error>>
 where
     K: Kernel,
@@ -2188,7 +2411,7 @@ where
 {
     let manifest = with_engine_abort(
         transport,
-        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64).await,
+        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64, scope).await,
     )
     .await?;
     let message = SyncMessage::Manifest(manifest);
