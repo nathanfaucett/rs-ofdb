@@ -213,10 +213,95 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
+    synchronize_tables_validators_checked(
+        engine,
+        transport,
+        config,
+        role,
+        stage_factory,
+        tables,
+        validate,
+        None,
+        check,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn synchronize_tables_with_stage_factory_candidate_validated_checked<
+    K,
+    R,
+    T,
+    F,
+    V,
+    C,
+    Q,
+    U,
+>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    tables: &[&str],
+    validate: V,
+    validate_candidate: C,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
+    C: Fn(&crate::SyncCandidateView) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
+    synchronize_tables_validators_checked(
+        engine,
+        transport,
+        config,
+        role,
+        stage_factory,
+        tables,
+        validate,
+        Some(&validate_candidate),
+        check,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn synchronize_tables_validators_checked<K, R, T, F, V, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    tables: &[&str],
+    validate: V,
+    validate_candidate: Option<&crate::candidate::CandidateValidator<'_>>,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
-    let scope = TableScope::new(engine, tables, &validate).await?;
+    let mut scope = TableScope::new(engine, tables, &validate).await?;
+    scope.validate_candidate = validate_candidate;
     let frame =
         postcard::to_allocvec(&scope.names).map_err(|e| SyncError::Protocol(e.to_string()))?;
     if frame.len() > MAX_MESSAGE_BYTES {
@@ -592,7 +677,8 @@ where
     for table in tables {
         let table_for_rows = table.clone();
         let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
-        let (table_units, next_used_bytes) = engine
+        let candidate_tables = scope.and_then(TableScope::candidate_tables);
+        let (table_units, next_used_bytes, view) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     let mut used_bytes = used_bytes;
@@ -641,10 +727,21 @@ where
                             ));
                         }
                     }
-                    Ok((units, used_bytes))
+                    let view = crate::candidate::read_candidate_view(
+                        codec,
+                        transaction,
+                        units.iter().map(|unit| unit.key.clone()).collect(),
+                        crate::SyncValidationDirection::Outgoing,
+                        candidate_tables,
+                    )
+                    .await?;
+                    Ok((units, used_bytes, view))
                 })
             })
             .await?;
+        if let Some(scope) = scope {
+            scope.validate_candidates(&view)?;
+        }
         units.extend(table_units);
         used_bytes = next_used_bytes;
     }
@@ -687,6 +784,7 @@ where
         Arc::new(Vec::new()),
         None,
         false,
+        None,
         &mut || Box::pin(core::future::ready(Ok(()))),
     )
     .await
@@ -699,6 +797,7 @@ async fn apply_received_batch<K, R>(
     changes: Arc<Vec<SyncIncrementalChange>>,
     manifest: Option<&SyncManifest>,
     catalog_already_validated: bool,
+    scope: Option<&TableScope<'_>>,
     check: &mut Check<'_>,
 ) -> Result<(), ApplyError>
 where
@@ -811,6 +910,7 @@ where
                     Arc::clone(&snapshots),
                     Arc::clone(&changes),
                     core::mem::take(&mut batch),
+                    scope,
                     check,
                 ))
                 .await?;
@@ -821,7 +921,7 @@ where
         }
         if !batch.is_empty() {
             Box::pin(apply_data_row_batch(
-                engine, snapshots, changes, batch, check,
+                engine, snapshots, changes, batch, scope, check,
             ))
             .await?;
         }
@@ -835,6 +935,7 @@ async fn apply_data_row_batch<K, R>(
     snapshots: Arc<Vec<SyncStateUnit>>,
     changes: Arc<Vec<SyncIncrementalChange>>,
     rows: Vec<(String, Vec<usize>, Vec<usize>)>,
+    scope: Option<&TableScope<'_>>,
     check: &mut Check<'_>,
 ) -> Result<(), ApplyError>
 where
@@ -847,24 +948,53 @@ where
     }
     let tables = tables.into_iter().collect::<Vec<_>>();
     check_apply(check).await?;
+    let candidate_tables = scope.and_then(TableScope::candidate_tables);
     engine
-        .mutate_tables(tables.as_slice(), move |codec, transaction| {
-            Box::pin(async move {
-                let mut mutations = MutationSummary::default();
-                for (table, snapshot_indices, change_indices) in rows {
-                    for index in snapshot_indices {
-                        merge_snapshot(codec, transaction, &snapshots[index]).await?;
-                        mutations.record_table(&table);
+        .mutate_tables_validated(
+            tables.as_slice(),
+            move |codec, transaction| {
+                Box::pin(async move {
+                    let mut mutations = MutationSummary::default();
+                    let mut candidates = Vec::new();
+                    for (table, snapshot_indices, change_indices) in rows {
+                        for index in &snapshot_indices {
+                            candidates.push(snapshots[*index].key.clone());
+                        }
+                        for index in &change_indices {
+                            candidates.push(SyncKey::Row {
+                                table: table.clone(),
+                                row: changes[*index].row,
+                            });
+                        }
+                        for index in snapshot_indices {
+                            merge_snapshot(codec, transaction, &snapshots[index]).await?;
+                            mutations.record_table(&table);
+                        }
+                        for index in change_indices {
+                            merge_change(codec, transaction, &changes[index]).await?;
+                            mutations.record_table(&table);
+                        }
                     }
-                    for index in change_indices {
-                        merge_change(codec, transaction, &changes[index]).await?;
-                        mutations.record_table(&table);
-                    }
+                    let view = crate::candidate::read_candidate_view(
+                        codec,
+                        transaction,
+                        candidates,
+                        crate::SyncValidationDirection::Incoming,
+                        candidate_tables,
+                    )
+                    .await?;
+                    Ok((view, mutations))
+                })
+            },
+            |view| {
+                if let Some(scope) = scope {
+                    scope.validate_candidates(view)?;
                 }
-                Ok(((), mutations))
-            })
-        })
+                Ok(())
+            },
+        )
         .await
+        .map(|_| ())
         .map_err(ApplyError::from)
 }
 
@@ -1298,6 +1428,7 @@ where
         Arc::new(batch.to_vec()),
         None,
         false,
+        None,
         &mut || Box::pin(core::future::ready(Ok(()))),
     )
     .await
@@ -1462,10 +1593,11 @@ where
                     .saturating_add(row.as_bytes().len())
                     .saturating_add(64),
             );
-            if let Some(payload) = engine
+            let candidate_tables = scope.and_then(TableScope::candidate_tables);
+            let (payload, view) = engine
                 .read_transaction(move |codec, transaction| {
                     Box::pin(async move {
-                        codec
+                        let payload = codec
                             .export_change(
                                 transaction,
                                 &table_for_export,
@@ -1473,11 +1605,30 @@ where
                                 &export_id,
                                 export_budget,
                             )
-                            .await
+                            .await?;
+                        let view = if payload.is_some() {
+                            crate::candidate::read_candidate_view(
+                                codec,
+                                transaction,
+                                Vec::from([SyncKey::Row {
+                                    table: table_for_export,
+                                    row: row_for_export,
+                                }]),
+                                crate::SyncValidationDirection::Outgoing,
+                                candidate_tables,
+                            )
+                            .await?
+                        } else {
+                            None
+                        };
+                        Ok((payload, view))
                     })
                 })
-                .await?
-            {
+                .await?;
+            if let Some(scope) = scope {
+                scope.validate_candidates(&view)?;
+            }
+            if let Some(payload) = payload {
                 if let Some(scope) = scope {
                     scope
                         .clone()
@@ -1635,7 +1786,8 @@ where
             ));
         }
         let state_budget = max_bytes.saturating_sub(used_bytes);
-        let snapshot = engine
+        let candidate_tables = scope.and_then(TableScope::candidate_tables);
+        let (snapshot, view) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
                     let state = codec
@@ -1645,7 +1797,7 @@ where
                     let metadata = codec
                         .export_metadata(transaction, &request.table, request.row)
                         .await?;
-                    Ok(if state.is_empty() && metadata.is_empty() {
+                    let snapshot = if state.is_empty() && metadata.is_empty() {
                         None
                     } else {
                         Some(SyncStateUnit::new(
@@ -1656,10 +1808,23 @@ where
                             state,
                             metadata,
                         ))
-                    })
+                    };
+                    let candidates = snapshot.iter().map(|unit| unit.key.clone()).collect();
+                    let view = crate::candidate::read_candidate_view(
+                        codec,
+                        transaction,
+                        candidates,
+                        crate::SyncValidationDirection::Outgoing,
+                        candidate_tables,
+                    )
+                    .await?;
+                    Ok((snapshot, view))
                 })
             })
             .await?;
+        if let Some(scope) = scope {
+            scope.validate_candidates(&view)?;
+        }
         if let Some(snapshot) = snapshot {
             if let Some(scope) = scope {
                 scope.clone().validate(engine, &snapshot).await?;
@@ -1787,6 +1952,7 @@ where
             Arc::new(Vec::new()),
             Some(manifest),
             false,
+            scope.as_deref(),
             check,
         ))
         .await
@@ -1885,6 +2051,7 @@ async fn apply_staged_data<K, R, S>(
     stage: &mut S,
     manifest: &SyncManifest,
     snapshots: bool,
+    scope: Option<&TableScope<'_>>,
     check: &mut Check<'_>,
 ) -> Result<StagedDataApply, ApplyError>
 where
@@ -1928,6 +2095,7 @@ where
                             engine,
                             manifest,
                             core::mem::take(&mut pending_snapshots),
+                            scope,
                             check,
                         )
                         .await?;
@@ -1967,6 +2135,7 @@ where
                         engine,
                         manifest,
                         core::mem::take(&mut pending_changes),
+                        scope,
                         check,
                     )
                     .await?;
@@ -1984,6 +2153,7 @@ where
             engine,
             manifest,
             core::mem::take(&mut pending_snapshots),
+            scope,
             check,
         )
         .await?;
@@ -1994,6 +2164,7 @@ where
             engine,
             manifest,
             core::mem::take(&mut pending_changes),
+            scope,
             check,
         )
         .await?;
@@ -2020,6 +2191,7 @@ async fn apply_staged_snapshot_batch<K, R>(
     engine: &Engine<K, R>,
     manifest: &SyncManifest,
     units: Vec<SyncStateUnit>,
+    scope: Option<&TableScope<'_>>,
     check: &mut Check<'_>,
 ) -> Result<StagedDataApply, ApplyError>
 where
@@ -2034,6 +2206,7 @@ where
         Arc::new(Vec::new()),
         Some(manifest),
         true,
+        scope,
         check,
     ))
     .await
@@ -2064,6 +2237,7 @@ where
                     Arc::new(Vec::new()),
                     Some(manifest),
                     true,
+                    scope,
                     check,
                 ))
                 .await
@@ -2085,6 +2259,7 @@ async fn apply_staged_change_batch<K, R>(
     engine: &Engine<K, R>,
     manifest: &SyncManifest,
     changes: Vec<SyncIncrementalChange>,
+    scope: Option<&TableScope<'_>>,
     check: &mut Check<'_>,
 ) -> Result<StagedDataApply, ApplyError>
 where
@@ -2099,6 +2274,7 @@ where
         Arc::clone(&changes),
         Some(manifest),
         true,
+        scope,
         check,
     ))
     .await
@@ -2130,6 +2306,7 @@ where
                     Arc::new(changes),
                     Some(manifest),
                     true,
+                    scope,
                     check,
                 ))
                 .await
@@ -2344,6 +2521,7 @@ where
                     &mut data_snapshot_stage,
                     manifest,
                     true,
+                    scope.as_deref(),
                     check,
                 )
                 .await
@@ -2356,16 +2534,21 @@ where
                 count.snapshots = catalog_snapshots + staged_snapshots.snapshots;
                 count.requests.extend(staged_snapshots.requests);
 
-                let staged_changes =
-                    match apply_staged_data(engine, &mut data_change_stage, manifest, false, check)
-                        .await
-                    {
-                        Ok(applied) => applied,
-                        Err(error) => {
-                            return abort(transport, error, String::from("data change batch"))
-                                .await;
-                        }
-                    };
+                let staged_changes = match apply_staged_data(
+                    engine,
+                    &mut data_change_stage,
+                    manifest,
+                    false,
+                    scope.as_deref(),
+                    check,
+                )
+                .await
+                {
+                    Ok(applied) => applied,
+                    Err(error) => {
+                        return abort(transport, error, String::from("data change batch")).await;
+                    }
+                };
                 count.changes = catalog_changes + staged_changes.changes;
                 count.requests.extend(staged_changes.requests);
 

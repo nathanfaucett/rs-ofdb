@@ -8,8 +8,8 @@ use futures::{StreamExt, channel::mpsc, executor::block_on};
 use sql_translator::SqlTranslator;
 use sync::{
     MemorySyncStageFactory, SessionConfig, SyncKey, SyncMessage, SyncRole, SyncSnapshotRequest,
-    SyncStateUnit, SyncTransport, export_sync_state_for, sync_manifest_for,
-    synchronize_tables_with_stage_factory_validated_checked,
+    SyncStateUnit, SyncTransport, SyncValidationDirection, export_sync_state_for,
+    sync_manifest_for, synchronize_tables_with_stage_factory_candidate_validated_checked,
 };
 use value::Value;
 
@@ -38,12 +38,21 @@ impl SyncTransport for Channel {
         if let Ok(mut message) = postcard::from_bytes::<SyncMessage>(&output) {
             if (((self.attack == 12 || self.attack == 14)
                 && matches!(message, SyncMessage::Inventory(_)))
-                || (self.attack == 13 && matches!(message, SyncMessage::RequestSnapshots(_))))
+                || ((self.attack == 13 || self.attack == 16)
+                    && matches!(message, SyncMessage::RequestSnapshots(_))))
                 && !self.injected.get()
             {
-                self.mutation.as_ref().expect("late source mutation").translate_and_execute(
-                    "UPDATE people SET name = 'forbidden historical text'; UPDATE people SET name = 'safe late overwrite'", &SqlTranslator,
-                ).await.expect("change after preflight");
+                let sql = if self.attack == 16 {
+                    "UPDATE people SET name = 'uncorrelated late value'"
+                } else {
+                    "UPDATE people SET name = 'forbidden historical text'; UPDATE people SET name = 'safe late overwrite'"
+                };
+                self.mutation
+                    .as_ref()
+                    .expect("late source mutation")
+                    .translate_and_execute(sql, &SqlTranslator)
+                    .await
+                    .expect("change after preflight");
                 self.injected.set(true);
             }
             match &mut message {
@@ -250,7 +259,7 @@ async fn exchange_as(
     let (b, br) = mpsc::unbounded();
     let injected = Rc::new(Cell::new(false));
     let mut advertised_changes = Vec::new();
-    if attack == 5 || attack == 6 || attack == 11 || attack == 13 {
+    if attack == 5 || attack == 6 || attack == 11 || attack == 13 || attack == 15 || attack == 16 {
         let units = export_sync_state_for(left).await.expect("source history");
         let unit = units
             .iter()
@@ -274,7 +283,7 @@ async fn exchange_as(
         attack: if attack == 5 { 255 } else { attack },
         injected: injected.clone(),
         advertised_changes: Vec::new(),
-        mutation: if (12..=14).contains(&attack) {
+        mutation: if (12..=14).contains(&attack) || attack == 16 {
             Some(left.clone())
         } else {
             None
@@ -283,12 +292,18 @@ async fn exchange_as(
     let mut rt = Channel {
         sender: b,
         receiver: ar,
-        attack: if attack == 5 || attack == 6 || attack == 11 || attack == 13 {
+        attack: if attack == 5
+            || attack == 6
+            || attack == 11
+            || attack == 13
+            || attack == 15
+            || attack == 16
+        {
             5
         } else {
             255
         },
-        injected: if attack == 6 || attack == 11 || attack == 13 {
+        injected: if attack == 6 || attack == 11 || attack == 13 || attack == 16 {
             Rc::new(Cell::new(false))
         } else {
             injected.clone()
@@ -316,7 +331,7 @@ async fn exchange_as(
     };
     let (l, r) = futures::join!(
         async {
-            let r = synchronize_tables_with_stage_factory_validated_checked(
+            let r = synchronize_tables_with_stage_factory_candidate_validated_checked(
                 left,
                 &mut lt,
                 &config,
@@ -324,6 +339,15 @@ async fn exchange_as(
                 &factory,
                 &["people"],
                 validate,
+                |view| {
+                    if attack == 16 && view.direction == SyncValidationDirection::Outgoing {
+                        let row = &view.tables[0].rows[0].row;
+                        if row.values.get(1) != Some(&Value::from("Grace")) {
+                            return Err("candidate recovery export denied".into());
+                        }
+                    }
+                    Ok(())
+                },
                 || async { Ok(()) },
             )
             .await;
@@ -331,17 +355,28 @@ async fn exchange_as(
             r
         },
         async {
-            let r = synchronize_tables_with_stage_factory_validated_checked(
-                right,
-                &mut rt,
-                &config,
-                other,
-                &factory,
-                &["people"],
-                validate,
-                || async { Ok(()) },
-            )
-            .await;
+            let r =
+                synchronize_tables_with_stage_factory_candidate_validated_checked(
+                    right,
+                    &mut rt,
+                    &config,
+                    other,
+                    &factory,
+                    &["people"],
+                    validate,
+                    |view| {
+                        if attack == 15 && view.direction == SyncValidationDirection::Incoming {
+                            assert_eq!(view.candidates.len(), 1);
+                            assert!(view.tables[0].rows.iter().any(
+                                    |row| row.row.values.get(1) == Some(&Value::from("Grace"))
+                                ));
+                            return Err("candidate recovery import denied".into());
+                        }
+                        Ok(())
+                    },
+                    || async { Ok(()) },
+                )
+                .await;
             drop(rt);
             r
         },
@@ -352,6 +387,50 @@ async fn exchange_as(
         injected.get(),
     )
 }
+#[test]
+fn candidate_recovery_validation_denies_actual_import_and_late_export_in_both_roles() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for attack in [15, 16] {
+                let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                for engine in [&left, &right] {
+                    engine
+                        .translate_and_execute(
+                            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
+                            &SqlTranslator,
+                        )
+                        .await
+                        .expect("schema");
+                }
+                left.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada'); UPDATE people SET name = 'Grace'", &SqlTranslator).await.expect("snapshot-only prerequisites plus delta");
+                right.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abf' AS UUID), 'retained')", &SqlTranslator).await.expect("earlier local row");
+                let (l, r, injected) = exchange_as(&left, &right, attack, role).await;
+                assert!(injected, "recovery was forced");
+                if attack == 15 {
+                    assert!(
+                        r.expect_err("candidate import denial")
+                            .contains("candidate recovery import denied")
+                    );
+                } else {
+                    assert!(
+                        l.expect_err("late actual export denial")
+                            .contains("candidate recovery export denied")
+                    );
+                }
+                assert_eq!(
+                    right
+                        .translate_and_execute("SELECT name FROM people", &SqlTranslator)
+                        .await
+                        .expect("recovery rollback preserves prior row")[0]
+                        .rows,
+                    vec![value::Row::new(vec![Value::from("retained")])]
+                );
+            }
+        }
+    });
+}
+
 #[test]
 fn outgoing_late_incremental_fallback_and_recovery_values_are_validated_before_disclosure() {
     block_on(async {

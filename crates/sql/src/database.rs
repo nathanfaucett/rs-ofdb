@@ -19,6 +19,10 @@ use sync::{
 };
 use value::{FromRow, Row, Value};
 
+#[cfg(feature = "sync")]
+type CandidateValidator<'a> =
+    dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
+
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use engine_automerge::AutomergeRowCodec;
 #[cfg(feature = "redb")]
@@ -608,7 +612,7 @@ impl Database {
     {
         let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
         self.synchronize_tables_staged_checked(
-            transport, config, role, &factory, tables, validate, check,
+            transport, config, role, &factory, tables, validate, None, check,
         )
         .await
     }
@@ -636,7 +640,94 @@ impl Database {
     {
         let factory = crate::FileSyncStageFactory::new(directory);
         self.synchronize_tables_staged_checked(
-            transport, config, role, &factory, tables, validate, check,
+            transport, config, role, &factory, tables, validate, None, check,
+        )
+        .await
+    }
+
+    /// Scoped sync with synchronous, transaction-consistent complete candidate validation.
+    /// The callback observes selected related rows and conflicts, after each incoming
+    /// batch merges but before commit, and actual source export reads before disclosure.
+    /// Do not block, reenter this database, or perform network IO in the callback.
+    /// Return non-sensitive errors; denial rolls back the batch, not earlier progress.
+    /// Incomplete rows/conflicts do not confer trust; that decision remains caller-owned.
+    /// Views cover selected tables in one transaction, not a session or mutation ledger.
+    /// Validation may observe a batch that later fails: do not publish external trust.
+    /// Materializing related evidence scans all selected rows per observed transaction.
+    #[cfg(feature = "sync")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_tables_candidate_validated_checked<T, V, C, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        tables: &[&str],
+        validate: V,
+        validate_candidate: C,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
+        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        self.synchronize_tables_staged_checked(
+            transport,
+            config,
+            role,
+            &factory,
+            tables,
+            validate,
+            Some(&validate_candidate),
+            check,
+        )
+        .await
+    }
+
+    /// Candidate/historical-value validated scoped sync with owner-native stages.
+    /// Same contract as `Self::synchronize_tables_candidate_validated_checked`.
+    /// Discard the transport on error; stages are removed without waiting for Abort delivery.
+    #[cfg(feature = "native-stage")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_tables_with_stage_directory_candidate_validated_checked<
+        T,
+        V,
+        C,
+        Q,
+        U,
+    >(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+        tables: &[&str],
+        validate: V,
+        validate_candidate: C,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
+        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = crate::FileSyncStageFactory::new(directory);
+        self.synchronize_tables_staged_checked(
+            transport,
+            config,
+            role,
+            &factory,
+            tables,
+            validate,
+            Some(&validate_candidate),
+            check,
         )
         .await
     }
@@ -651,6 +742,7 @@ impl Database {
         factory: &F,
         tables: &[&str],
         validate: V,
+        validate_candidate: Option<&CandidateValidator<'_>>,
         check: Q,
     ) -> Result<SyncResult, SyncError<T::Error>>
     where
@@ -665,17 +757,33 @@ impl Database {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => {
-                sync::synchronize_tables_with_stage_factory_validated_checked(
-                    engine, transport, config, role, factory, tables, validate, check,
-                )
-                .await
+                if let Some(candidate) = validate_candidate {
+                    sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                        engine, transport, config, role, factory, tables, validate, candidate,
+                        check,
+                    )
+                    .await
+                } else {
+                    sync::synchronize_tables_with_stage_factory_validated_checked(
+                        engine, transport, config, role, factory, tables, validate, check,
+                    )
+                    .await
+                }
             }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
-                sync::synchronize_tables_with_stage_factory_validated_checked(
-                    engine, transport, config, role, factory, tables, validate, check,
-                )
-                .await
+                if let Some(candidate) = validate_candidate {
+                    sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                        engine, transport, config, role, factory, tables, validate, candidate,
+                        check,
+                    )
+                    .await
+                } else {
+                    sync::synchronize_tables_with_stage_factory_validated_checked(
+                        engine, transport, config, role, factory, tables, validate, check,
+                    )
+                    .await
+                }
             }
         }
     }

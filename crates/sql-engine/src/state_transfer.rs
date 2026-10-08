@@ -126,6 +126,27 @@ where
             Box<dyn Future<Output = EngineResult<(O, MutationSummary)>> + Send + 'a>,
         >,
     {
+        self.mutate_tables_validated(tables, operation, |_| Ok(()))
+            .await
+    }
+
+    /// Validate transaction-derived output synchronously before committing mutations.
+    /// Rejection rolls back the transaction. Validation must not block or reenter it.
+    pub async fn mutate_tables_validated<F, O, V>(
+        &self,
+        tables: &[String],
+        operation: F,
+        validate: V,
+    ) -> EngineResult<O>
+    where
+        F: for<'a> FnOnce(
+            &'a R,
+            &'a mut K::Transaction,
+        ) -> Pin<
+            Box<dyn Future<Output = EngineResult<(O, MutationSummary)>> + Send + 'a>,
+        >,
+        V: FnOnce(&O) -> EngineResult<()>,
+    {
         let mut transaction = self.kernel.transaction().await?;
         let result: EngineResult<O> = async {
             ensure(&mut transaction, self.reconciler.as_ref()).await?;
@@ -135,6 +156,7 @@ where
                     .await?;
             }
             let (output, summary) = operation(self.reconciler.as_ref(), &mut transaction).await?;
+            validate(&output)?;
             if summary.catalog_changed || !summary.changed_tables.is_empty() {
                 reconcile_schema_names(&mut transaction, self.reconciler.as_ref()).await?;
             }

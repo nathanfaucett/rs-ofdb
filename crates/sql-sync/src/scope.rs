@@ -13,7 +13,8 @@ use engine::{
 use futures::{StreamExt, pin_mut};
 use value::{Row, Value, ValueType};
 
-use crate::{SyncKey, SyncRowCodec, SyncStateUnit};
+use crate::candidate::CandidateValidator;
+use crate::{SyncCandidateView, SyncKey, SyncRowCodec, SyncStateUnit};
 
 type Columns = Vec<(String, ValueType, Value, bool)>;
 type Index = (String, bool, Vec<String>);
@@ -21,6 +22,7 @@ type Index = (String, bool, Vec<String>);
 #[derive(Clone)]
 pub(crate) struct TableScope<'a> {
     validate_value: &'a (dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync),
+    pub validate_candidate: Option<&'a CandidateValidator<'a>>,
     pub names: Vec<String>,
     columns: BTreeMap<String, Columns>,
     indices: BTreeMap<String, Index>,
@@ -58,6 +60,7 @@ impl<'a> TableScope<'a> {
     {
         let mut scope = Self {
             validate_value,
+            validate_candidate: None,
             names: Vec::new(),
             columns: BTreeMap::new(),
             indices: BTreeMap::new(),
@@ -273,6 +276,30 @@ impl<'a> TableScope<'a> {
             for (column, value) in observations {
                 (self.validate_value)(table, &column, &value).map_err(EngineError::custom)?;
             }
+        }
+        Ok(())
+    }
+
+    pub fn candidate_tables(&self) -> Option<Vec<(String, Vec<String>)>> {
+        self.validate_candidate.map(|_| {
+            self.names
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        self.columns[name]
+                            .iter()
+                            .map(|column| column.0.clone())
+                            .collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    pub fn validate_candidates(&self, view: &Option<SyncCandidateView>) -> EngineResult<()> {
+        if let (Some(validate), Some(view)) = (self.validate_candidate, view) {
+            validate(view).map_err(EngineError::custom)?;
         }
         Ok(())
     }

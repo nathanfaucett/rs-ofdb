@@ -10,7 +10,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use ofdb_sql::{Database, Row, SessionConfig, SyncRole, SyncTransport, Uuid, Value};
+use ofdb_sql::{
+    Database, Row, SessionConfig, SyncCandidateView, SyncRole, SyncTransport,
+    SyncValidationDirection, Uuid, Value,
+};
 use tokio::sync::mpsc;
 
 struct Channel {
@@ -56,6 +59,567 @@ fn pair() -> (Channel, Channel) {
         },
     )
 }
+async fn candidate_exchange<V, W, Q, U>(
+    source: &Database,
+    target: &Database,
+    target_role: SyncRole,
+    stages: &std::path::Path,
+    source_validate: V,
+    target_validate: W,
+    target_check: Q,
+) -> (Result<(), String>, Result<(), String>)
+where
+    V: Fn(&SyncCandidateView) -> Result<(), String> + Send + Sync,
+    W: Fn(&SyncCandidateView) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+{
+    let (mut st, mut tt) = pair();
+    let config = SessionConfig {
+        max_units_per_frame: 1,
+        ..SessionConfig::default()
+    };
+    let source_role = if target_role == SyncRole::Initiator {
+        SyncRole::Responder
+    } else {
+        SyncRole::Initiator
+    };
+    tokio::join!(
+        async {
+            let result = source
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut st,
+                    &config,
+                    source_role,
+                    stages,
+                    &["a_references", "z_records"],
+                    |_, _, _| Ok(()),
+                    source_validate,
+                    || async { Ok(()) },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            drop(st);
+            result
+        },
+        async {
+            let result = target
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut tt,
+                    &config,
+                    target_role,
+                    stages,
+                    &["a_references", "z_records"],
+                    |_, _, _| Ok(()),
+                    target_validate,
+                    target_check,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            drop(tt);
+            result
+        }
+    )
+}
+
+async fn candidate_schema(database: &Database) {
+    database.client().execute_sql("CREATE TABLE a_references (id UUID PRIMARY KEY, record UUID, label TEXT); CREATE TABLE z_records (id UUID PRIMARY KEY, label TEXT)", None).await.expect("candidate schema");
+}
+
+fn correlated_rows(view: &SyncCandidateView) -> Result<(), String> {
+    let references = view
+        .tables
+        .iter()
+        .find(|table| table.name == "a_references")
+        .expect("references evidence");
+    let records = view
+        .tables
+        .iter()
+        .find(|table| table.name == "z_records")
+        .expect("related evidence");
+    assert_eq!(references.columns, ["id", "record", "label"]);
+    for reference in references.rows.iter().filter(|row| !row.deleted) {
+        let record = records
+            .rows
+            .iter()
+            .find(|row| !row.deleted && Some(&Value::Uuid(row.id)) == reference.row.values.get(1))
+            .ok_or("missing related row")?;
+        if !reference.conflicts.is_empty()
+            || !record.conflicts.is_empty()
+            || reference.row.values.get(2) != record.row.values.get(1)
+        {
+            return Err("candidate correlation denied".into());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn candidate_correlation_denial_rolls_back_complete_batch_then_native_retry_succeeds() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let directory = tempfile::tempdir().expect("databases");
+        let path = directory.path().join("target.redb");
+        let source = Database::in_memory();
+        let target = Database::open(&path).expect("target");
+        for database in [&source, &target] {
+            candidate_schema(database).await;
+        }
+        source.client().execute_sql(&format!("INSERT INTO z_records VALUES (CAST('{STABLE_ID}' AS UUID), 'expected'); INSERT INTO a_references VALUES (CAST('{STABLE_ID}' AS UUID), CAST('{STABLE_ID}' AS UUID), 'different')"), None).await.expect("valid scalar values but invalid correlation");
+        let stages = directory.path().join("stages");
+        let (_, result) = candidate_exchange(
+            &source,
+            &target,
+            role,
+            &stages,
+            |_| Ok(()),
+            |view| {
+                if view.direction == SyncValidationDirection::Incoming {
+                    assert_eq!(
+                        view.candidates.len(),
+                        2,
+                        "both rows merged before callback despite separate frames"
+                    );
+                    correlated_rows(view)
+                } else {
+                    Ok(())
+                }
+            },
+            || async { Ok(()) },
+        )
+        .await;
+        assert!(
+            result
+                .expect_err("invalid complete candidate must not commit")
+                .contains("candidate correlation denied")
+        );
+        assert!(
+            std::fs::read_dir(&stages)
+                .expect("stage directory")
+                .next()
+                .is_none()
+        );
+        drop(target);
+        let target = Database::open(&path).expect("reopen denied batch");
+        for table in ["a_references", "z_records"] {
+            assert!(
+                target
+                    .client()
+                    .execute_sql(&format!("SELECT * FROM {table}"), None)
+                    .await
+                    .expect("rolled back rows")[0]
+                    .rows
+                    .is_empty()
+            );
+        }
+        source
+            .client()
+            .execute_sql("UPDATE a_references SET label = 'expected'", None)
+            .await
+            .expect("repair correlation");
+        let (l, r) = candidate_exchange(
+            &source,
+            &target,
+            role,
+            &stages,
+            correlated_rows,
+            correlated_rows,
+            || async { Ok(()) },
+        )
+        .await;
+        l.expect("source retry");
+        r.expect("candidate retry");
+        drop(target);
+        let target = Database::open(&path).expect("reopen validated rows");
+        assert_eq!(
+            target
+                .client()
+                .execute_sql("SELECT label FROM a_references", None)
+                .await
+                .expect("validated correlation")[0]
+                .rows,
+            vec![Row::new(vec![Value::from("expected")])]
+        );
+    }
+}
+
+#[tokio::test]
+async fn candidate_outgoing_correlation_denies_actual_source_rows_before_disclosure() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let source = Database::in_memory();
+        let target = Database::in_memory();
+        for database in [&source, &target] {
+            candidate_schema(database).await;
+        }
+        source.client().execute_sql(&format!("INSERT INTO z_records VALUES (CAST('{STABLE_ID}' AS UUID), 'expected'); INSERT INTO a_references VALUES (CAST('{STABLE_ID}' AS UUID), CAST('{STABLE_ID}' AS UUID), 'different')"), None).await.expect("uncorrelated source");
+        let (mut st, mut tt) = pair();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        st.sent = Some(sent.clone());
+        let observed = AtomicBool::new(false);
+        let other = if role == SyncRole::Initiator {
+            SyncRole::Responder
+        } else {
+            SyncRole::Initiator
+        };
+        let config = SessionConfig::default();
+        let (l, _) = tokio::join!(
+            async {
+                let result = source
+                    .synchronize_tables_candidate_validated_checked(
+                        &mut st,
+                        &config,
+                        role,
+                        &["a_references", "z_records"],
+                        |_, _, _| Ok(()),
+                        |view| {
+                            assert_eq!(view.direction, SyncValidationDirection::Outgoing);
+                            observed.store(true, Ordering::SeqCst);
+                            correlated_rows(view)
+                        },
+                        || async { Ok(()) },
+                    )
+                    .await;
+                drop(st);
+                result
+            },
+            async {
+                let result = target
+                    .synchronize_tables_candidate_validated_checked(
+                        &mut tt,
+                        &config,
+                        other,
+                        &["a_references", "z_records"],
+                        |_, _, _| Ok(()),
+                        |_| Ok(()),
+                        || async { Ok(()) },
+                    )
+                    .await;
+                drop(tt);
+                result
+            }
+        );
+        assert!(
+            l.expect_err("outgoing correlation denial")
+                .to_string()
+                .contains("candidate correlation denied")
+        );
+        assert!(observed.load(Ordering::SeqCst));
+        assert_eq!(
+            sent.lock().expect("sent frames").len(),
+            2,
+            "only scope negotiation and Abort, no history exchange"
+        );
+        assert!(
+            target
+                .client()
+                .execute_sql("SELECT * FROM a_references", None)
+                .await
+                .expect("nothing disclosed/applied")[0]
+                .rows
+                .is_empty()
+        );
+        assert_eq!(
+            source
+                .client()
+                .execute_sql("SELECT label FROM a_references", None)
+                .await
+                .expect("source retained")[0]
+                .rows,
+            vec![Row::new(vec![Value::from("different")])]
+        );
+    }
+}
+
+#[tokio::test]
+async fn candidate_delta_observes_concurrent_local_related_change_and_rolls_back() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let directory = tempfile::tempdir().expect("databases");
+        let path = directory.path().join("target.redb");
+        let source = Database::in_memory();
+        let target = Database::open(&path).expect("target");
+        for database in [&source, &target] {
+            candidate_schema(database).await;
+        }
+        source.client().execute_sql(&format!("INSERT INTO z_records VALUES (CAST('{STABLE_ID}' AS UUID), 'expected'); INSERT INTO a_references VALUES (CAST('{STABLE_ID}' AS UUID), CAST('{STABLE_ID}' AS UUID), 'expected')"), None).await.expect("baseline");
+        let stages = directory.path().join("stages");
+        let (l, r) = candidate_exchange(
+            &source,
+            &target,
+            role,
+            &stages,
+            correlated_rows,
+            correlated_rows,
+            || async { Ok(()) },
+        )
+        .await;
+        l.expect("source baseline");
+        r.expect("target baseline");
+        source
+            .client()
+            .execute_sql(
+                "UPDATE a_references SET label = 'next'; UPDATE z_records SET label = 'next'",
+                None,
+            )
+            .await
+            .expect("new correlated state");
+        let changed = AtomicBool::new(false);
+        let observed = AtomicBool::new(false);
+        let (_, r) = candidate_exchange(
+            &source,
+            &target,
+            role,
+            &stages,
+            correlated_rows,
+            |view| {
+                if view.direction == SyncValidationDirection::Incoming {
+                    let records = view
+                        .tables
+                        .iter()
+                        .find(|table| table.name == "z_records")
+                        .expect("transaction related rows");
+                    let values = &records.rows[0]
+                        .conflicts
+                        .iter()
+                        .find(|(column, _)| column == "label")
+                        .expect("local concurrent conflict")
+                        .1;
+                    assert!(
+                        values.contains(&Value::from("next"))
+                            && values.contains(&Value::from("revoked"))
+                    );
+                    observed.store(true, Ordering::SeqCst);
+                    return Err("local candidate conflict denied".into());
+                }
+                Ok(())
+            },
+            || async {
+                if !changed.swap(true, Ordering::SeqCst) {
+                    target
+                        .client()
+                        .execute_sql("UPDATE z_records SET label = 'revoked'", None)
+                        .await
+                        .expect("local change after staging, before apply transaction");
+                }
+                Ok(())
+            },
+        )
+        .await;
+        assert!(
+            r.expect_err("reject prospective local merge")
+                .contains("local candidate conflict denied")
+        );
+        assert!(observed.load(Ordering::SeqCst));
+        assert!(std::fs::read_dir(&stages).expect("stages").next().is_none());
+        drop(target);
+        let target = Database::open(&path).expect("reopen denied delta");
+        for (table, label) in [("a_references", "expected"), ("z_records", "revoked")] {
+            assert_eq!(
+                target
+                    .client()
+                    .execute_sql(&format!("SELECT label FROM {table}"), None)
+                    .await
+                    .expect("prior/local mutations retained")[0]
+                    .rows,
+                vec![Row::new(vec![Value::from(label)])]
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn candidate_later_batch_denial_retains_earlier_committed_progress_after_reopen() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("target.redb");
+    let source = Database::in_memory();
+    let target = Database::open(&path).expect("target");
+    for database in [&source, &target] {
+        candidate_schema(database).await;
+    }
+    let mut seed = 19_u64;
+    let label = (0..950_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            char::from(b'a' + (seed % 26) as u8)
+        })
+        .collect::<String>();
+    for id in [STABLE_ID, "018f0f8e-7b6d-7c4a-8f12-123456789abc"] {
+        source
+            .client()
+            .execute_sql(
+                &format!("INSERT INTO z_records VALUES (CAST('{id}' AS UUID), '{label}')"),
+                None,
+            )
+            .await
+            .expect("rows exceed one apply batch together, not individually");
+    }
+    let applies = std::sync::atomic::AtomicUsize::new(0);
+    let stages = directory.path().join("stages");
+    let (_, r) = candidate_exchange(
+        &source,
+        &target,
+        SyncRole::Responder,
+        &stages,
+        |_| Ok(()),
+        |view| {
+            if view.direction == SyncValidationDirection::Incoming {
+                assert_eq!(
+                    view.candidates.len(),
+                    1,
+                    "byte boundary separates native commit batches"
+                );
+                if applies.fetch_add(1, Ordering::SeqCst) == 1 {
+                    return Err("later candidate denied".into());
+                }
+            }
+            Ok(())
+        },
+        || async { Ok(()) },
+    )
+    .await;
+    assert!(
+        r.expect_err("later batch denial")
+            .contains("later candidate denied")
+    );
+    assert_eq!(applies.load(Ordering::SeqCst), 2);
+    assert!(std::fs::read_dir(&stages).expect("stages").next().is_none());
+    drop(target);
+    let target = Database::open(&path).expect("reopen progress");
+    assert_eq!(
+        target
+            .client()
+            .execute_sql("SELECT id FROM z_records", None)
+            .await
+            .expect("first committed batch retained")[0]
+            .rows
+            .len(),
+        1
+    );
+    assert_eq!(
+        source
+            .client()
+            .execute_sql("SELECT id FROM z_records", None)
+            .await
+            .expect("source preserved")[0]
+            .rows
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn candidate_fallback_preserves_conflicts_and_pending_rows_without_implying_trust() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let directory = tempfile::tempdir().expect("databases");
+        let path = directory.path().join("target.redb");
+        let source = Database::in_memory();
+        let target = Database::open(&path).expect("target");
+        for database in [&source, &target] {
+            candidate_schema(database).await;
+            database.client().execute_sql(&format!("INSERT INTO a_references VALUES (CAST('{STABLE_ID}' AS UUID), CAST('{STABLE_ID}' AS UUID), 'pending')"), None).await.expect("independent incomplete row");
+        }
+        source
+            .client()
+            .execute_sql(
+                "UPDATE a_references SET label = 'changed before first sync'",
+                None,
+            )
+            .await
+            .expect("exportable delta with missing snapshot prerequisites");
+        let observed = AtomicBool::new(false);
+        let stages = directory.path().join("stages");
+        let (l, r) = candidate_exchange(
+            &source,
+            &target,
+            role,
+            &stages,
+            |_| Ok(()),
+            |view| {
+                if view.direction == SyncValidationDirection::Incoming {
+                    assert!(
+                        view.tables
+                            .iter()
+                            .find(|table| table.name == "z_records")
+                            .expect("related evidence")
+                            .rows
+                            .is_empty(),
+                        "related evidence really missing, not fabricated"
+                    );
+                    let references = &view
+                        .tables
+                        .iter()
+                        .find(|table| table.name == "a_references")
+                        .expect("actual fallback row")
+                        .rows;
+                    let values = &references[0]
+                        .conflicts
+                        .iter()
+                        .find(|(column, _)| column == "label")
+                        .expect("retained concurrent assignments")
+                        .1;
+                    assert!(
+                        values.contains(&Value::from("pending"))
+                            && values.contains(&Value::from("changed before first sync"))
+                    );
+                    observed.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            || async { Ok(()) },
+        )
+        .await;
+        l.expect("source fallback");
+        r.expect("consumer permits pending storage, not trust");
+        assert!(observed.load(Ordering::SeqCst));
+        drop(target);
+        let target = Database::open(&path).expect("reopen pending conflicts");
+        let key = Row::new(vec![Value::Uuid(Uuid::parse_str(STABLE_ID).expect("id"))]);
+        assert!(
+            target
+                .client()
+                .row_conflicts("a_references", &key)
+                .await
+                .expect("preserved conflicts")
+                .contains(&"label".to_string())
+        );
+        target
+            .client()
+            .execute_sql("DELETE FROM a_references", None)
+            .await
+            .expect("local tombstone");
+        let tombstone = AtomicBool::new(false);
+        let (l, r) = candidate_exchange(
+            &target,
+            &source,
+            role,
+            &stages,
+            |view| {
+                if view.direction == SyncValidationDirection::Outgoing {
+                    tombstone.store(
+                        view.tables
+                            .iter()
+                            .find(|table| table.name == "a_references")
+                            .expect("deleted row evidence")
+                            .rows
+                            .iter()
+                            .any(|row| row.deleted),
+                        Ordering::SeqCst,
+                    );
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+            || async { Ok(()) },
+        )
+        .await;
+        l.expect("source tombstone");
+        r.expect("receiver tombstone");
+        assert!(tombstone.load(Ordering::SeqCst));
+    }
+}
+
 async fn schema(database: &Database) {
     database.client().execute_sql("CREATE TABLE public_rows (id UUID PRIMARY KEY, name TEXT); CREATE UNIQUE INDEX public_names ON public_rows (name); CREATE TABLE local_secrets (id UUID PRIMARY KEY, secret TEXT)", None).await.expect("schema");
 }
