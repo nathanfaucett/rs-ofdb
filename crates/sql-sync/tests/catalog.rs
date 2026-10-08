@@ -160,22 +160,49 @@ impl SyncTransport for StalledReceiveTransport {
 }
 
 #[test]
-fn rejects_non_uuidv7_row_addresses_before_applying_sync_state() {
+fn rejects_unsupported_user_and_non_v7_catalog_addresses_before_applying_state() {
     block_on(async {
         let engine = destination();
-        let row = Uuid::from_bytes([0x11; 16]);
-        let unit = SyncStateUnit::new(
-            SyncKey::Row {
-                table: String::from("people"),
-                row,
-            },
-            vec![1],
-            Vec::new(),
-        );
-        let error = apply_sync_state_batch_for(&engine, vec![unit])
-            .await
-            .expect_err("non-UUIDv7 row address must be rejected");
-        assert!(error.to_string().contains("UUIDv7"));
+        let before = sync_manifest_for(&engine).await.expect("before");
+        let stable = Uuid::parse_str("886313e1-3b8a-5372-9b90-0c9aee199e5d").expect("UUIDv5");
+        let mut cases = vec![
+            ("people", Uuid::nil()),
+            ("people", Uuid::from_bytes([0x11; 16])),
+            (
+                "people",
+                Uuid::parse_str("018f0f8e-7b6d-4c4a-8f12-123456789abc").expect("unsupported v4"),
+            ),
+            (
+                "people",
+                Uuid::parse_str("886313e1-3b8a-5372-0b90-0c9aee199e5d").expect("bad variant"),
+            ),
+        ];
+        for table in [
+            ENGINE_TABLES_STORAGE,
+            ENGINE_TABLE_FIELDS_STORAGE,
+            ENGINE_INDICES_STORAGE,
+            engine::ENGINE_INDEX_FIELDS_STORAGE,
+        ] {
+            cases.push((table, stable));
+        }
+        for (table, row) in cases {
+            let unit = SyncStateUnit::new(
+                SyncKey::Row {
+                    table: table.into(),
+                    row,
+                },
+                vec![1],
+                Vec::new(),
+            );
+            let error = apply_sync_state_batch_for(&engine, vec![unit])
+                .await
+                .expect_err("invalid address must reject before decoding/mutation");
+            assert!(error.to_string().contains("UUIDv7"));
+            assert_eq!(
+                sync_manifest_for(&engine).await.expect("unchanged target"),
+                before
+            );
+        }
     });
 }
 

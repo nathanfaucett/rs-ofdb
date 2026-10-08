@@ -58,7 +58,7 @@ A Row Reconciler stores and resolves Logical Rows through an Engine Transaction.
 
 ## Row Identity
 
-Every SQL Logical Row, including a schema-definition row, has one immutable UUIDv7 primary key. The table name and that same UUID identify the row for storage and replication; a table's identity is its name, not its schema-definition row UUID.
+Every SQL Logical Row has one immutable UUID primary key. User rows can have caller-supplied RFC-variant UUIDv5 stable identities or UUIDv7 identities; generated identities and schema-definition identities are UUIDv7. The table name and that exact UUID identify the row for storage and replication; independently created user rows with the same table and UUID share one logical identity. A UUIDv5 identity does not encode creation time or establish authorization. A table's identity is its name, not its schema-definition row UUID.
 
 ## Schema Definition
 
@@ -86,7 +86,7 @@ A Conflict retains concurrent values within one Logical Row, with deterministic 
 
 ## Unique-Key Conflict
 
-A Unique-Key Conflict occurs when distinct Logical Rows claim the same unique-key value. The largest UUID wins, including tombstoned contenders; smaller contenders are permanently deleted rather than retained for promotion.
+A Unique-Key Conflict occurs when distinct Logical Rows claim the same unique-key value. The largest UUID wins, including tombstoned contenders; smaller contenders are permanently deleted rather than retained for promotion. This UUID ordering is deterministic, not a creation-time ordering for stable UUIDv5 identities.
 
 ## Generation
 

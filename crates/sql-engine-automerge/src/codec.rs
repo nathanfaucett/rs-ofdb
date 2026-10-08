@@ -1140,8 +1140,13 @@ where
                             }
                         }
                     }
-                    OpType::Delete if !catalog && column.is_some() => {}
-                    _ => return Err(EngineError::custom("Malformed historical scoped property")),
+                    OpType::Delete
+                        if !catalog && (column.is_some() || name == DOCUMENT_COLUMNS) => {}
+                    _ => {
+                        return Err(EngineError::custom(format!(
+                            "Malformed historical scoped property {table}.{name}"
+                        )));
+                    }
                 }
             }
         }
@@ -1343,11 +1348,23 @@ where
         let Some(mut document) = Self::document(transaction, table, &id).await? else {
             return Ok(inventory.into_values().collect());
         };
-        Ok(document
-            .get_changes(&[])
-            .into_iter()
-            .filter_map(|change| inventory.remove(&change.hash().0))
-            .collect())
+        let mut known = Vec::new();
+        for change in document.get_changes(&[]) {
+            let hash = change.hash().0;
+            let id = if let Some(id) = inventory.remove(&hash) {
+                id
+            } else {
+                used_bytes = used_bytes.saturating_add(hash.len()).saturating_add(128);
+                if used_bytes > max_bytes {
+                    return Err(EngineError::custom(format!(
+                        "sync change inventory exceeds the {max_bytes}-byte budget"
+                    )));
+                }
+                SyncChangeId(hash.to_vec())
+            };
+            known.push(id);
+        }
+        Ok(known)
     }
 
     async fn export_change(

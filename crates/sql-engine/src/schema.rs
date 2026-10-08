@@ -16,12 +16,48 @@ pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "__engine_table_fields";
 pub const ENGINE_INDICES_STORAGE: &str = "__engine_indices";
 pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "__engine_index_fields";
 
-pub(crate) fn validate_row_id(id: &Uuid) -> EngineResult<()> {
+/// Validates RFC UUIDv5/v7 user identities; catalog generations remain UUIDv7.
+pub fn validate_row_id(table: &str, id: &Uuid) -> EngineResult<()> {
     let bytes = id.as_bytes();
-    if bytes[6] >> 4 == 7 && bytes[8] & 0xc0 == 0x80 {
+    let version = bytes[6] >> 4;
+    let catalog = catalog_table_for_storage(table).is_some();
+    if bytes[8] & 0xc0 == 0x80 && (version == 7 || (version == 5 && !catalog)) {
         Ok(())
     } else {
-        Err(EngineError::InvalidQuery("Primary key must be a UUIDv7"))
+        Err(EngineError::InvalidQuery(if catalog {
+            "Catalog primary key must be a UUIDv7"
+        } else {
+            "Primary key must be an RFC UUIDv5 or UUIDv7"
+        }))
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use uuid::Uuid;
+
+    use super::{ENGINE_TABLES_STORAGE, validate_row_id};
+
+    #[test]
+    fn user_and_catalog_row_ids_have_explicit_version_and_variant_contracts() {
+        for version in 0..16 {
+            for variant in [0, 0x80, 0xc0, 0xe0] {
+                let mut bytes = [1; 16];
+                bytes[6] = version << 4;
+                bytes[8] = variant;
+                let id = Uuid::from_bytes(bytes);
+                assert_eq!(
+                    validate_row_id("user_rows", &id).is_ok(),
+                    variant == 0x80 && (version == 5 || version == 7)
+                );
+                assert_eq!(
+                    validate_row_id(ENGINE_TABLES_STORAGE, &id).is_ok(),
+                    variant == 0x80 && version == 7
+                );
+            }
+        }
+        assert!(validate_row_id("user_rows", &Uuid::nil()).is_err());
+        assert!(validate_row_id("user_rows", &Uuid::max()).is_err());
     }
 }
 

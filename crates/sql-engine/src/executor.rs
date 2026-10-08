@@ -2171,7 +2171,7 @@ pub(crate) fn row_id(schema: &TableSchema, row: &Row) -> EngineResult<Uuid> {
         .and_then(Value::as_uuid)
         .copied()
         .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))?;
-    crate::schema::validate_row_id(&id)?;
+    crate::schema::validate_row_id(&schema.name, &id)?;
     Ok(id)
 }
 

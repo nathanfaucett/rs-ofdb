@@ -25,6 +25,8 @@ use engine_automerge::AutomergeRowCodec;
 use engine_redb::{RedbKernel, redb};
 
 /// An application-facing database using the Automerge row codec.
+/// Explicit user-row keys accept RFC UUIDv5 or UUIDv7; generated and catalog
+/// identities remain UUIDv7. Keys are immutable and tombstoned keys cannot revive.
 #[derive(Clone)]
 pub struct Database {
     backend: DatabaseBackend,

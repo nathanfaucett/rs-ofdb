@@ -346,6 +346,262 @@ async fn overwritten_secret_history_is_rejected_not_sanitized() {
     );
 }
 
+const STABLE_ID: &str = "886313e1-3b8a-5372-9b90-0c9aee199e5d";
+
+async fn stable_schema(database: &Database) {
+    database.client().execute_sql("CREATE TABLE stable_resources (id UUID PRIMARY KEY, resource_key TEXT, selected BOOLEAN); CREATE UNIQUE INDEX stable_resource_keys ON stable_resources(resource_key)", None).await.expect("stable schema");
+}
+
+#[tokio::test]
+async fn uuidv5_same_key_partition_conflicts_resolve_and_retry_after_native_reopen() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("stable.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::in_memory();
+    for database in [&left, &right] {
+        stable_schema(database).await;
+    }
+    left.client().execute_sql(&format!("INSERT INTO stable_resources VALUES (CAST('{STABLE_ID}' AS UUID), 'resource', true)"), None).await.expect("explicit deterministic UUIDv5 primary key");
+    right.client().execute_sql(&format!("INSERT INTO stable_resources VALUES (CAST('{STABLE_ID}' AS UUID), 'resource', false)"), None).await.expect("same deterministic UUIDv5 on independent partition");
+    drop(left);
+    let left = Database::open(&path).expect("reopen explicit stable key");
+    let (l, r) = exchange(&left, &right, &["stable_resources"], &["stable_resources"]).await;
+    l.expect("left stable sync");
+    r.expect("right stable sync");
+    let id = Uuid::parse_str(STABLE_ID).expect("stable UUIDv5");
+    let key = Row::new(vec![Value::Uuid(id)]);
+    for database in [&left, &right] {
+        let rows = database
+            .client()
+            .execute_sql("SELECT * FROM stable_resources", None)
+            .await
+            .expect("one stable row")[0]
+            .rows
+            .clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].values[0], Value::Uuid(id));
+        let conflicts = database
+            .client()
+            .row_conflict_values("stable_resources", &key)
+            .await
+            .expect("same-key conflicts");
+        let values = &conflicts
+            .iter()
+            .find(|(column, _)| column == "selected")
+            .expect("concurrent selection values")
+            .1;
+        assert!(values.contains(&Value::Bool(true)) && values.contains(&Value::Bool(false)));
+    }
+    left.client()
+        .resolve_row(
+            "stable_resources",
+            &key,
+            vec![("selected".into(), Value::Bool(false))],
+        )
+        .await
+        .expect("explicit restrictive resolution");
+    drop(left);
+    let left = Database::open(&path).expect("reopen resolution");
+    let (l, r) = exchange(&left, &right, &["stable_resources"], &["stable_resources"]).await;
+    l.expect("left resolution delta");
+    r.expect("right resolution delta");
+    for database in [&left, &right] {
+        assert!(
+            !database
+                .client()
+                .row_conflicts("stable_resources", &key)
+                .await
+                .expect("partial resolution preserves other concurrent assignments")
+                .contains(&"selected".to_string())
+        );
+        assert_eq!(
+            database
+                .client()
+                .execute_sql("SELECT selected FROM stable_resources", None)
+                .await
+                .expect("deselected")[0]
+                .rows,
+            vec![Row::new(vec![Value::Bool(false)])]
+        );
+    }
+    right
+        .client()
+        .execute_sql("UPDATE stable_resources SET selected = true", None)
+        .await
+        .expect("retry/reselection uses same key, not replacement identity");
+    let (l, r) = exchange(&right, &left, &["stable_resources"], &["stable_resources"]).await;
+    l.expect("reverse retry sync");
+    r.expect("reverse retry sync");
+    assert_eq!(
+        left.client()
+            .execute_sql("SELECT id, selected FROM stable_resources", None)
+            .await
+            .expect("stable reselected row")[0]
+            .rows,
+        vec![Row::new(vec![Value::Uuid(id), Value::Bool(true)])]
+    );
+}
+
+#[tokio::test]
+async fn uuidv5_tombstones_win_partition_updates_and_stale_replay() {
+    let directory = tempfile::tempdir().expect("databases");
+    let path = directory.path().join("tombstone.redb");
+    let left = Database::open(&path).expect("left");
+    let right = Database::in_memory();
+    for database in [&left, &right] {
+        stable_schema(database).await;
+    }
+    let insert = format!(
+        "INSERT INTO stable_resources VALUES (CAST('{STABLE_ID}' AS UUID), 'resource', true)"
+    );
+    left.client()
+        .execute_sql(&insert, None)
+        .await
+        .expect("stable row");
+    let config = SessionConfig::default();
+    let (mut lt, mut rt) = pair();
+    let (l, r) = tokio::join!(
+        left.synchronize(&mut lt, &config, SyncRole::Initiator),
+        right.synchronize(&mut rt, &config, SyncRole::Responder),
+    );
+    l.expect("whole-resource UUIDv5 state sync");
+    r.expect("whole-resource UUIDv5 state sync");
+    let stale = right.export_sync_state().await.expect("stale live state");
+    left.client()
+        .execute_sql("DELETE FROM stable_resources", None)
+        .await
+        .expect("tombstone");
+    right
+        .client()
+        .execute_sql("UPDATE stable_resources SET selected = false", None)
+        .await
+        .expect("concurrent offline update");
+    let (l, r) = exchange(&left, &right, &["stable_resources"], &["stable_resources"]).await;
+    l.expect("delete/update left");
+    r.expect("delete/update right");
+    for database in [&left, &right] {
+        assert!(
+            database
+                .client()
+                .execute_sql("SELECT * FROM stable_resources", None)
+                .await
+                .expect("deleted")[0]
+                .rows
+                .is_empty()
+        );
+        for unit in &stale {
+            database
+                .apply_sync_state(unit.clone())
+                .await
+                .expect("stale state reconciles without resurrection");
+        }
+        assert!(
+            database
+                .client()
+                .execute_sql("SELECT * FROM stable_resources", None)
+                .await
+                .expect("still deleted")[0]
+                .rows
+                .is_empty()
+        );
+        assert!(
+            database.client().execute_sql(&insert, None).await.is_err(),
+            "exact tombstoned key cannot be reinserted"
+        );
+    }
+    drop(left);
+    let left = Database::open(&path).expect("reopen tombstone");
+    assert!(
+        left.client()
+            .execute_sql("SELECT * FROM stable_resources", None)
+            .await
+            .expect("durable tombstone")[0]
+            .rows
+            .is_empty()
+    );
+    let (l, r) = exchange(&right, &left, &["stable_resources"], &["stable_resources"]).await;
+    l.expect("repeat reverse left");
+    r.expect("repeat reverse right");
+}
+
+#[tokio::test]
+async fn uuid_identity_rejects_invalid_ids_and_keeps_generated_ids_v7() {
+    let database = Database::in_memory();
+    stable_schema(&database).await;
+    for id in [
+        "00000000-0000-0000-0000-000000000000",
+        "018f0f8e-7b6d-4c4a-8f12-123456789abc",
+        "886313e1-3b8a-5372-0b90-0c9aee199e5d",
+        "018f0f8e-7b6d-7c4a-cf12-123456789abc",
+        "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "not-a-uuid",
+    ] {
+        assert!(database.client().execute_sql(&format!("INSERT INTO stable_resources VALUES (CAST('{id}' AS UUID), 'invalid', true)"), None).await.is_err(), "invalid identity {id}");
+    }
+    assert!(
+        database
+            .client()
+            .execute_sql(
+                "INSERT INTO stable_resources VALUES ('not a UUID Value', 'invalid type', true)",
+                None
+            )
+            .await
+            .is_err()
+    );
+    database
+        .client()
+        .execute(vec![ofdb_sql::Statement::Query(ofdb_sql::Query::Insert(
+            ofdb_sql::QueryInsert {
+                table: "stable_resources".into(),
+                row: Row::new(vec![Value::from("generated"), Value::Bool(true)]),
+                returning: None,
+            },
+        ))])
+        .await
+        .expect("omitted ID is still owner-generated v7");
+    let generated = database
+        .client()
+        .execute_sql("SELECT id FROM stable_resources", None)
+        .await
+        .expect("generated ID")[0]
+        .rows[0]
+        .values[0]
+        .to_uuid()
+        .expect("UUID");
+    assert_eq!(generated.as_bytes()[6] >> 4, 7);
+    assert_eq!(generated.as_bytes()[8] & 0xc0, 0x80);
+    let before = database
+        .export_sync_state()
+        .await
+        .expect("before invalid imports");
+
+    assert_eq!(
+        database
+            .export_sync_state()
+            .await
+            .expect("unchanged imports"),
+        before
+    );
+    assert!(
+        database
+            .client()
+            .execute_sql(
+                &format!("UPDATE stable_resources SET id = CAST('{STABLE_ID}' AS UUID)"),
+                None
+            )
+            .await
+            .is_err(),
+        "immutable primary key"
+    );
+    assert_eq!(
+        database
+            .export_sync_state()
+            .await
+            .expect("unchanged primary key"),
+        before
+    );
+}
+
 #[tokio::test]
 async fn incoming_historical_value_denial_cleans_native_stages_without_abort_progress() {
     for role in [SyncRole::Initiator, SyncRole::Responder] {

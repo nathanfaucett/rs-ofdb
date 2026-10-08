@@ -66,7 +66,7 @@ where
             Box<dyn Future<Output = EngineResult<(O, Option<Row>)>> + Send + 'a>,
         >,
     {
-        crate::schema::validate_row_id(&row)?;
+        crate::schema::validate_row_id(table, &row)?;
         let mut transaction = self.kernel.transaction().await?;
         let result: EngineResult<O> = async {
             ensure(&mut transaction, self.reconciler.as_ref()).await?;
@@ -177,8 +177,8 @@ where
             Box<dyn Future<Output = EngineResult<(O, Vec<RowMutation>)>> + Send + 'a>,
         >,
     {
-        for (_, row) in rows {
-            crate::schema::validate_row_id(row)?;
+        for (table, row) in rows {
+            crate::schema::validate_row_id(table, row)?;
         }
         let mut transaction = self.kernel.transaction().await?;
         let result: EngineResult<O> = async {
@@ -190,7 +190,7 @@ where
             }
             let (output, mutations) = operation(self.reconciler.as_ref(), &mut transaction).await?;
             for mutation in &mutations {
-                crate::schema::validate_row_id(&mutation.row)?;
+                crate::schema::validate_row_id(&mutation.table, &mutation.row)?;
             }
             let catalog_changed = mutations
                 .iter()

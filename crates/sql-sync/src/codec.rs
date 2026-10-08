@@ -67,7 +67,9 @@ where
         row: Uuid,
         metadata: &[u8],
     ) -> impl Future<Output = EngineResult<()>> + Send;
-    /// Returns unique change IDs in dependency order, not ID sort order.
+    /// Returns all known change IDs in dependency order, including snapshot-contained
+    /// history, not just separately exportable deltas. Snapshot-only IDs may require
+    /// full-state fallback from `Self::export_change`.
     fn change_inventory(
         &self,
         transaction: &T,

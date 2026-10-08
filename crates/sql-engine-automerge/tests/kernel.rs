@@ -1210,7 +1210,8 @@ fn malformed_incremental_batch_does_not_partially_mutate_state() {
             })
             .await
             .unwrap();
-        assert_eq!(keys.len(), 2);
+        assert_eq!(keys.len(), 4);
+        let keys = &keys[2..];
         let key = keys[0].clone();
         let export_row = row;
         let first_payload = source
@@ -1282,7 +1283,7 @@ fn scoped_history_inspection_rejects_hidden_deleted_and_malformed_properties() {
             .into_iter()
             .map(|c| (c.name, c.r#type, c.default, c.primary_key))
             .collect::<Vec<_>>();
-        for variant in 0..6 {
+        for variant in 0..7 {
             let mut metadata = Vec::new();
             let mut document = AutoCommit::load(&original).expect("original");
             let payload = match variant {
@@ -1326,7 +1327,7 @@ fn scoped_history_inspection_rejects_hidden_deleted_and_malformed_properties() {
                         .expect("unknown delete");
                     document.save_after(&heads)
                 }
-                4 => {
+                4 | 6 => {
                     let layout = columns
                         .iter()
                         .map(|c| (c.0.clone(), c.2.clone()))
@@ -1336,6 +1337,12 @@ fn scoped_history_inspection_rejects_hidden_deleted_and_malformed_properties() {
                     document
                         .put(ROOT, "\0engine_columns", ScalarValue::Bytes(bytes))
                         .expect("layout with trailing bytes");
+                    if variant == 6 {
+                        document.get_heads();
+                        document
+                            .delete(ROOT, "\0engine_columns")
+                            .expect("deleting malformed layout cannot sanitize history");
+                    }
                     document.save()
                 }
                 5 => {
@@ -1411,9 +1418,9 @@ fn sequential_updates_export_only_the_identified_change() {
             })
             .await
             .expect("inventory");
-        assert_eq!(inventory.len(), 2);
+        assert_eq!(inventory.len(), 4);
         let mut changes = Vec::new();
-        for id in inventory {
+        for id in inventory.into_iter().skip(2) {
             let export_id = id.clone();
             let payload = source
                 .read_transaction(move |codec, transaction| {
@@ -1493,14 +1500,15 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
         sync(&source, &destination).await.unwrap();
         let table = "people";
         let row = row_uuid(1);
-        assert!(
+        assert_eq!(
             source
                 .read_transaction(|codec, transaction| {
                     Box::pin(codec.change_inventory(transaction, table, row, usize::MAX))
                 })
                 .await
-                .unwrap()
-                .is_empty()
+                .expect("snapshot history inventory")
+                .len(),
+            2
         );
 
         update(&source, "city", Value::from("Paris")).await;
@@ -1518,8 +1526,8 @@ fn realtime_row_updates_export_one_incremental_change_after_bootstrap() {
             })
             .await
             .unwrap();
-        assert_eq!(inventory.len(), 1);
-        let key = inventory[0].clone();
+        assert_eq!(inventory.len(), 3);
+        let key = inventory[2].clone();
         let export_key = key.clone();
         let export_row = row;
         let limited_key = key.clone();
@@ -3351,8 +3359,10 @@ fn stale_offline_row_does_not_return_after_table_recreation() {
                             })
                         })
                         .await
-                        .unwrap()
-                        .unwrap();
+                        .expect("export stored delta");
+                    let Some(payload) = payload else {
+                        continue;
+                    };
                     stale_changes.push(SyncIncrementalChange {
                         table: "people".into(),
                         row: stale_row,

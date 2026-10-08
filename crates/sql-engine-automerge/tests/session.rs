@@ -535,6 +535,12 @@ fn incremental_session_preserves_dependency_order_not_hash_order() {
         };
         sync(&left, &right, &config).await;
         let row = uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("row UUID");
+        let baseline = right
+            .read_transaction(|codec, transaction| {
+                Box::pin(codec.change_inventory(transaction, "people", row, usize::MAX))
+            })
+            .await
+            .expect("known bootstrap history");
         let mut inventory = Vec::new();
         for index in 0..256 {
             left.translate_and_execute(
@@ -548,7 +554,10 @@ fn incremental_session_preserves_dependency_order_not_hash_order() {
                     Box::pin(codec.change_inventory(transaction, "people", row, usize::MAX))
                 })
                 .await
-                .expect("causal inventory");
+                .expect("causal inventory")
+                .into_iter()
+                .filter(|id| !baseline.contains(id))
+                .collect();
             if inventory.windows(2).any(|pair| pair[0] > pair[1]) {
                 break;
             }

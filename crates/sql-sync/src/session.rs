@@ -10,6 +10,7 @@ use alloc::{
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
     ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
+    validate_row_id,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
 use thiserror::Error;
@@ -1249,28 +1250,19 @@ fn validate_row_addresses(
     changes: &[SyncIncrementalChange],
 ) -> Result<(), EngineError> {
     for unit in snapshots {
-        let SyncKey::Row { row, .. } = &unit.key;
-        validate_uuid_v7(row)?;
+        let SyncKey::Row { table, row } = &unit.key;
+        validate_row_id(table, row)?;
     }
     for change in changes {
-        validate_uuid_v7(&change.row)?;
+        validate_row_id(&change.table, &change.row)?;
     }
     Ok(())
 }
 
-fn validate_uuid_v7(id: &Uuid) -> Result<(), EngineError> {
-    let bytes = id.as_bytes();
-    if bytes[6] >> 4 == 7 && bytes[8] & 0xc0 == 0x80 {
-        Ok(())
-    } else {
-        Err(EngineError::custom("SQL row IDs must be UUIDv7"))
-    }
-}
-
 fn validate_manifest_row_addresses(manifest: &SyncManifest) -> Result<(), EngineError> {
     for (key, _) in &manifest.entries {
-        let SyncKey::Row { row, .. } = key;
-        validate_uuid_v7(row)?;
+        let SyncKey::Row { table, row } = key;
+        validate_row_id(table, row)?;
     }
     Ok(())
 }

@@ -98,7 +98,7 @@ fn explicit_transactions_span_api_calls() {
 }
 
 #[test]
-fn logical_rows_require_uuidv7_primary_keys() {
+fn logical_rows_reject_unsupported_uuid_primary_keys() {
     futures::executor::block_on(async {
         use ofdb_sql::{Database, SqlTranslator};
 
