@@ -27,7 +27,8 @@ pub struct SyncCandidateView {
 #[derive(Debug)]
 pub struct SyncTableView {
     pub name: String,
-    /// Positional names for each row and named concurrent values below.
+    /// Scope-start names; rows are normalized from the transaction's decoder
+    /// layout into this order. Concurrent values use their actual column names.
     pub columns: Vec<String>,
     pub rows: Vec<SyncRowView>,
 }
@@ -71,19 +72,51 @@ where
     }
     let mut evidence = Vec::new();
     for (name, columns) in tables {
+        let actual = codec.candidate_columns(transaction, &name).await?;
+        let expected_names = columns.iter().collect::<BTreeSet<_>>();
+        let actual_names = actual.iter().collect::<BTreeSet<_>>();
+        if columns.is_empty()
+            || expected_names.len() != columns.len()
+            || actual_names.len() != actual.len()
+            || expected_names != actual_names
+        {
+            return Err(EngineError::InvalidQuery(
+                "Candidate column layout does not match fixed schema",
+            ));
+        }
+        let positions = columns
+            .iter()
+            .map(|column| {
+                actual
+                    .iter()
+                    .position(|name| name == column)
+                    .expect("validated column sets define a complete bijection")
+            })
+            .collect::<Vec<_>>();
         let mut rows = Vec::new();
         {
             let states = codec.scan_row_states(transaction, &name);
             pin_mut!(states);
             while let Some(state) = states.next().await {
                 let (id, row, deleted) = state?;
+                if row.values.len() != actual.len() {
+                    return Err(EngineError::InvalidQuery(
+                        "Candidate row does not match transaction column layout",
+                    ));
+                }
+                let row = Row::new(
+                    positions
+                        .iter()
+                        .map(|index| row.values[*index].clone())
+                        .collect(),
+                );
                 let conflicts = codec
                     .conflict_values(transaction, &name, &id)
                     .await?
                     .into_iter()
                     .map(|(index, values)| {
                         Ok((
-                            columns
+                            actual
                                 .get(index)
                                 .ok_or(EngineError::InvalidQuery(
                                     "Conflict column outside fixed schema",

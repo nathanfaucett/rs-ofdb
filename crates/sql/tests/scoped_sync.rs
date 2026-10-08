@@ -11,7 +11,7 @@ use std::sync::{
 };
 
 use ofdb_sql::{
-    Database, Row, SessionConfig, SyncCandidateView, SyncRole, SyncTransport,
+    Database, Row, SessionConfig, SyncCandidateView, SyncKey, SyncRole, SyncTransport,
     SyncValidationDirection, Uuid, Value,
 };
 use tokio::sync::mpsc;
@@ -122,6 +122,257 @@ where
             result
         }
     )
+}
+
+async fn reordered_candidate_exchange<V>(
+    source: &Database,
+    target: &Database,
+    target_role: SyncRole,
+    stages: &std::path::Path,
+    validate: V,
+) where
+    V: Fn(&SyncCandidateView) -> Result<(), String> + Send + Sync,
+{
+    let (mut st, mut tt) = pair();
+    let config = SessionConfig {
+        max_units_per_frame: 1,
+        ..SessionConfig::default()
+    };
+    let source_role = if target_role == SyncRole::Initiator {
+        SyncRole::Responder
+    } else {
+        SyncRole::Initiator
+    };
+    let (s, t) = tokio::join!(
+        async {
+            let result = source
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut st,
+                    &config,
+                    source_role,
+                    stages,
+                    &["records"],
+                    |_, _, _| Ok(()),
+                    &validate,
+                    || async { Ok(()) },
+                )
+                .await;
+            drop(st);
+            result
+        },
+        async {
+            let result = target
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut tt,
+                    &config,
+                    target_role,
+                    stages,
+                    &["records"],
+                    |_, _, _| Ok(()),
+                    &validate,
+                    || async { Ok(()) },
+                )
+                .await;
+            drop(tt);
+            result
+        }
+    );
+    s.expect("source reordered candidate sync");
+    t.expect("target reordered candidate sync");
+}
+
+async fn records_catalog_id(database: &Database) -> Uuid {
+    let units = database
+        .export_sync_state()
+        .await
+        .expect("public catalog identities");
+    let ids = units
+        .iter()
+        .filter_map(|unit| match &unit.key {
+            SyncKey::Row { table, row } if table == "__engine_tables" => Some(*row),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 1, "one independently created table");
+    ids[0]
+}
+
+#[tokio::test]
+async fn candidate_schema_reorder_keeps_row_and_conflict_labels_exact_in_both_roles() {
+    for source_catalog_wins in [true, false] {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for concurrent in [false, true] {
+                let directory = tempfile::tempdir().expect("databases");
+                let paths = [
+                    directory.path().join("a.redb"),
+                    directory.path().join("b.redb"),
+                ];
+                let databases = [
+                    Database::open(&paths[0]).expect("a"),
+                    Database::open(&paths[1]).expect("b"),
+                ];
+                databases[0]
+                    .client()
+                    .execute_sql(
+                        "CREATE TABLE records (id UUID PRIMARY KEY, public TEXT, secret TEXT)",
+                        None,
+                    )
+                    .await
+                    .expect("first schema order");
+                databases[1]
+                    .client()
+                    .execute_sql(
+                        "CREATE TABLE records (id UUID PRIMARY KEY, secret TEXT, public TEXT)",
+                        None,
+                    )
+                    .await
+                    .expect("second schema order");
+                let ids = [
+                    records_catalog_id(&databases[0]).await,
+                    records_catalog_id(&databases[1]).await,
+                ];
+                assert_ne!(ids[0], ids[1]);
+                let newer = usize::from(ids[1] > ids[0]);
+                let source_index = if source_catalog_wins {
+                    newer
+                } else {
+                    1 - newer
+                };
+                let target_index = 1 - source_index;
+                let source = &databases[source_index];
+                let target = &databases[target_index];
+                source.client().execute_sql(&format!("INSERT INTO records (id, public, secret) VALUES (CAST('{STABLE_ID}' AS UUID), 'PUBLIC_SOURCE', 'SECRET_SOURCE')"), None).await.expect("named source values");
+                if concurrent {
+                    target.client().execute_sql(&format!("INSERT INTO records (id, public, secret) VALUES (CAST('{STABLE_ID}' AS UUID), 'PUBLIC_TARGET', 'SECRET_TARGET')"), None).await.expect("independent named conflicts");
+                }
+                let incoming = AtomicBool::new(false);
+                let conflicts_seen = AtomicBool::new(false);
+                let validate = |view: &SyncCandidateView| {
+                    for table in &view.tables {
+                        assert_eq!(table.name, "records");
+                        let public = table
+                            .columns
+                            .iter()
+                            .position(|column| column == "public")
+                            .expect("public label");
+                        let secret = table
+                            .columns
+                            .iter()
+                            .position(|column| column == "secret")
+                            .expect("secret label");
+                        for row in &table.rows {
+                            let public_values =
+                                [Value::from("PUBLIC_SOURCE"), Value::from("PUBLIC_TARGET")];
+                            let secret_values =
+                                [Value::from("SECRET_SOURCE"), Value::from("SECRET_TARGET")];
+                            assert!(
+                                public_values.contains(&row.row.values[public]),
+                                "public label must retain exact public data: {:?}",
+                                row.row
+                            );
+                            assert!(
+                                secret_values.contains(&row.row.values[secret]),
+                                "secret label must retain exact secret data: {:?}",
+                                row.row
+                            );
+                            if !concurrent {
+                                assert_eq!(row.row.values[public], Value::from("PUBLIC_SOURCE"));
+                                assert_eq!(row.row.values[secret], Value::from("SECRET_SOURCE"));
+                            }
+                            for (column, values) in &row.conflicts {
+                                if column == "public" || column == "secret" {
+                                    let expected = if column == "public" {
+                                        [Value::from("PUBLIC_SOURCE"), Value::from("PUBLIC_TARGET")]
+                                    } else {
+                                        [Value::from("SECRET_SOURCE"), Value::from("SECRET_TARGET")]
+                                    };
+                                    assert_eq!(values.len(), 2);
+                                    assert!(
+                                        expected.iter().all(|value| values.contains(value)),
+                                        "native conflicts must retain exact semantic labels: {column}={values:?}"
+                                    );
+                                    conflicts_seen.store(true, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                    if view.direction == SyncValidationDirection::Incoming {
+                        incoming.store(true, Ordering::SeqCst);
+                    }
+                    Ok(())
+                };
+                let stages = directory.path().join("stages");
+                reordered_candidate_exchange(source, target, role, &stages, &validate).await;
+                assert!(incoming.load(Ordering::SeqCst));
+                assert_eq!(conflicts_seen.load(Ordering::SeqCst), concurrent);
+                assert!(std::fs::read_dir(&stages).expect("stages").next().is_none());
+                drop(databases);
+                let databases = [
+                    Database::open(&paths[0]).expect("reopen a"),
+                    Database::open(&paths[1]).expect("reopen b"),
+                ];
+                let outgoing = AtomicBool::new(false);
+                reordered_candidate_exchange(
+                    &databases[target_index],
+                    &databases[source_index],
+                    role,
+                    &stages,
+                    |view| {
+                        if view.direction == SyncValidationDirection::Outgoing {
+                            outgoing.store(true, Ordering::SeqCst);
+                        }
+                        validate(view)
+                    },
+                )
+                .await;
+                assert!(
+                    outgoing.load(Ordering::SeqCst),
+                    "post-reorder native export observed"
+                );
+                let key = Row::new(vec![Value::Uuid(Uuid::parse_str(STABLE_ID).expect("id"))]);
+                for database in &databases {
+                    let rows = database
+                        .client()
+                        .execute_sql("SELECT public, secret FROM records", None)
+                        .await
+                        .expect("native semantic labels")[0]
+                        .rows
+                        .clone();
+                    assert_eq!(rows.len(), 1);
+                    assert!(
+                        [Value::from("PUBLIC_SOURCE"), Value::from("PUBLIC_TARGET")]
+                            .contains(&rows[0].values[0])
+                    );
+                    assert!(
+                        [Value::from("SECRET_SOURCE"), Value::from("SECRET_TARGET")]
+                            .contains(&rows[0].values[1])
+                    );
+                    if !concurrent {
+                        assert_eq!(
+                            rows,
+                            vec![Row::new(vec![
+                                Value::from("PUBLIC_SOURCE"),
+                                Value::from("SECRET_SOURCE")
+                            ])]
+                        );
+                    }
+                    let values = database
+                        .client()
+                        .row_conflict_values("records", &key)
+                        .await
+                        .expect("reopened named conflicts");
+                    assert_eq!(
+                        values.iter().any(|(column, _)| column == "public"),
+                        concurrent
+                    );
+                    assert_eq!(
+                        values.iter().any(|(column, _)| column == "secret"),
+                        concurrent
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn candidate_schema(database: &Database) {

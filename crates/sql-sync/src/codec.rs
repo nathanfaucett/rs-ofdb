@@ -11,6 +11,22 @@ pub trait SyncRowCodec<T>: RowCodec<T>
 where
     T: KernelTransaction,
 {
+    /// Column names in the exact order used by row decoding and conflict indices
+    /// in this transaction. Reject when the layout cannot be established.
+    /// Required only for opt-in complete candidate observations.
+    fn candidate_columns(
+        &self,
+        transaction: &T,
+        table: &str,
+    ) -> impl Future<Output = EngineResult<Vec<String>>> + Send {
+        let _ = (transaction, table);
+        async {
+            Err(engine::EngineError::Unsupported(
+                "Codec cannot establish candidate column layout",
+            ))
+        }
+    }
+
     /// Inspects every historical operation, including overwritten/deleted properties.
     /// Returns the merged row, schema references, and every historical column value
     /// (including layout defaults, overwritten/deleted and losing-conflict values).

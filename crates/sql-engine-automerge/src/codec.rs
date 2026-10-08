@@ -1013,6 +1013,16 @@ impl<T> SyncRowCodec<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
+    async fn candidate_columns(&self, transaction: &T, table: &str) -> EngineResult<Vec<String>> {
+        let columns = Self::columns(transaction, table, 0).await?;
+        if columns.is_empty() {
+            return Err(EngineError::Unsupported(
+                "Candidate rows require a transaction catalog layout",
+            ));
+        }
+        Ok(columns.into_iter().map(|column| column.id).collect())
+    }
+
     async fn inspect_history(
         &self,
         transaction: &T,

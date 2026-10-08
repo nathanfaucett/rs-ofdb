@@ -43,6 +43,57 @@ fn database_path() -> PathBuf {
     std::env::temp_dir().join(format!("engine-automerge-{}-{id}.redb", std::process::id()))
 }
 
+#[test]
+fn candidate_columns_rejects_readable_rows_without_transaction_catalog_layout() {
+    block_on(async {
+        let kernel = InMemoryKernel::new();
+        let codec = AutomergeRowCodec::new();
+        let mut transaction = kernel.transaction().await.expect("transaction");
+        for table in [
+            engine::ENGINE_TABLES_STORAGE,
+            engine::ENGINE_TABLE_FIELDS_STORAGE,
+            engine::ENGINE_INDICES_STORAGE,
+            engine::ENGINE_INDEX_FIELDS_STORAGE,
+        ] {
+            codec
+                .ensure_table(&mut transaction, table)
+                .await
+                .expect("empty catalog storage");
+        }
+        codec
+            .ensure_table(&mut transaction, "orphan")
+            .await
+            .expect("row storage without catalog");
+        let id = row_uuid(91);
+        let row = Row::new(vec![
+            Value::Uuid(id),
+            Value::from("PUBLIC"),
+            Value::from("SECRET"),
+        ]);
+        codec
+            .put_row(&mut transaction, "orphan", id, row.clone())
+            .await
+            .expect("stored fallback layout");
+        assert_eq!(
+            codec
+                .get_row(&transaction, "orphan", &id)
+                .await
+                .expect("readable stored layout"),
+            Some(row)
+        );
+        assert!(
+            matches!(
+                codec.candidate_columns(&transaction, "orphan").await,
+                Err(engine::EngineError::Unsupported(
+                    "Candidate rows require a transaction catalog layout"
+                ))
+            ),
+            "readable fallback positions are not trustworthy column labels"
+        );
+        transaction.rollback().await.expect("discard fixture");
+    });
+}
+
 fn people_schema() -> TableSchema {
     TableSchema {
         name: "people".into(),
