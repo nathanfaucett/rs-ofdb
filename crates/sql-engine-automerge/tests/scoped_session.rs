@@ -8,7 +8,7 @@ use futures::{StreamExt, channel::mpsc, executor::block_on};
 use sql_translator::SqlTranslator;
 use sync::{
     MemorySyncStageFactory, SessionConfig, SyncKey, SyncMessage, SyncRole, SyncSnapshotRequest,
-    SyncStateUnit, SyncTransport, sync_manifest_for,
+    SyncStateUnit, SyncTransport, export_sync_state_for, sync_manifest_for,
     synchronize_tables_with_stage_factory_validated_checked,
 };
 use value::Value;
@@ -26,6 +26,7 @@ struct Channel {
     attack: u8,
     injected: Rc<Cell<bool>>,
     mutation: Option<Engine<InMemoryKernel, AutomergeRowCodec>>,
+    advertised_changes: Vec<sync::SyncChangeId>,
 }
 impl SyncTransport for Channel {
     type Error = Closed;
@@ -35,7 +36,8 @@ impl SyncTransport for Channel {
     async fn send(&mut self, frame: Vec<u8>) -> Result<(), Closed> {
         let mut output = frame;
         if let Ok(mut message) = postcard::from_bytes::<SyncMessage>(&output) {
-            if ((self.attack == 12 && matches!(message, SyncMessage::Inventory(_)))
+            if (((self.attack == 12 || self.attack == 14)
+                && matches!(message, SyncMessage::Inventory(_)))
                 || (self.attack == 13 && matches!(message, SyncMessage::RequestSnapshots(_))))
                 && !self.injected.get()
             {
@@ -182,7 +184,7 @@ impl SyncTransport for Channel {
                         table: "people".into(),
                         row: uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc")
                             .expect("UUID"),
-                        changes: Vec::new(),
+                        changes: self.advertised_changes.clone(),
                     });
                     self.injected.set(true);
                 }
@@ -218,7 +220,7 @@ impl SyncTransport for Channel {
             }
             output = postcard::to_allocvec(&message).expect("frame");
         }
-        if self.attack == 12 || self.attack == 13 {
+        if (12..=14).contains(&self.attack) {
             assert!(
                 !output
                     .windows(b"forbidden historical text".len())
@@ -247,12 +249,32 @@ async fn exchange_as(
     let (a, ar) = mpsc::unbounded();
     let (b, br) = mpsc::unbounded();
     let injected = Rc::new(Cell::new(false));
+    let mut advertised_changes = Vec::new();
+    if attack == 5 || attack == 6 || attack == 11 || attack == 13 {
+        let units = export_sync_state_for(left).await.expect("source history");
+        let unit = units
+            .iter()
+            .find(|unit| matches!(&unit.key, SyncKey::Row { table, .. } if table == "people"))
+            .expect("source row");
+        let mut document = AutoCommit::load(&unit.state).expect("source document");
+        let changes = document.get_changes(&[]);
+        advertised_changes = changes
+            .iter()
+            .take(changes.len() - 1)
+            .map(|change| sync::SyncChangeId(change.hash().0.to_vec()))
+            .collect();
+        assert!(
+            !advertised_changes.is_empty(),
+            "spoof prerequisite hashes but not the last delta to force recovery"
+        );
+    }
     let mut lt = Channel {
         sender: a,
         receiver: br,
         attack: if attack == 5 { 255 } else { attack },
         injected: injected.clone(),
-        mutation: if attack == 12 || attack == 13 {
+        advertised_changes: Vec::new(),
+        mutation: if (12..=14).contains(&attack) {
             Some(left.clone())
         } else {
             None
@@ -272,6 +294,7 @@ async fn exchange_as(
             injected.clone()
         },
         mutation: None,
+        advertised_changes,
     };
     let config = SessionConfig {
         max_units_per_frame: 1,
@@ -330,10 +353,10 @@ async fn exchange_as(
     )
 }
 #[test]
-fn outgoing_late_incremental_and_recovery_values_are_validated_before_disclosure() {
+fn outgoing_late_incremental_fallback_and_recovery_values_are_validated_before_disclosure() {
     block_on(async {
         for role in [SyncRole::Initiator, SyncRole::Responder] {
-            for attack in [12, 13] {
+            for attack in [12, 13, 14] {
                 let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
                 let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
                 for engine in [&left, &right] {
@@ -348,6 +371,8 @@ fn outgoing_late_incremental_and_recovery_values_are_validated_before_disclosure
                 left.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')", &SqlTranslator).await.expect("valid source");
                 if attack == 12 {
                     assert_eq!(exchange(&left, &right, 255).await, (true, true, false));
+                } else if attack == 14 {
+                    right.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'independent safe value')", &SqlTranslator).await.expect("independent snapshot-only prerequisites");
                 }
                 left.translate_and_execute("UPDATE people SET name = 'Grace'", &SqlTranslator)
                     .await
@@ -359,7 +384,7 @@ fn outgoing_late_incremental_and_recovery_values_are_validated_before_disclosure
                     l.expect_err("contaminated exporter rejects")
                         .contains("historical value denied")
                 );
-                if attack == 12 {
+                if attack == 12 || attack == 14 {
                     assert_eq!(
                         sync_manifest_for(&right)
                             .await

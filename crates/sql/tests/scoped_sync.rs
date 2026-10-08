@@ -353,6 +353,126 @@ async fn stable_schema(database: &Database) {
 }
 
 #[tokio::test]
+async fn uuidv5_pre_first_sync_update_preserves_conflicts_in_both_roles_and_scopes() {
+    for scoped in [true, false] {
+        for updated_role in [SyncRole::Initiator, SyncRole::Responder] {
+            let directory = tempfile::tempdir().expect("databases");
+            let paths = [
+                directory.path().join("left.redb"),
+                directory.path().join("right.redb"),
+            ];
+            let left = Database::open(&paths[0]).expect("left");
+            let right = Database::open(&paths[1]).expect("right");
+            for database in [&left, &right] {
+                stable_schema(database).await;
+                database.client().execute_sql(&format!("INSERT INTO stable_resources VALUES (CAST('{STABLE_ID}' AS UUID), 'resource', true)"), None).await.expect("independent same-key insert");
+            }
+            let updated = if updated_role == SyncRole::Initiator {
+                &left
+            } else {
+                &right
+            };
+            updated
+                .client()
+                .execute_sql("UPDATE stable_resources SET selected = false", None)
+                .await
+                .expect("update before first exchange");
+            drop(left);
+            drop(right);
+            let left = Database::open(&paths[0]).expect("reopen left before sync");
+            let right = Database::open(&paths[1]).expect("reopen right before sync");
+            let (mut lt, mut rt) = pair();
+            let config = SessionConfig {
+                max_units_per_frame: 1,
+                ..SessionConfig::default()
+            };
+            let stages = directory.path().join("stages");
+            let (l, r) = tokio::join!(
+                async {
+                    let result = if scoped {
+                        left.synchronize_tables_with_stage_directory_validated_checked(
+                            &mut lt,
+                            &config,
+                            SyncRole::Initiator,
+                            &stages,
+                            &["stable_resources"],
+                            |_, _, _| Ok(()),
+                            || async { Ok(()) },
+                        )
+                        .await
+                    } else {
+                        left.synchronize_checked(&mut lt, &config, SyncRole::Initiator, || async {
+                            Ok(())
+                        })
+                        .await
+                    };
+                    drop(lt);
+                    result
+                },
+                async {
+                    let result = if scoped {
+                        right
+                            .synchronize_tables_with_stage_directory_validated_checked(
+                                &mut rt,
+                                &config,
+                                SyncRole::Responder,
+                                &stages,
+                                &["stable_resources"],
+                                |_, _, _| Ok(()),
+                                || async { Ok(()) },
+                            )
+                            .await
+                    } else {
+                        right
+                            .synchronize_checked(&mut rt, &config, SyncRole::Responder, || async {
+                                Ok(())
+                            })
+                            .await
+                    };
+                    drop(rt);
+                    result
+                }
+            );
+            assert!(
+                l.is_ok() && r.is_ok(),
+                "scoped={scoped}, updated={updated_role:?}: left={l:?}, right={r:?}"
+            );
+            assert!(
+                !stages.exists() || std::fs::read_dir(&stages).expect("stages").next().is_none()
+            );
+            drop(left);
+            drop(right);
+            let id = Uuid::parse_str(STABLE_ID).expect("stable UUIDv5");
+            let key = Row::new(vec![Value::Uuid(id)]);
+            for path in &paths {
+                let database = Database::open(path).expect("reopen converged history");
+                let rows = database
+                    .client()
+                    .execute_sql("SELECT id FROM stable_resources", None)
+                    .await
+                    .expect("stable identity")[0]
+                    .rows
+                    .clone();
+                assert_eq!(rows, vec![key.clone()]);
+                let conflicts = database
+                    .client()
+                    .row_conflict_values("stable_resources", &key)
+                    .await
+                    .expect("reopened conflicts");
+                let values = &conflicts
+                    .iter()
+                    .find(|(column, _)| column == "selected")
+                    .expect("concurrent selection values")
+                    .1;
+                assert!(
+                    values.contains(&Value::Bool(true)) && values.contains(&Value::Bool(false))
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn uuidv5_same_key_partition_conflicts_resolve_and_retry_after_native_reopen() {
     let directory = tempfile::tempdir().expect("databases");
     let path = directory.path().join("stable.redb");

@@ -1445,7 +1445,9 @@ where
                 })
             })
             .await?;
-        let mut exported = 0;
+        let row_changes_start = outbound.changes.len();
+        let row_bytes_start = used_bytes;
+        let mut snapshot_required = false;
         for key in local {
             if remote.changes.iter().any(|candidate| candidate == &key) {
                 continue;
@@ -1503,13 +1505,29 @@ where
                     id: key,
                     payload,
                 });
-                exported += 1;
+            } else {
+                snapshot_required = true;
+                break;
             }
         }
-        if exported == 0 {
-            used_bytes =
-                account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
-            outbound.snapshots.push(unit);
+        if snapshot_required || outbound.changes.len() == row_changes_start {
+            outbound.changes.truncate(row_changes_start);
+            used_bytes = row_bytes_start;
+            let snapshots = recovery_snapshots(
+                engine,
+                Vec::from([SyncSnapshotRequest { table, row }]),
+                max_bytes.saturating_sub(used_bytes),
+                scope,
+            )
+            .await?;
+            for snapshot in snapshots {
+                used_bytes = account_engine_payload(
+                    used_bytes,
+                    state_unit_payload_size(&snapshot),
+                    max_bytes,
+                )?;
+                outbound.snapshots.push(snapshot);
+            }
         }
     }
     outbound.snapshots.sort_unstable_by(|left, right| {
