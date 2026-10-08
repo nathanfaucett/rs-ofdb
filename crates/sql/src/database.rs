@@ -515,6 +515,8 @@ impl Database {
 
     /// Checked full-history sync restricted to predeclared, fixed-schema tables.
     /// Rejects scope/schema/history widening; never projects or sanitizes history.
+    /// Does not validate domain value content; use `Self::synchronize_tables_validated_checked`
+    /// when allowed SQL values can contain forbidden historical content.
     /// Earlier committed applies remain on failure. Discard the transport after
     /// any failure; local stage cleanup does not wait for peer Abort delivery.
     #[cfg(feature = "sync")]
@@ -532,13 +534,20 @@ impl Database {
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
-        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
-        self.synchronize_tables_staged_checked(transport, config, role, &factory, tables, check)
-            .await
+        self.synchronize_tables_validated_checked(
+            transport,
+            config,
+            role,
+            tables,
+            |_, _, _| Ok(()),
+            check,
+        )
+        .await
     }
 
     /// Fixed-schema scoped sync with owner-native temporary stages.
-    /// Uses the same checks and failure/cleanup contract as `Self::synchronize_tables_checked`.
+    /// Uses the same structural-only checks and failure/cleanup contract as
+    /// `Self::synchronize_tables_checked`; domain values are not validated.
     #[cfg(feature = "native-stage")]
     #[allow(clippy::too_many_arguments)]
     pub async fn synchronize_tables_with_stage_directory_checked<T, Q, U>(
@@ -556,20 +565,90 @@ impl Database {
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
+        self.synchronize_tables_with_stage_directory_validated_checked(
+            transport,
+            config,
+            role,
+            directory,
+            tables,
+            |_, _, _| Ok(()),
+            check,
+        )
+        .await
+    }
+
+    /// Scoped sync validating every historical value before export or incoming apply.
+    /// Calls `validate(table, column, value)` for defaults and all stored values,
+    /// including overwritten/deleted and losing-conflict values. It must accept
+    /// every observation; rejection never prunes history. Domain policy is caller-owned.
+    /// Observations may repeat and include implicit Null defaults. Validation errors
+    /// are engine errors and may be sent in Abort: return non-sensitive reasons.
+    /// `check` still authorizes each incoming apply separately; validation is not
+    /// a freshness/revocation guarantee. Retains the failure/cleanup contract of
+    /// `Self::synchronize_tables_checked`.
+    #[cfg(feature = "sync")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_tables_validated_checked<T, V, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        tables: &[&str],
+        validate: V,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        self.synchronize_tables_staged_checked(
+            transport, config, role, &factory, tables, validate, check,
+        )
+        .await
+    }
+
+    /// Historical-value validated scoped sync with owner-native temporary stages.
+    /// Uses the same validation and failure contract as `Self::synchronize_tables_validated_checked`.
+    #[cfg(feature = "native-stage")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_tables_with_stage_directory_validated_checked<T, V, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+        tables: &[&str],
+        validate: V,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
         let factory = crate::FileSyncStageFactory::new(directory);
-        self.synchronize_tables_staged_checked(transport, config, role, &factory, tables, check)
-            .await
+        self.synchronize_tables_staged_checked(
+            transport, config, role, &factory, tables, validate, check,
+        )
+        .await
     }
 
     #[cfg(feature = "sync")]
     #[allow(clippy::too_many_arguments)]
-    async fn synchronize_tables_staged_checked<T, F, Q, U>(
+    async fn synchronize_tables_staged_checked<T, F, V, Q, U>(
         &self,
         transport: &mut T,
         config: &SessionConfig,
         role: SyncRole,
         factory: &F,
         tables: &[&str],
+        validate: V,
         check: Q,
     ) -> Result<SyncResult, SyncError<T::Error>>
     where
@@ -577,21 +656,22 @@ impl Database {
         T::Error: core::fmt::Display,
         F: SyncStageFactory,
         F::Stage: 'static,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => {
-                sync::synchronize_tables_with_stage_factory_checked(
-                    engine, transport, config, role, factory, tables, check,
+                sync::synchronize_tables_with_stage_factory_validated_checked(
+                    engine, transport, config, role, factory, tables, validate, check,
                 )
                 .await
             }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
-                sync::synchronize_tables_with_stage_factory_checked(
-                    engine, transport, config, role, factory, tables, check,
+                sync::synchronize_tables_with_stage_factory_validated_checked(
+                    engine, transport, config, role, factory, tables, validate, check,
                 )
                 .await
             }

@@ -7,16 +7,16 @@ use alloc::{
     vec::Vec,
 };
 
-use futures::{FutureExt, StreamExt, pin_mut};
-
-use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
-use crate::scope::TableScope;
 use engine::{
     ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
     ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
 };
+use futures::{FutureExt, StreamExt, pin_mut};
 use thiserror::Error;
+use value::Value;
 
+use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
+use crate::scope::TableScope;
 use crate::{
     PROTOCOL_VERSION, SyncHello, SyncIncrementalChange, SyncKey, SyncManifest, SyncMessage,
     SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStage, SyncStageFactory,
@@ -177,10 +177,45 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
+    synchronize_tables_with_stage_factory_validated_checked(
+        engine,
+        transport,
+        config,
+        role,
+        stage_factory,
+        tables,
+        |_, _, _| Ok(()),
+        check,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn synchronize_tables_with_stage_factory_validated_checked<K, R, T, F, V, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    tables: &[&str],
+    validate: V,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
-    let scope = TableScope::new(engine, tables).await?;
+    let scope = TableScope::new(engine, tables, &validate).await?;
     let frame =
         postcard::to_allocvec(&scope.names).map_err(|e| SyncError::Protocol(e.to_string()))?;
     if frame.len() > MAX_MESSAGE_BYTES {
@@ -230,7 +265,7 @@ async fn synchronize_scoped<K, R, T, F, Q, U>(
     role: SyncRole,
     stage_factory: &F,
     mut check: Q,
-    mut scope: Option<TableScope>,
+    mut scope: Option<TableScope<'_>>,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
     Q: FnMut() -> U + Send,
@@ -445,7 +480,7 @@ where
 async fn sync_manifest_limited<K, R>(
     engine: &Engine<K, R>,
     max_bytes: usize,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<SyncManifest, EngineError>
 where
     K: Kernel,
@@ -467,7 +502,7 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
-        let scope_for_rows = scope.cloned();
+        let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
         let (table_entries, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
@@ -477,11 +512,12 @@ where
                     pin_mut!(rows);
                     while let Some(row) = rows.next().await {
                         let row = row?;
-                        if scope_for_rows.as_ref().is_some_and(|scope| {
-                            !scope.permits(&SyncKey::Row {
-                                table: table_for_rows.clone(),
-                                row,
-                            })
+                        if scope_for_rows.as_ref().is_some_and(|(names, keys)| {
+                            !names.contains(&table_for_rows)
+                                && !keys.contains(&SyncKey::Row {
+                                    table: table_for_rows.clone(),
+                                    row,
+                                })
                         }) {
                             continue;
                         }
@@ -532,7 +568,7 @@ where
 async fn export_sync_state_limited<K, R>(
     engine: &Engine<K, R>,
     max_bytes: usize,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<Vec<SyncStateUnit>, EngineError>
 where
     K: Kernel,
@@ -554,7 +590,7 @@ where
     tables.dedup();
     for table in tables {
         let table_for_rows = table.clone();
-        let scope_for_rows = scope.cloned();
+        let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
         let (table_units, next_used_bytes) = engine
             .read_transaction(|codec, transaction| {
                 Box::pin(async move {
@@ -564,11 +600,12 @@ where
                     pin_mut!(rows);
                     while let Some(row) = rows.next().await {
                         let row = row?;
-                        if scope_for_rows.as_ref().is_some_and(|scope| {
-                            !scope.permits(&SyncKey::Row {
-                                table: table_for_rows.clone(),
-                                row,
-                            })
+                        if scope_for_rows.as_ref().is_some_and(|(names, keys)| {
+                            !names.contains(&table_for_rows)
+                                && !keys.contains(&SyncKey::Row {
+                                    table: table_for_rows.clone(),
+                                    row,
+                                })
                         }) {
                             continue;
                         }
@@ -1373,7 +1410,7 @@ async fn build_outbound<K, R>(
     remote_manifest: &SyncManifest,
     remote_inventories: BTreeMap<SyncKey, SyncRowInventory>,
     max_bytes: usize,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<Outbound, EngineError>
 where
     K: Kernel,
@@ -1568,7 +1605,7 @@ async fn recovery_snapshots<K, R>(
     engine: &Engine<K, R>,
     requests: Vec<SyncSnapshotRequest>,
     max_bytes: usize,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<Vec<SyncStateUnit>, EngineError>
 where
     K: Kernel,
@@ -1650,7 +1687,7 @@ async fn receive_recovery<K, R, T, F>(
     max_session_bytes: usize,
     stage_factory: &F,
     check: &mut Check<'_>,
-    mut scope: Option<&mut TableScope>,
+    mut scope: Option<&mut TableScope<'_>>,
 ) -> Result<(usize, usize), SyncError<T::Error>>
 where
     K: Kernel,
@@ -2116,7 +2153,7 @@ async fn receive_outbound<K, R, T, F>(
     max_session_bytes: usize,
     stage_factory: &F,
     check: &mut Check<'_>,
-    mut scope: Option<&mut TableScope>,
+    mut scope: Option<&mut TableScope<'_>>,
 ) -> Result<Received, SyncError<T::Error>>
 where
     K: Kernel,
@@ -2355,7 +2392,7 @@ async fn exchange_hello<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     role: SyncRole,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<(), SyncError<T::Error>>
 where
     K: Kernel,
@@ -2401,7 +2438,7 @@ async fn exchange_manifest<K, R, T>(
     engine: &Engine<K, R>,
     transport: &mut T,
     role: SyncRole,
-    scope: Option<&TableScope>,
+    scope: Option<&TableScope<'_>>,
 ) -> Result<SyncManifest, SyncError<T::Error>>
 where
     K: Kernel,

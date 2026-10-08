@@ -1,4 +1,4 @@
-# Fixed-schema checked SQL table sessions — owner follow-ups 09/10
+# Fixed-schema checked SQL table sessions — owner follow-ups 09/10/11
 
 Owner `storage-sync-owners`, `.worktrees/storage-sync`, starting at preserved `25b92516df6ef884d9cdf723da65c64568acdbd0`. Both original ignored tickets were claimed before implementation. No consumer repository was edited or executed. Original dirty `docs/design.md` / `docs/goal.md` remain untouched. Integration is merged into this owner branch before committing/reporting, never the other direction.
 
@@ -58,7 +58,7 @@ Memory and native embedded backends use the same implementation. Both peers must
 - Automerge implements the existing SyncRowCodec's new complete-history inspection capability. Other codecs default to explicit Unsupported instead of claiming safe projection. The inspector walks historical operations, not just current visible keys: root/map-only properties, allowed identities, encoded value types, immutable historical primary key, exact stored column layouts/defaults, schema references, and permitted metadata. It rejects unknown overwritten/deleted properties, nested/sequence/unsupported operations, arbitrary change metadata and uninspectable queued/bundled history. Values, layouts and metadata must consume their entire encoded byte slices: valid prefixes with trailing hidden bytes reject.
 - Fixed schema means catalog history must have immutable attribute values. Compatible losing-definition tombstones remain transferable; table-drop/recreation events, observed-drop histories, changed/dropped index or column definitions and tainted older layouts can reject explicitly. This is **not** a DDL evolution/migration/sanitization API. Existing full-resource DDL behavior is unchanged. A caller cannot declare an old file safe merely by deleting or dropping its secret column.
 - Complete selected histories remain opaque Automerge changes/snapshots; no property pruning, last-writer-wins reinsertion or actor/hash rewrite. Existing apply_change integrity verification is unchanged. Causal inventory order, concurrent values, explicit resolutions, data tombstones, complete catalog/index transactions and dependency recovery are retained.
-- The callback authorizes/cancels **incoming atomic apply operations**, not arbitrary outgoing reads, peer admission, or in-flight interruption of an already authorized atomic operation. Earlier committed operations remain on later failure. These sessions are not whole-session atomic. Source preflight/history validation and strict receiving failures attempt Abort without waiting for peer progress where engine abort delivery applies. Native stages release on local failure/drop. **Discard the transport after any failure**: a canceled send can have partially written a frame. Caller callbacks must report current decisions; no owner timing policy is invented.
+- The pre-apply callback authorizes/cancels **incoming atomic apply operations**, not arbitrary outgoing reads, peer admission, or in-flight interruption of an already authorized atomic operation. Earlier committed operations remain on later failure. These sessions are not whole-session atomic. Source preflight/history validation and strict receiving failures attempt Abort without waiting for peer progress where engine abort delivery applies. Native stages release on local failure/drop. **Discard the transport after any failure**: a canceled send can have partially written a frame. Caller callbacks must report current decisions; no owner timing policy is invented.
 
 ## TDD and focused evidence
 
@@ -108,3 +108,83 @@ Final commands after the strict-decoding fix ran sequentially, each tool `timeou
 Earlier pre-strict-fix broad run also timed out1200s during305/581 (1–304 completed); earlier CRAP exit0 reported207/1060 and2/97. Those exploratory outcomes do not supersede the final measurements. No old05/08 revision pass is reused as qualification of09/10.
 
 Owner-local09/10 acceptance is demonstrated, with incomplete broad powerset/coverage qualification explicitly retained. No production IdP/Management adapter wiring, complete consumer eleven/six-table integration, domain policy acceptance, old mixed-history migration, or registry publication is claimed.
+
+## Follow-up 11 — caller-owned historical value validation
+
+Claimed before implementation at preserved/integrated `2fbac37d26f8dc65b072481cd243a509c7460b43`. Original of02 review Comments35–37 identifies a P1: structurally valid Text can contain forbidden domain content even when overwritten, deleted or losing a conflict.09 only qualified structural scope/types, not domain value confidentiality. The consumer request is linked in original `.scratch/storage-sync/issues/11-historical-value-validation.md`; no of file or consumer test was edited/executed. Of must supply its closed field/JWK/grant rules and qualify its real marker3 transport; this owner change contains no such policy.
+
+### Additive public APIs
+
+```rust
+#[cfg(feature = "sync")]
+pub async fn synchronize_tables_validated_checked<T, V, Q, U>(
+    &self,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    tables: &[&str],
+    validate: V,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send;
+
+#[cfg(feature = "native-stage")]
+pub async fn synchronize_tables_with_stage_directory_validated_checked<T, V, Q, U>(
+    &self,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    directory: impl AsRef<std::path::Path>,
+    tables: &[&str],
+    validate: V,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send;
+```
+
+These are `ofdb_sql::Database` methods using public `ofdb_sql::Value` only. Call `validate(table_name, column_name, decoded_value)` for every historical data-column Put and stored column-layout default, including overwritten/deleted/resolved and active losing-conflict values. Predeclared schema defaults and selected catalog column defaults are validated under the actual selected table/column identity, not internal catalog field names. The closure can borrow caller state; no 'static bound. Implicit Null defaults are observations too. Calls can repeat; their ordering/count is not a contract. Malformed/unknown/unsupported histories continue to reject before apply. Validation returns observations from the existing complete-history traversal (`SyncRowCodec::inspect_history`); no parallel codec, projected import, pruning or rehashing. `InspectedHistory` is only a tuple alias for this owner codec result.
+
+All existing scoped state/delta/recovery validations use this callback, both directions/roles. Initial selected state is validated before Hello/history disclosure; actual later exported deltas and requested recovery snapshots are rechecked against their full history, catching source contamination after preflight. Incoming state/deltas/recovery validate before staging/mutation. Existing async `check` remains separate and runs at incoming atomic apply. No new trait, dependency, feature, timer, domain policy or freshness guarantee. Existing non-validated scoped APIs remain structural-only, now explicitly documented: their internal permissive callback is not domain confidentiality acceptance.
+
+Errors returned by `validate` are `SyncError::Engine` with the callback reason; they may be sent as Abort, so callers must return non-sensitive reasons. `check` denial remains distinct `PreApply`. Callback validation is not a mutable domain-policy freshness/revocation guarantee. Retain prior failure rules: no whole-session atomicity, earlier legitimate commits can remain, stages release locally without peer-progress dependency, discard failed transports. A terminal sending responder may finish before learning the receiver's rejection; no end-to-end success acknowledgment guarantee was added. An initial test incorrectly required both peers always fail, then was corrected to require the receiving callback's exact denial and state assertions, not an incidental sender status.
+
+### 11 focused/TDD evidence
+
+- RED: `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features redb,in-memory,native-stage,sql --test scoped_sync historical_value_denial -- --nocapture` failed on both missing validated public methods. GREEN native source/reopen regression denies generic forbidden Text after overwrite, row deletion and conflict resolution, in both roles, leaves source/peer state unchanged, and observes no forbidden bytes in any emitted frame. Positive public validated native/memory transfer preserves scope/history and native reopen.
+- Native receiving regression uses a structurally permissive peer, validates full-state and incremental histories in both roles, and makes Abort send permanently pending after value denial. Exact state stays unchanged across native reopen; all created stage files disappear without timers.
+- Public default regression rejects a forbidden Text schema default before any transport I/O and proves a borrowed (non-static) validator works.
+- Owner hostile wire regression changes frames after sender validation: overwritten/deleted known Text, an active losing conflict whose visible value is asserted safe, a real encoded incremental delta with matching ID/hash, and requested recovery state. Each of five scenarios runs both roles and requires the receiver's actual callback reason, not an unrelated integrity error. Rejected imports remain absent; recovery retains earlier authorized catalog commits and a valid local row.
+- Separate owner late-source mutation test changes persisted history after preflight at Inventory/RequestSnapshots. Both roles reject before disclosing actual incremental/recovery content; frame assertions prohibit forbidden bytes. Four paths per run. Existing seven structural hostile paths and six malformed/unknown/trailing encoding kernel fixtures remain active/passing.
+
+| Exact final command                                                                                                                                                                                                                        | Outcome                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features redb,in-memory,native-stage,sql --test scoped_sync --test conflicts --test client --test facade_sync --test cluster_sync --test local_sql`                                      | **46 passed**:9 scoped+5 conflicts+5 client+7 facade+9 cluster+11 local SQL                                                          |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-engine-automerge --all-targets`                                                                                                                                                            | **69 passed**:1 unit+49 kernel+6 realtime+3 scoped-wire+10 session                                                                   |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-sync --all-targets --all-features`                                                                                                                                                         | **32 passed**                                                                                                                        |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features redb,in-memory,native-stage,sql --test scoped_sync --test conflicts`                                                                                                            | **10/10 repeats,140 tests passed**                                                                                                   |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql-engine-automerge --test scoped_session`                                                                                                                                                    | **10/10 repeats,30 tests passed**, each suite exercises21 wire paths                                                                 |
+| `cargo check -p ofdb-sql --no-default-features`; same with `--features remote`, `--features sync`, `--features native-stage`; `cargo check -p ofdb-sql-engine --no-default-features`; `cargo check -p ofdb-sql-sync --no-default-features` | All passed; bare sync/native-stage retain inherited unused from_engine warning                                                       |
+| `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features in-memory,sync,sql --test conflicts`                                                                                                                                            | 1 passed, no native runtime                                                                                                          |
+| `cargo clippy --workspace --all-targets --all-features`; `cargo fmt --all -- --check`; `git diff --check`                                                                                                                                  | Passed; two inherited KV CLI conversion warnings only. Initial new tuple type-complexity warning removed with InspectedHistory alias |
+
+Repeat subprocesses were sequential, individually bounded60s, total tool300s. Logs `target/storage-sync-11-{facade,codec,sync,repeats}.log`. After final documentation and integration merge (Already up to date at2fbac37d), the exact public scoped/conflict command passed14 tests again and the unfiltered owner scoped_session command passed3 tests again; formatting/diff checks passed.
+
+### 11 bounded broad outcomes (not full qualification)
+
+Commands ran sequentially with tool `timeout_ms:300000` and process limit290s (`timeout --kill-after=5s 290s`), so timeout completion is recorded as exit124:
+
+- `RUST_MIN_STACK=16777216 timeout --kill-after=5s 290s cargo hack test --feature-powerset --all-targets`: **exit124**, compiling261/581 (`default,in-memory,native-stage,sql` on SQL),1–260 completed, no observed test/compiler failure. Log `target/storage-sync-11-powerset.log`. NOT full581 pass.
+- `RUST_MIN_STACK=16777216 timeout --kill-after=5s 290s cargo hack test -p ofdb-sql-sync -p ofdb-sql-engine-automerge --feature-powerset --all-targets`: **exit0,5/5 combinations complete** (Automerge owner1; sync no features, iroh+native-stage, iroh, native-stage). Log `target/storage-sync-11-owner-powerset.log`. Does not substitute for SQL facade/workspace powerset.
+- `timeout --kill-after=5s 290s just crap`: **exit124**, compiling coverage target28/28, analyzer never ran. Cached retry, same exact command, also **exit124**, compiling target27/28. Logs `target/storage-sync-11-crap.log` and `target/storage-sync-11-crap-retry.log`. No new complexity/aggregate coverage score or gate result is claimed;09's historical scores are not this revision's qualification.
+
+11 owner-local callback/API/history/cleanup acceptance is demonstrated. Full workspace powerset and CRAP remain incomplete, explicitly recorded rather than silently passed. Consumer closed-value rules, real marker3 malicious JWK/grant fixtures and final of02 acceptance remain its owner's responsibility;06 remains downstream.

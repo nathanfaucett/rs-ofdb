@@ -18,7 +18,7 @@ use engine::{
     KernelTransaction, RowCodec, Uuid, catalog_table_for_storage,
 };
 use futures::{Stream, StreamExt, pin_mut};
-use sync::{StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
+use sync::{InspectedHistory, StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
 use value::{Row, Value, ValueType};
 
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
@@ -1021,7 +1021,7 @@ where
         payload: &[u8],
         metadata: &[u8],
         columns: &[(String, ValueType, Value, bool)],
-    ) -> EngineResult<(Row, Vec<Uuid>)> {
+    ) -> EngineResult<InspectedHistory> {
         if !metadata.is_empty() {
             let metadata: RowMetadata = Self::scoped_decode(metadata)?;
             if metadata.version != 1
@@ -1072,6 +1072,7 @@ where
         let value = Self::decode_row(&document, &layout)?;
         let catalog = catalog_table_for_storage(table).is_some();
         let mut schema_ids = Vec::new();
+        let mut observations = Vec::new();
         for change in changes {
             if !change.extra_bytes().is_empty() || change.message().is_some() {
                 return Err(EngineError::custom("Unsupported scoped change metadata"));
@@ -1111,6 +1112,7 @@ where
                                     "Historical scoped layout differs from local schema",
                                 ));
                             }
+                            observations.extend(stored);
                         } else if name == DOCUMENT_SCHEMA {
                             schema_ids.push(Uuid::from_slice(&bytes).map_err(EngineError::custom)?);
                         } else {
@@ -1130,6 +1132,7 @@ where
                                     "Invalid historical scoped value type",
                                 ));
                             }
+                            observations.push((name.to_string(), decoded.clone()));
                             if catalog && value.values[index] != decoded {
                                 return Err(EngineError::custom(
                                     "Scoped catalog history is not immutable",
@@ -1147,7 +1150,7 @@ where
         }
         schema_ids.sort_unstable();
         schema_ids.dedup();
-        Ok((value, schema_ids))
+        Ok((value, schema_ids, observations))
     }
 
     fn row_ids<'a>(

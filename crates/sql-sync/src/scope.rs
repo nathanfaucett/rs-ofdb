@@ -19,14 +19,15 @@ type Columns = Vec<(String, ValueType, Value, bool)>;
 type Index = (String, bool, Vec<String>);
 
 #[derive(Clone)]
-pub(crate) struct TableScope {
+pub(crate) struct TableScope<'a> {
+    validate_value: &'a (dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync),
     pub names: Vec<String>,
     columns: BTreeMap<String, Columns>,
     indices: BTreeMap<String, Index>,
     tables: BTreeMap<Uuid, String>,
     fields: BTreeMap<Uuid, (String, String)>,
     index_ids: BTreeMap<Uuid, String>,
-    keys: BTreeSet<SyncKey>,
+    pub keys: BTreeSet<SyncKey>,
 }
 
 fn rejected() -> EngineError {
@@ -45,13 +46,18 @@ fn uuid(row: &Row, index: usize) -> EngineResult<Uuid> {
         .ok_or_else(rejected)
 }
 
-impl TableScope {
-    pub async fn new<K, R>(engine: &Engine<K, R>, names: &[&str]) -> EngineResult<Self>
+impl<'a> TableScope<'a> {
+    pub async fn new<K, R>(
+        engine: &Engine<K, R>,
+        names: &[&str],
+        validate_value: &'a (dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync),
+    ) -> EngineResult<Self>
     where
         K: Kernel,
         R: SyncRowCodec<K::Transaction>,
     {
         let mut scope = Self {
+            validate_value,
             names: Vec::new(),
             columns: BTreeMap::new(),
             indices: BTreeMap::new(),
@@ -79,6 +85,9 @@ impl TableScope {
                     .map(|c| (c.name, c.r#type, c.default, c.primary_key))
                     .collect(),
             );
+            for (column, _, default, _) in &scope.columns[*name] {
+                (validate_value)(name, column, default).map_err(EngineError::custom)?;
+            }
             scope.names.push(name.to_string());
         }
         scope.names.sort();
@@ -175,6 +184,7 @@ impl TableScope {
                 {
                     return Err(rejected());
                 }
+                (self.validate_value)(&table, &name, &column.2).map_err(EngineError::custom)?;
                 self.fields.insert(id, (table, name));
             }
             ENGINE_INDICES_STORAGE => {
@@ -245,7 +255,7 @@ impl TableScope {
         let id = *row;
         let payload = unit.state.clone();
         let metadata = unit.metadata.clone();
-        let (value, schemas) = engine
+        let (value, schemas, observations) = engine
             .read_transaction(move |codec, tx| {
                 Box::pin(async move {
                     codec
@@ -256,8 +266,13 @@ impl TableScope {
             .await?;
         if catalog_table_for_storage(table).is_some() {
             self.admit_catalog(table, *row, &value)?;
-        } else if schemas.iter().any(|id| self.tables.get(id) != Some(table)) {
-            return Err(rejected());
+        } else {
+            if schemas.iter().any(|id| self.tables.get(id) != Some(table)) {
+                return Err(rejected());
+            }
+            for (column, value) in observations {
+                (self.validate_value)(table, &column, &value).map_err(EngineError::custom)?;
+            }
         }
         Ok(())
     }

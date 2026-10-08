@@ -5,18 +5,19 @@
     feature = "sql"
 ))]
 
-use ofdb_sql::{Database, Row, SessionConfig, SyncRole, SyncTransport, Uuid, Value};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
+use ofdb_sql::{Database, Row, SessionConfig, SyncRole, SyncTransport, Uuid, Value};
 use tokio::sync::mpsc;
 
 struct Channel {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     receiver: mpsc::UnboundedReceiver<Vec<u8>>,
     pending_send: Option<Arc<AtomicBool>>,
+    sent: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
 }
 impl SyncTransport for Channel {
     type Error = &'static str;
@@ -27,6 +28,9 @@ impl SyncTransport for Channel {
             .is_some_and(|flag| flag.load(Ordering::SeqCst))
         {
             return core::future::pending().await;
+        }
+        if let Some(sent) = &self.sent {
+            sent.lock().expect("sent frames").push(frame.clone());
         }
         self.sender.send(frame).map_err(|_| "closed")
     }
@@ -42,11 +46,13 @@ fn pair() -> (Channel, Channel) {
             sender: a,
             receiver: br,
             pending_send: None,
+            sent: None,
         },
         Channel {
             sender: b,
             receiver: ar,
             pending_send: None,
+            sent: None,
         },
     )
 }
@@ -171,19 +177,25 @@ async fn scoped_native_sessions_preserve_local_tables_and_sync_full_selected_his
     let config = SessionConfig::default();
     let (mut lt, mut rt) = pair();
     let (l, r) = tokio::join!(
-        left.synchronize_tables_with_stage_directory_checked(
+        left.synchronize_tables_with_stage_directory_validated_checked(
             &mut lt,
             &config,
             SyncRole::Initiator,
             directory.path().join("stages"),
             &["public_rows"],
+            |table, column, _| {
+                assert_eq!(table, "public_rows");
+                assert!(["id", "name"].contains(&column));
+                Ok(())
+            },
             || async { Ok(()) }
         ),
-        right.synchronize_tables_checked(
+        right.synchronize_tables_validated_checked(
             &mut rt,
             &config,
             SyncRole::Responder,
             &["public_rows"],
+            |_, _, _| Ok(()),
             || async { Ok(()) }
         )
     );
@@ -332,6 +344,287 @@ async fn overwritten_secret_history_is_rejected_not_sanitized() {
         right.export_sync_state().await.expect("receiver unchanged"),
         before
     );
+}
+
+#[tokio::test]
+async fn incoming_historical_value_denial_cleans_native_stages_without_abort_progress() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        for incremental in [false, true] {
+            let directory = tempfile::tempdir().expect("databases");
+            let path = directory.path().join("receiver.redb");
+            let source = Database::in_memory();
+            let receiver = Database::open(&path).expect("receiver");
+            schema(&source).await;
+            schema(&receiver).await;
+            source.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'safe')", None).await.expect("initial row");
+            if incremental {
+                let (l, r) = exchange(&source, &receiver, &["public_rows"], &["public_rows"]).await;
+                l.expect("initial source");
+                r.expect("initial receiver");
+            }
+            source.client().execute_sql("UPDATE public_rows SET name = 'forbidden historical text'; UPDATE public_rows SET name = 'safe overwritten value'", None).await.expect("same-type forbidden history");
+            let before = receiver.export_sync_state().await.expect("before denial");
+            let denied = Arc::new(AtomicBool::new(false));
+            let (mut lt, mut rt) = pair();
+            rt.pending_send = Some(denied.clone());
+            let config = SessionConfig {
+                max_units_per_frame: 1,
+                ..SessionConfig::default()
+            };
+            let other = if role == SyncRole::Initiator {
+                SyncRole::Responder
+            } else {
+                SyncRole::Initiator
+            };
+            let stages = directory.path().join("stages");
+            let (_, r) = tokio::join!(
+                async {
+                    let result = source
+                        .synchronize_tables_checked(
+                            &mut lt,
+                            &config,
+                            other,
+                            &["public_rows"],
+                            || async { Ok(()) },
+                        )
+                        .await;
+                    drop(lt);
+                    result
+                },
+                async {
+                    let result = receiver
+                        .synchronize_tables_with_stage_directory_validated_checked(
+                            &mut rt,
+                            &config,
+                            role,
+                            &stages,
+                            &["public_rows"],
+                            |table, column, value| {
+                                if value == &Value::from("forbidden historical text") {
+                                    assert_eq!((table, column), ("public_rows", "name"));
+                                    denied.store(true, Ordering::SeqCst);
+                                    Err("historical value denied".into())
+                                } else {
+                                    Ok(())
+                                }
+                            },
+                            || async { Ok(()) },
+                        )
+                        .await;
+                    drop(rt);
+                    result
+                }
+            );
+            assert!(
+                r.expect_err("historical value rejected before mutation")
+                    .to_string()
+                    .contains("historical value denied")
+            );
+            assert!(denied.load(Ordering::SeqCst));
+            assert_eq!(
+                receiver.export_sync_state().await.expect("unchanged"),
+                before
+            );
+            assert_eq!(
+                std::fs::read_dir(&stages).expect("created stages").count(),
+                0
+            );
+            drop(receiver);
+            let receiver = Database::open(&path).expect("reopen denied receiver");
+            assert_eq!(
+                receiver
+                    .export_sync_state()
+                    .await
+                    .expect("unchanged after reopen"),
+                before
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn historical_schema_default_is_validated_before_any_transport_io() {
+    let source = Database::in_memory();
+    source.client().execute_sql("CREATE TABLE public_rows (id UUID PRIMARY KEY, name TEXT DEFAULT 'forbidden historical text')", None).await.expect("schema default");
+    let (mut lt, rt) = pair();
+    drop(rt);
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    lt.sent = Some(sent.clone());
+    let config = SessionConfig::default();
+    let forbidden = Value::from("forbidden historical text");
+    let error = source
+        .synchronize_tables_validated_checked(
+            &mut lt,
+            &config,
+            SyncRole::Initiator,
+            &["public_rows"],
+            |table, column, value| {
+                if value == &forbidden {
+                    assert_eq!((table, column), ("public_rows", "name"));
+                    Err("default value denied".into())
+                } else {
+                    Ok(())
+                }
+            },
+            || async { Ok(()) },
+        )
+        .await
+        .expect_err("forbidden default");
+    assert!(error.to_string().contains("default value denied"));
+    assert!(sent.lock().expect("frames").is_empty());
+}
+
+#[tokio::test]
+async fn historical_value_denial_prevents_disclosure_after_overwrite_delete_and_conflict() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        for variant in 0..3 {
+            let directory = tempfile::tempdir().expect("databases");
+            let path = directory.path().join("source.redb");
+            let source = Database::open(&path).expect("source");
+            let peer = Database::in_memory();
+            schema(&source).await;
+            schema(&peer).await;
+            source.client().execute_sql("INSERT INTO public_rows VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'safe')", None).await.expect("initial row");
+            if variant == 2 {
+                let (l, r) = exchange(&source, &peer, &["public_rows"], &["public_rows"]).await;
+                l.expect("initial source");
+                r.expect("initial peer");
+                peer.client()
+                    .execute_sql("UPDATE public_rows SET name = 'safe conflict'", None)
+                    .await
+                    .expect("concurrent safe value");
+            }
+            source
+                .client()
+                .execute_sql(
+                    "UPDATE public_rows SET name = 'forbidden historical text'",
+                    None,
+                )
+                .await
+                .expect("forbidden value is valid SQL Text");
+            if variant == 2 {
+                let (l, r) = exchange(&source, &peer, &["public_rows"], &["public_rows"]).await;
+                l.expect("structural-only source");
+                r.expect("structural-only peer");
+                let key = Row::new(vec![Value::Uuid(
+                    Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("UUID"),
+                )]);
+                assert!(
+                    source
+                        .client()
+                        .row_conflict_values("public_rows", &key)
+                        .await
+                        .expect("conflicts")[0]
+                        .1
+                        .contains(&Value::from("forbidden historical text"))
+                );
+                source
+                    .client()
+                    .resolve_row(
+                        "public_rows",
+                        &key,
+                        vec![("name".into(), Value::from("safe conflict"))],
+                    )
+                    .await
+                    .expect("resolve away forbidden conflict");
+            } else {
+                source
+                    .client()
+                    .execute_sql(
+                        if variant == 0 {
+                            "UPDATE public_rows SET name = 'safe'"
+                        } else {
+                            "DELETE FROM public_rows"
+                        },
+                        None,
+                    )
+                    .await
+                    .expect("hide forbidden value");
+            }
+            drop(source);
+            let source = Database::open(&path).expect("reopen history");
+            let peer = Database::in_memory();
+            schema(&peer).await;
+            let peer_before = peer.export_sync_state().await.expect("peer before");
+            let before = source.export_sync_state().await.expect("source before");
+            let rejected = Arc::new(AtomicBool::new(false));
+            let stages = directory.path().join("stages");
+            let (mut lt, mut rt) = pair();
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            lt.sent = Some(sent.clone());
+            let config = SessionConfig::default();
+            let other = if role == SyncRole::Initiator {
+                SyncRole::Responder
+            } else {
+                SyncRole::Initiator
+            };
+            let (l, _) = tokio::join!(
+                async {
+                    let result = source
+                        .synchronize_tables_with_stage_directory_validated_checked(
+                            &mut lt,
+                            &config,
+                            role,
+                            &stages,
+                            &["public_rows"],
+                            |table, column, value| {
+                                if value == &Value::from("forbidden historical text") {
+                                    assert_eq!((table, column), ("public_rows", "name"));
+                                    rejected.store(true, Ordering::SeqCst);
+                                    Err("historical value denied".into())
+                                } else {
+                                    Ok(())
+                                }
+                            },
+                            || async { Ok(()) },
+                        )
+                        .await;
+                    drop(lt);
+                    result
+                },
+                async {
+                    let result = peer
+                        .synchronize_tables_validated_checked(
+                            &mut rt,
+                            &config,
+                            other,
+                            &["public_rows"],
+                            |_, _, _| Ok(()),
+                            || async { Ok(()) },
+                        )
+                        .await;
+                    drop(rt);
+                    result
+                }
+            );
+            assert!(
+                l.expect_err("historical Text must reject")
+                    .to_string()
+                    .contains("historical value denied")
+            );
+            assert!(rejected.load(Ordering::SeqCst));
+            assert!(
+                sent.lock().expect("frames").iter().all(|frame| !frame
+                    .windows(b"forbidden historical text".len())
+                    .any(|bytes| bytes == b"forbidden historical text")),
+                "no forbidden bytes disclosed"
+            );
+            assert_eq!(
+                peer.export_sync_state().await.expect("no peer mutation"),
+                peer_before
+            );
+            assert_eq!(
+                source
+                    .export_sync_state()
+                    .await
+                    .expect("no source mutation"),
+                before
+            );
+            if stages.exists() {
+                assert_eq!(std::fs::read_dir(&stages).expect("stages").count(), 0);
+            }
+        }
+    }
 }
 
 #[tokio::test]

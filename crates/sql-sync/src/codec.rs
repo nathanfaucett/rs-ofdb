@@ -5,11 +5,15 @@ use value::{Row, Value, ValueType};
 
 use crate::{StateDigest, SyncChangeId, SyncStateUnit};
 
+pub type InspectedHistory = (Row, Vec<Uuid>, Vec<(String, Value)>);
+
 pub trait SyncRowCodec<T>: RowCodec<T>
 where
     T: KernelTransaction,
 {
     /// Inspects every historical operation, including overwritten/deleted properties.
+    /// Returns the merged row, schema references, and every historical column value
+    /// (including layout defaults, overwritten/deleted and losing-conflict values).
     /// Codecs without complete-history validation must reject scoped sessions.
     fn inspect_history(
         &self,
@@ -19,7 +23,7 @@ where
         payload: &[u8],
         metadata: &[u8],
         columns: &[(String, ValueType, Value, bool)],
-    ) -> impl Future<Output = EngineResult<(Row, Vec<Uuid>)>> + Send {
+    ) -> impl Future<Output = EngineResult<InspectedHistory>> + Send {
         let _ = (transaction, table, row, payload, metadata, columns);
         async {
             Err(engine::EngineError::Unsupported(
