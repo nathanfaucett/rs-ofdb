@@ -521,6 +521,10 @@ impl Database {
 
     /// Checked full-history sync restricted to predeclared, fixed-schema tables.
     /// Rejects scope/schema/history widening; never projects or sanitizes history.
+    /// `config.direction` constrains publication/apply independently of turn role:
+    /// SendOnly/ReceiveOnly peers must be complementary. ReceiveOnly publishes no
+    /// history (including catalog/index/recovery), but exchanges real progress metadata.
+    /// Both scoped peers must support the direction-bearing scope handshake.
     /// Does not validate domain value content; use `Self::synchronize_tables_validated_checked`
     /// when allowed SQL values can contain forbidden historical content.
     /// Earlier committed applies remain on failure. Discard the transport after
@@ -583,7 +587,8 @@ impl Database {
         .await
     }
 
-    /// Scoped sync validating every historical value before export or incoming apply.
+    /// Scoped sync validating every historical value before permitted export or incoming apply.
+    /// Direction constraints and progress metadata follow `Self::synchronize_tables_checked`.
     /// Calls `validate(table, column, value)` for defaults and all stored values,
     /// including overwritten/deleted and losing-conflict values. It must accept
     /// every observation; rejection never prunes history. Domain policy is caller-owned.
@@ -646,6 +651,8 @@ impl Database {
     }
 
     /// Scoped sync with synchronous, transaction-consistent complete candidate validation.
+    /// Direction constraints follow `Self::synchronize_tables_checked`; ReceiveOnly
+    /// does not run outgoing candidate/history validation or publish reverse history.
     /// The callback observes selected related rows and conflicts, after each incoming
     /// batch merges but before commit, and actual source export reads before disclosure.
     /// Do not block, reenter this database, or perform network IO in the callback.

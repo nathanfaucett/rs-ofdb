@@ -11,8 +11,8 @@ use std::sync::{
 };
 
 use ofdb_sql::{
-    Database, Row, SessionConfig, SyncCandidateView, SyncKey, SyncRole, SyncTransport,
-    SyncValidationDirection, Uuid, Value,
+    Database, Row, SessionConfig, SyncCandidateView, SyncDirection, SyncKey, SyncRole,
+    SyncTransport, SyncValidationDirection, Uuid, Value,
 };
 use tokio::sync::mpsc;
 
@@ -372,6 +372,414 @@ async fn candidate_schema_reorder_keeps_row_and_conflict_labels_exact_in_both_ro
                 }
             }
         }
+    }
+}
+
+async fn directional_schema(database: &Database) {
+    database.client().execute_sql("CREATE TABLE records (id UUID PRIMARY KEY, name TEXT, payload TEXT); CREATE UNIQUE INDEX record_names ON records(name); CREATE TABLE local_private (id UUID PRIMARY KEY, secret TEXT)", None).await.expect("fixed directional schema and index");
+}
+
+async fn directional_exchange<Q, U>(
+    source: &Database,
+    receiver: &Database,
+    root: &std::path::Path,
+    receiver_role: SyncRole,
+    applied: &std::sync::atomic::AtomicUsize,
+    check: Q,
+) -> (
+    Result<ofdb_sql::SyncResult, String>,
+    Result<ofdb_sql::SyncResult, String>,
+)
+where
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+{
+    let (mut st, mut rt) = pair();
+    let source_role = if receiver_role == SyncRole::Initiator {
+        SyncRole::Responder
+    } else {
+        SyncRole::Initiator
+    };
+    let source_config = SessionConfig {
+        direction: SyncDirection::SendOnly,
+        max_units_per_frame: 1,
+        ..SessionConfig::default()
+    };
+    let receiver_config = SessionConfig {
+        direction: SyncDirection::ReceiveOnly,
+        ..source_config.clone()
+    };
+    let history = |_: &str, _: &str, value: &Value| {
+        if value == &Value::from("LOCAL_ONLY_VALUE") {
+            Err("local history must not be published".into())
+        } else {
+            Ok(())
+        }
+    };
+    tokio::join!(
+        async {
+            let result = source
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut st,
+                    &source_config,
+                    source_role,
+                    root,
+                    &["records"],
+                    history,
+                    |view| {
+                        if view.direction == SyncValidationDirection::Incoming {
+                            Err("source must not import reverse candidates".into())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    || async { Ok(()) },
+                )
+                .await
+                .map_err(|e| e.to_string());
+            drop(st);
+            result
+        },
+        async {
+            let result = receiver
+                .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                    &mut rt,
+                    &receiver_config,
+                    receiver_role,
+                    root,
+                    &["records"],
+                    history,
+                    |view| {
+                        if view.direction == SyncValidationDirection::Outgoing {
+                            return Err("receiver must not publish candidates".into());
+                        }
+                        applied.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                    check,
+                )
+                .await
+                .map_err(|e| e.to_string());
+            drop(rt);
+            result
+        }
+    )
+}
+
+#[tokio::test]
+async fn directional_native_reopen_retry_and_source_updates_never_reverse_histories() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let root = tempfile::tempdir().expect("databases");
+        let source = Database::open(root.path().join("source.redb")).expect("source");
+        let receiver_path = root.path().join("receiver.redb");
+        let receiver = Database::open(&receiver_path).expect("receiver");
+        for database in [&source, &receiver] {
+            directional_schema(database).await;
+        }
+        source
+            .client()
+            .execute_sql(
+                &format!(
+                    "INSERT INTO records VALUES (CAST('{STABLE_ID}' AS UUID), 'source', 'initial')"
+                ),
+                None,
+            )
+            .await
+            .expect("source row");
+        let before = source.sync_manifest().await.expect("source before");
+        let applied = std::sync::atomic::AtomicUsize::new(0);
+        let stages = root.path().join("stages");
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        let initial_s = s.expect("initial source");
+        let initial_r = r.expect("initial import");
+        drop(receiver);
+        let receiver = Database::open(&receiver_path).expect("native completed import reopen");
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        let s = s.expect("exact source retry");
+        let r = r.expect("retained receiver progress must not trigger outgoing preflight");
+        for result in [initial_s, s] {
+            assert_eq!(
+                result.received_units + result.received_changes,
+                0,
+                "source imports no reverse catalog/index/data"
+            );
+        }
+        for result in [initial_r, r] {
+            assert_eq!(
+                result.sent_units + result.sent_changes,
+                0,
+                "receiver publishes no catalog/index/data"
+            );
+        }
+        assert_eq!(
+            source.sync_manifest().await.expect("source unchanged"),
+            before
+        );
+        assert!(receiver.client().execute_sql("INSERT INTO records VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abe' AS UUID), 'source', 'duplicate')", None).await.is_err(), "forward catalog/index completeness preserves the unique constraint");
+        receiver.client().execute_sql("INSERT INTO records VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abf' AS UUID), 'receiver-local', 'LOCAL_ONLY_VALUE'); INSERT INTO local_private VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abf' AS UUID), 'LOCAL_ONLY_VALUE')", None).await.expect("unrelated local mutations must not export");
+        source.client().execute_sql(&format!("UPDATE records SET name = 'updated-source' WHERE id = CAST('{STABLE_ID}' AS UUID); INSERT INTO records VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'later-source', 'new')"), None).await.expect("later source histories");
+        let updated = source.sync_manifest().await.expect("updated source");
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        assert_eq!(s.expect("source update sync").received_units, 0);
+        assert_eq!(r.expect("resume imports source updates").sent_units, 0);
+        assert_eq!(
+            source.sync_manifest().await.expect("no reverse mutations"),
+            updated
+        );
+        assert_eq!(
+            source
+                .client()
+                .execute_sql("SELECT id FROM records", None)
+                .await
+                .expect("source rows")[0]
+                .rows
+                .len(),
+            2
+        );
+        assert_eq!(
+            receiver
+                .client()
+                .execute_sql("SELECT id FROM records", None)
+                .await
+                .expect("receiver retains local and imported rows")[0]
+                .rows
+                .len(),
+            3
+        );
+        assert_eq!(
+            receiver
+                .client()
+                .execute_sql(
+                    &format!("SELECT name FROM records WHERE id = CAST('{STABLE_ID}' AS UUID)"),
+                    None
+                )
+                .await
+                .expect("actual source update")[0]
+                .rows,
+            vec![Row::new(vec![Value::from("updated-source")])]
+        );
+        receiver
+            .client()
+            .execute_sql(
+                &format!("DELETE FROM records WHERE id = CAST('{STABLE_ID}' AS UUID)"),
+                None,
+            )
+            .await
+            .expect("learned receiver tombstone");
+        drop(receiver);
+        let receiver = Database::open(&receiver_path).expect("reopen learned deletion");
+        source.client().execute_sql(&format!("UPDATE records SET payload = 'later stale source update' WHERE id = CAST('{STABLE_ID}' AS UUID)"), None).await.expect("source unaware of receiver deletion");
+        let updated = source.sync_manifest().await.expect("live source history");
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        s.expect("source exports but never learns reverse deletion");
+        r.expect("receiver retains tombstone");
+        assert_eq!(
+            source.sync_manifest().await.expect("source not mutated"),
+            updated
+        );
+        assert!(
+            receiver
+                .client()
+                .execute_sql(
+                    &format!("SELECT id FROM records WHERE id = CAST('{STABLE_ID}' AS UUID)"),
+                    None
+                )
+                .await
+                .expect("no resurrection")[0]
+                .rows
+                .is_empty()
+        );
+        assert!(std::fs::read_dir(&stages).expect("stages").next().is_none());
+    }
+}
+
+#[tokio::test]
+async fn directional_native_conflicts_survive_reopen_without_reverse_convergence() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let root = tempfile::tempdir().expect("databases");
+        let source = Database::open(root.path().join("source.redb")).expect("source");
+        let path = root.path().join("receiver.redb");
+        let receiver = Database::open(&path).expect("receiver");
+        for (database, label) in [(&source, "source"), (&receiver, "receiver")] {
+            directional_schema(database).await;
+            database.client().execute_sql(&format!("INSERT INTO records VALUES (CAST('{STABLE_ID}' AS UUID), '{label}', '{label}')"), None).await.expect("independent same-key history");
+        }
+        let before = source.sync_manifest().await.expect("source history");
+        let stages = root.path().join("stages");
+        let applied = std::sync::atomic::AtomicUsize::new(0);
+        let key = Row::new(vec![Value::Uuid(
+            Uuid::parse_str(STABLE_ID).expect("stable key"),
+        )]);
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        s.expect("source exports independent history");
+        r.expect("receiver merges conflicts");
+        drop(receiver);
+        let receiver = Database::open(&path).expect("reopen conflicts");
+        for _ in 0..2 {
+            let conflicts = receiver
+                .client()
+                .row_conflict_values("records", &key)
+                .await
+                .expect("native named conflicts");
+            for column in ["name", "payload"] {
+                let values = &conflicts
+                    .iter()
+                    .find(|(name, _)| name == column)
+                    .expect("conflicted column")
+                    .1;
+                assert_eq!(values.len(), 2);
+                assert!(values.contains(&Value::from("source")));
+                assert!(values.contains(&Value::from("receiver")));
+            }
+            assert!(
+                source
+                    .client()
+                    .row_conflict_values("records", &key)
+                    .await
+                    .expect("source conflict-free")
+                    .is_empty()
+            );
+            let (s, r) =
+                directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+                    Ok(())
+                })
+                .await;
+            assert_eq!(s.expect("source retry").received_units, 0);
+            assert_eq!(r.expect("conflicted receiver retry").sent_units, 0);
+            assert_eq!(
+                source.sync_manifest().await.expect("source unchanged"),
+                before
+            );
+        }
+        assert!(std::fs::read_dir(&stages).expect("stages").next().is_none());
+    }
+}
+
+#[tokio::test]
+async fn directional_unscoped_public_session_rejects_without_transport_progress() {
+    let database = Database::in_memory();
+    let (mut transport, _peer) = pair();
+    for direction in [SyncDirection::SendOnly, SyncDirection::ReceiveOnly] {
+        let result = database
+            .synchronize_checked(
+                &mut transport,
+                &SessionConfig {
+                    direction,
+                    ..SessionConfig::default()
+                },
+                SyncRole::Initiator,
+                || async { Ok(()) },
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ofdb_sql::SyncError::InvalidConfiguration)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn directional_partial_native_apply_cancellation_reopens_and_resumes_exactly() {
+    for role in [SyncRole::Initiator, SyncRole::Responder] {
+        let root = tempfile::tempdir().expect("databases");
+        let source = Database::open(root.path().join("source.redb")).expect("source");
+        let receiver_path = root.path().join("receiver.redb");
+        let receiver = Database::open(&receiver_path).expect("receiver");
+        for database in [&source, &receiver] {
+            directional_schema(database).await;
+        }
+        let mut seed = 19_u64;
+        let payload = (0..950_000)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                char::from(b'a' + (seed % 26) as u8)
+            })
+            .collect::<String>();
+        for (id, name) in [
+            (STABLE_ID, "one"),
+            ("018f0f8e-7b6d-7c4a-8f12-123456789abc", "two"),
+        ] {
+            source
+                .client()
+                .execute_sql(
+                    &format!(
+                        "INSERT INTO records VALUES (CAST('{id}' AS UUID), '{name}', '{payload}')"
+                    ),
+                    None,
+                )
+                .await
+                .expect("source byte batches");
+        }
+        let before = source.sync_manifest().await.expect("source before");
+        let applied = std::sync::atomic::AtomicUsize::new(0);
+        let stages = root.path().join("stages");
+        let (_, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            if applied.load(Ordering::SeqCst) > 0 {
+                Err("cancelled after first native apply".into())
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+        assert!(
+            r.expect_err("later pre-apply cancellation")
+                .contains("cancelled after first native apply")
+        );
+        assert_eq!(
+            receiver
+                .client()
+                .execute_sql("SELECT id FROM records", None)
+                .await
+                .expect("first batch actually committed")[0]
+                .rows
+                .len(),
+            1
+        );
+        assert!(
+            std::fs::read_dir(&stages)
+                .expect("stages cleaned")
+                .next()
+                .is_none()
+        );
+        drop(receiver);
+        let receiver = Database::open(&receiver_path).expect("partial native reopen");
+        let (s, r) = directional_exchange(&source, &receiver, &stages, role, &applied, || async {
+            Ok(())
+        })
+        .await;
+        assert_eq!(s.expect("source resume").received_units, 0);
+        assert_eq!(r.expect("partial retained receiver resumes").sent_units, 0);
+        assert_eq!(
+            source.sync_manifest().await.expect("source unchanged"),
+            before
+        );
+        assert_eq!(
+            receiver
+                .client()
+                .execute_sql("SELECT id FROM records", None)
+                .await
+                .expect("complete retry without duplicate rows")[0]
+                .rows
+                .len(),
+            2
+        );
     }
 }
 

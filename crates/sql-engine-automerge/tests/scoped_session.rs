@@ -7,9 +7,10 @@ use engine_automerge::AutomergeRowCodec;
 use futures::{StreamExt, channel::mpsc, executor::block_on};
 use sql_translator::SqlTranslator;
 use sync::{
-    MemorySyncStageFactory, SessionConfig, SyncKey, SyncMessage, SyncRole, SyncSnapshotRequest,
-    SyncStateUnit, SyncTransport, SyncValidationDirection, export_sync_state_for,
-    sync_manifest_for, synchronize_tables_with_stage_factory_candidate_validated_checked,
+    MemorySyncStageFactory, SessionConfig, SyncDirection, SyncKey, SyncMessage, SyncRole,
+    SyncSnapshotRequest, SyncStateUnit, SyncTransport, SyncValidationDirection,
+    export_sync_state_for, sync_manifest_for,
+    synchronize_tables_with_stage_factory_candidate_validated_checked,
 };
 use value::Value;
 
@@ -27,6 +28,8 @@ struct Channel {
     injected: Rc<Cell<bool>>,
     mutation: Option<Engine<InMemoryKernel, AutomergeRowCodec>>,
     advertised_changes: Vec<sync::SyncChangeId>,
+    receive_only: bool,
+    done_count: usize,
 }
 impl SyncTransport for Channel {
     type Error = Closed;
@@ -36,6 +39,44 @@ impl SyncTransport for Channel {
     async fn send(&mut self, frame: Vec<u8>) -> Result<(), Closed> {
         let mut output = frame;
         if let Ok(mut message) = postcard::from_bytes::<SyncMessage>(&output) {
+            if self.receive_only {
+                assert!(
+                    !matches!(message, SyncMessage::State(_) | SyncMessage::Changes(_)),
+                    "receiver must never publish any history, including catalogs and recovery"
+                );
+            }
+            if matches!(message, SyncMessage::Done) {
+                self.done_count += 1;
+                if (((17..=19).contains(&self.attack) || self.attack == 24) && self.done_count == 1)
+                    || (self.attack == 20 && self.done_count == 2)
+                {
+                    message = if self.attack == 19 {
+                        SyncMessage::Changes(vec![sync::SyncIncrementalChange {
+                            table: "people".into(),
+                            row: uuid::Uuid::nil(),
+                            id: sync::SyncChangeId(vec![0; 32]),
+                            payload: vec![1, 2, 3],
+                        }])
+                    } else {
+                        SyncMessage::State(vec![SyncStateUnit::new(
+                            SyncKey::Row {
+                                table: if self.attack == 18 {
+                                    "__engine_tables"
+                                } else if self.attack == 24 {
+                                    "__engine_index_fields"
+                                } else {
+                                    "people"
+                                }
+                                .into(),
+                                row: uuid::Uuid::nil(),
+                            },
+                            vec![1, 2, 3],
+                            Vec::new(),
+                        )])
+                    };
+                    self.injected.set(true);
+                }
+            }
             if (((self.attack == 12 || self.attack == 14)
                 && matches!(message, SyncMessage::Inventory(_)))
                 || ((self.attack == 13 || self.attack == 16)
@@ -54,6 +95,17 @@ impl SyncTransport for Channel {
                     .await
                     .expect("change after preflight");
                 self.injected.set(true);
+            }
+            if self.attack == 23 {
+                match &message {
+                    SyncMessage::Inventory(inventories) if self.receive_only => {
+                        assert!(inventories.iter().any(|inventory| inventory.table == "people" && inventory.row == uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("fixture UUID") && !inventory.changes.is_empty()), "retry must advertise actual retained application change IDs");
+                        self.injected.set(true);
+                    }
+                    SyncMessage::State(units) => assert!(units.iter().all(|unit| !matches!(&unit.key, SyncKey::Row { table, .. } if table == "people")), "completed retry must not resend application snapshot"),
+                    SyncMessage::Changes(changes) => assert!(changes.iter().all(|change| change.table != "people"), "completed retry must not resend application deltas"),
+                    _ => {}
+                }
             }
             match &mut message {
                 SyncMessage::State(units)
@@ -180,9 +232,16 @@ impl SyncTransport for Channel {
                         }
                     }
                 }
-                SyncMessage::RequestSnapshots(requests) if self.attack == 3 => {
+                SyncMessage::RequestSnapshots(requests)
+                    if self.attack == 3 || self.attack == 21 =>
+                {
                     requests.push(SyncSnapshotRequest {
-                        table: "local_secrets".into(),
+                        table: if self.attack == 21 {
+                            "people"
+                        } else {
+                            "local_secrets"
+                        }
+                        .into(),
                         row: uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abd")
                             .expect("UUID"),
                     });
@@ -255,6 +314,16 @@ async fn exchange_as(
     attack: u8,
     role: SyncRole,
 ) -> (Result<(), String>, Result<(), String>, bool) {
+    exchange_with_directions(left, right, attack, role, None).await
+}
+
+async fn exchange_with_directions(
+    left: &Engine<InMemoryKernel, AutomergeRowCodec>,
+    right: &Engine<InMemoryKernel, AutomergeRowCodec>,
+    attack: u8,
+    role: SyncRole,
+    directions: Option<(SyncDirection, SyncDirection)>,
+) -> (Result<(), String>, Result<(), String>, bool) {
     let (a, ar) = mpsc::unbounded();
     let (b, br) = mpsc::unbounded();
     let injected = Rc::new(Cell::new(false));
@@ -280,9 +349,15 @@ async fn exchange_as(
     let mut lt = Channel {
         sender: a,
         receiver: br,
-        attack: if attack == 5 { 255 } else { attack },
+        attack: if attack == 5 || (17..=20).contains(&attack) || attack == 24 {
+            255
+        } else {
+            attack
+        },
         injected: injected.clone(),
         advertised_changes: Vec::new(),
+        receive_only: directions.is_some_and(|(left, _)| left == SyncDirection::ReceiveOnly),
+        done_count: 0,
         mutation: if (12..=14).contains(&attack) || attack == 16 {
             Some(left.clone())
         } else {
@@ -300,9 +375,13 @@ async fn exchange_as(
             || attack == 16
         {
             5
+        } else if (17..=20).contains(&attack) || attack == 23 || attack == 24 {
+            attack
         } else {
             255
         },
+        receive_only: directions.is_some_and(|(_, right)| right == SyncDirection::ReceiveOnly),
+        done_count: 0,
         injected: if attack == 6 || attack == 11 || attack == 13 || attack == 16 {
             Rc::new(Cell::new(false))
         } else {
@@ -312,8 +391,13 @@ async fn exchange_as(
         advertised_changes,
     };
     let config = SessionConfig {
+        direction: directions.map_or(SyncDirection::Bidirectional, |(left, _)| left),
         max_units_per_frame: 1,
         ..SessionConfig::default()
+    };
+    let receiver_config = SessionConfig {
+        direction: directions.map_or(SyncDirection::Bidirectional, |(_, right)| right),
+        ..config.clone()
     };
     let factory = MemorySyncStageFactory::new(config.max_session_bytes);
     let other = if role == SyncRole::Initiator {
@@ -359,7 +443,7 @@ async fn exchange_as(
                 synchronize_tables_with_stage_factory_candidate_validated_checked(
                     right,
                     &mut rt,
-                    &config,
+                    &receiver_config,
                     other,
                     &factory,
                     &["people"],
@@ -387,6 +471,172 @@ async fn exchange_as(
         injected.get(),
     )
 }
+#[test]
+fn directional_reverse_payloads_requests_and_mismatches_fail_closed_in_both_roles() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for attack in [17, 18, 19, 20, 21, 24] {
+                let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                for engine in [&left, &right] {
+                    engine
+                        .translate_and_execute(
+                            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
+                            &SqlTranslator,
+                        )
+                        .await
+                        .expect("schema");
+                }
+                right.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'receiver-only')", &SqlTranslator).await.expect("retained receiver history");
+                let before = sync_manifest_for(&left).await.expect("source before");
+                let (l, r, injected) = exchange_with_directions(
+                    &left,
+                    &right,
+                    attack,
+                    role,
+                    Some((SyncDirection::SendOnly, SyncDirection::ReceiveOnly)),
+                )
+                .await;
+                assert!(injected, "attack {attack}, {role:?} reaches wire");
+                let error = if attack == 21 {
+                    r.expect_err("reverse recovery denied")
+                } else {
+                    l.expect_err("reverse apply denied")
+                };
+                assert!(
+                    error.contains(if attack == 21 {
+                        "Reverse recovery publication is forbidden"
+                    } else {
+                        "Reverse history apply is forbidden"
+                    }),
+                    "{attack}, {role:?}: {error}"
+                );
+                assert_eq!(
+                    sync_manifest_for(&left).await.expect("source unchanged"),
+                    before
+                );
+            }
+            for directions in [
+                (SyncDirection::SendOnly, SyncDirection::SendOnly),
+                (SyncDirection::ReceiveOnly, SyncDirection::ReceiveOnly),
+                (SyncDirection::Bidirectional, SyncDirection::ReceiveOnly),
+                (SyncDirection::SendOnly, SyncDirection::Bidirectional),
+            ] {
+                let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                for engine in [&left, &right] {
+                    engine
+                        .translate_and_execute(
+                            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
+                            &SqlTranslator,
+                        )
+                        .await
+                        .expect("schema");
+                }
+                let (l, r, _) =
+                    exchange_with_directions(&left, &right, 255, role, Some(directions)).await;
+                for result in [l, r] {
+                    assert!(
+                        result
+                            .expect_err("mismatch")
+                            .contains("incompatible scoped sync directions")
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn directional_forward_recovery_and_historical_candidate_validation_remain_enforced() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            for attack in [5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 23] {
+                let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+                for engine in [&left, &right] {
+                    engine
+                        .translate_and_execute(
+                            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
+                            &SqlTranslator,
+                        )
+                        .await
+                        .expect("schema");
+                }
+                let directions = Some((SyncDirection::SendOnly, SyncDirection::ReceiveOnly));
+                left.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')", &SqlTranslator).await.expect("source");
+                if attack == 10 || attack == 12 || attack == 23 {
+                    let (l, r, _) =
+                        exchange_with_directions(&left, &right, 255, role, directions).await;
+                    l.expect("initial source");
+                    r.expect("initial receiver");
+                }
+                if attack == 14 {
+                    right.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'independent safe value')", &SqlTranslator).await.expect("independent history");
+                }
+                if attack == 5 || (10..=16).contains(&attack) {
+                    left.translate_and_execute("UPDATE people SET name = 'Grace'", &SqlTranslator)
+                        .await
+                        .expect("dependent delta");
+                }
+                let (l, r, injected) =
+                    exchange_with_directions(&left, &right, attack, role, directions).await;
+                assert!(injected, "{attack}, {role:?} reaches path");
+                if attack == 23 {
+                    l.expect("exact retry source");
+                    r.expect("exact retry receiver");
+                } else if attack == 5 {
+                    l.expect("forward recovery source");
+                    r.expect("forward recovery receiver");
+                    assert_eq!(
+                        right
+                            .translate_and_execute("SELECT name FROM people", &SqlTranslator)
+                            .await
+                            .expect("recovered row")[0]
+                            .rows,
+                        vec![value::Row::new(vec![Value::from("Grace")])]
+                    );
+                } else {
+                    let error = if (12..=14).contains(&attack) || attack == 16 {
+                        l.expect_err("export validation")
+                    } else {
+                        r.expect_err("import validation")
+                    };
+                    assert!(
+                        error.contains(if attack == 15 {
+                            "candidate recovery import denied"
+                        } else if attack == 16 {
+                            "candidate recovery export denied"
+                        } else {
+                            "historical value denied"
+                        }),
+                        "{attack}, {role:?}: {error}"
+                    );
+                    if attack == 10 || attack == 12 {
+                        assert_eq!(
+                            right
+                                .translate_and_execute("SELECT name FROM people", &SqlTranslator)
+                                .await
+                                .expect("prior commit retained")[0]
+                                .rows,
+                            vec![value::Row::new(vec![Value::from("Ada")])]
+                        );
+                    } else if attack != 14 {
+                        assert!(
+                            right
+                                .translate_and_execute("SELECT * FROM people", &SqlTranslator)
+                                .await
+                                .expect("denied candidate absent")[0]
+                                .rows
+                                .is_empty()
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[test]
 fn candidate_recovery_validation_denies_actual_import_and_late_export_in_both_roles() {
     block_on(async {

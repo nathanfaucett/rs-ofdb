@@ -6,6 +6,7 @@ extern crate std;
 
 mod candidate;
 mod codec;
+mod direction;
 #[cfg(feature = "native-stage")]
 mod file_stage;
 #[cfg(feature = "native-stage")]
@@ -22,6 +23,7 @@ mod transport;
 
 pub use candidate::{SyncCandidateView, SyncRowView, SyncTableView, SyncValidationDirection};
 pub use codec::{InspectedHistory, SyncRowCodec};
+pub use direction::SyncDirection;
 #[cfg(feature = "iroh")]
 pub use iroh_transport::IrohTransport;
 pub use protocol::{
