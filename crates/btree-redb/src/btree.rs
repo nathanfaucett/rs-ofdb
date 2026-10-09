@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, ops::RangeBounds, sync::Arc};
 
+use async_lock::Mutex;
 use async_stream::stream;
 use futures::Stream;
 use redb::{Database, ReadableDatabase};
@@ -15,6 +16,7 @@ use crate::{
 #[derive(Clone)]
 pub struct RedbBTree<K, V> {
     db: Arc<Database>,
+    admission: Arc<Mutex<()>>,
     name: String,
     _marker: PhantomData<(K, V)>,
 }
@@ -23,6 +25,7 @@ impl<K, V> RedbBTree<K, V> {
     pub fn new(db: Arc<Database>, name: impl Into<String>) -> Self {
         Self {
             db,
+            admission: Arc::new(Mutex::new(())),
             name: name.into(),
             _marker: PhantomData,
         }
@@ -85,9 +88,13 @@ where
     type Transaction = RedbBTreeTransaction<K, V>;
 
     async fn transaction(&self) -> BTreeResult<Self::Transaction> {
+        let admission = self.admission.lock_arc().await;
         let tx = self.db.begin_write().map_err(BTreeError::custom)?;
 
-        Ok(RedbBTreeTransaction::new(tx, &self.name))
+        Ok(RedbBTreeTransaction::new(
+            crate::transaction::NativeWriteTransaction::new(tx, admission),
+            &self.name,
+        ))
     }
 }
 
@@ -268,7 +275,10 @@ mod test {
             let db = Arc::new(Database::create(tmp_path()).expect("failed to create database"));
             let database = RedbDatabase::new(db.clone());
 
-            let transaction = database.transaction().expect("failed to begin transaction");
+            let transaction = database
+                .transaction()
+                .await
+                .expect("failed to begin transaction");
             let mut first = transaction.table::<String, String>("first");
             first
                 .insert("key".into(), "first".into())

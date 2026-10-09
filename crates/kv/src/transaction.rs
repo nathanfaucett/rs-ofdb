@@ -33,7 +33,12 @@ enum Backend {
     #[cfg(feature = "in-memory")]
     Memory(Box<MemoryTransaction>),
     #[cfg(feature = "redb")]
-    Redb(Box<RedbTransaction>),
+    Redb(
+        btree_redb::NativeTransaction<
+            kv_store::KvStore<btree_redb::RedbByteBTree>,
+            Box<RedbTransaction>,
+        >,
+    ),
     #[cfg(feature = "remote")]
     Remote(Box<RemoteTransaction>),
 }
@@ -51,7 +56,8 @@ impl Transaction {
             }
             #[cfg(feature = "redb")]
             crate::database::Storage::Redb(store) => {
-                Backend::Redb(Box::new(store.transaction().await?))
+                let admitted = store.read().await.map_err(native_error)?;
+                Backend::Redb(store.transaction(Box::new(admitted.transaction().await?)))
             }
         };
         Ok(Self {
@@ -77,7 +83,13 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.get(key, current_time_millis()).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.get(key, current_time_millis()).await.map_err(Into::into),
+                Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
+                    .get(key, current_time_millis())
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.get(key).await,
             }
@@ -97,7 +109,13 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.set(key, value, expires_at).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.set(key, value, expires_at).await.map_err(Into::into),
+                Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
+                    .set(key, value, expires_at)
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.set(key, value, expires_at).await,
             }
@@ -111,7 +129,13 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.delete(key).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.delete(key).await.map_err(Into::into),
+                Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
+                    .delete(key)
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.delete(key).await,
             }
@@ -129,6 +153,9 @@ impl Transaction {
                     .map_err(Into::into),
                 #[cfg(feature = "redb")]
                 Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
                     .scan(start.to_owned()..end.to_owned(), current_time_millis())
                     .await
                     .map_err(Into::into),
@@ -149,6 +176,9 @@ impl Transaction {
                     .map_err(Into::into),
                 #[cfg(feature = "redb")]
                 Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
                     .scan_prefix(prefix, current_time_millis())
                     .await
                     .map_err(Into::into),
@@ -165,7 +195,13 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.scan_all(current_time_millis()).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.scan_all(current_time_millis()).await.map_err(Into::into),
+                Backend::Redb(tx) => tx
+                    .read()
+                    .await
+                    .map_err(native_error)?
+                    .scan_all(current_time_millis())
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.scan_all().await,
             }
@@ -180,7 +216,10 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.commit().await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.commit().await.map_err(Into::into),
+                Backend::Redb(tx) => {
+                    let (_admitted, tx) = tx.take().await.map_err(native_error)?;
+                    tx.commit().await.map_err(Into::into)
+                }
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.finish(true).await,
             }
@@ -195,7 +234,10 @@ impl Transaction {
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.rollback().await.map_err(Into::into),
                 #[cfg(feature = "redb")]
-                Backend::Redb(tx) => tx.rollback().await.map_err(Into::into),
+                Backend::Redb(tx) => {
+                    let (_admitted, tx) = tx.take().await.map_err(native_error)?;
+                    tx.rollback().await.map_err(Into::into)
+                }
                 #[cfg(feature = "remote")]
                 Backend::Remote(tx) => tx.finish(false).await,
             }
@@ -367,4 +409,9 @@ fn current_time_millis() -> i64 {
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         })
+}
+
+#[cfg(feature = "redb")]
+fn native_error(error: std::io::Error) -> Error {
+    Error::from(btree::BTreeError::custom(error))
 }

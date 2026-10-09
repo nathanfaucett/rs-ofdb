@@ -1,0 +1,24 @@
+RUST_MIN_STACK=16777216 CARGO_TARGET_DIR=target/native-retirement cargo test -p ofdb-sql --features redb,sql --test client redb_client_survives_database_drop_and_persists_data
+
+   Compiling ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/sql)
+warning: unused imports: `FromRowError`, `FromRow`, `QueryParams`, `SqlTranslator`, `Statement`, `TranslateError`, `Translator`, and `Value`
+ --> crates/sql/tests/client.rs:5:15
+  |
+5 |     Database, FromRow, FromRowError, QueryParams, Row, SqlTranslator, Statement, TranslateError,
+  |               ^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^       ^^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^^^^^^
+6 |     Translator, Value,
+  |     ^^^^^^^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ofdb-sql` (test "client") generated 1 warning (run `cargo fix --test "client" -p ofdb-sql` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 14.28s
+     Running tests/client.rs (target/native-retirement/debug/deps/client-d48ab208cb6d2379)
+
+running 1 test
+test redb_client_survives_database_drop_and_persists_data ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s
+
+
+exit=0

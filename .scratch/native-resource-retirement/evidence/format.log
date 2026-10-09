@@ -1,0 +1,3 @@
+rustfmt --check --edition 2024 --config skip_children=true crates/btree-redb/src/btree.rs crates/btree-redb/src/database.rs crates/btree-redb/src/lib.rs crates/btree-redb/src/resource.rs crates/btree-redb/src/stage_cleanup.rs crates/btree-redb/src/transaction.rs crates/kv/src/database.rs crates/kv/src/transaction.rs crates/kv/tests/retirement.rs crates/sql-engine-redb/src/kernel.rs crates/sql-engine-redb/src/lib.rs crates/sql-sync/src/file_stage.rs crates/sql/src/client.rs crates/sql/src/database.rs crates/sql/tests/retirement.rs
+
+exit=0

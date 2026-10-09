@@ -4,6 +4,8 @@ mod bytes;
 mod database;
 mod key;
 mod redb;
+mod resource;
+mod stage_cleanup;
 mod transaction;
 mod value;
 
@@ -15,3 +17,7 @@ pub use key::Key;
 pub use redb::{RedbKey, RedbValue, table_definition};
 pub use transaction::{RedbBTreeScopedTransaction, RedbBTreeTransaction};
 pub use value::Value;
+
+pub use resource::{NativeResource, NativeTransaction, check_not_retired, remove_retired};
+
+pub use stage_cleanup::NativeStageTracker;

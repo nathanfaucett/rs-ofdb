@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 use std::{
     io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use tempfile::NamedTempFile;
@@ -9,14 +10,46 @@ use tempfile::NamedTempFile;
 use crate::{SyncStage, SyncStageFactory};
 
 /// Native temporary records. Operations do not suspend while a file is being mutated.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FileSyncStageFactory {
     directory: PathBuf,
+    tracking: Option<Tracking>,
+}
+type StageCreated = dyn Fn(&Path) -> io::Result<()> + Send + Sync;
+type StageClosed = dyn Fn(&Path) + Send + Sync;
+
+#[derive(Clone)]
+struct Tracking {
+    created: Arc<StageCreated>,
+    closed: Arc<StageClosed>,
+}
+impl core::fmt::Debug for FileSyncStageFactory {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("FileSyncStageFactory")
+            .field("directory", &self.directory)
+            .finish_non_exhaustive()
+    }
 }
 impl FileSyncStageFactory {
+    /// Records exact owner-created filenames for resource retirement. Successful
+    /// close forgets them; failures remain recorded for durable cleanup retry.
+    pub fn with_file_tracking(
+        mut self,
+        created: impl Fn(&Path) -> io::Result<()> + Send + Sync + 'static,
+        closed: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Self {
+        self.tracking = Some(Tracking {
+            created: Arc::new(created),
+            closed: Arc::new(closed),
+        });
+        self
+    }
+
     pub fn new(directory: impl AsRef<Path>) -> Self {
         Self {
             directory: directory.as_ref().to_path_buf(),
+            tracking: None,
         }
     }
 }
@@ -29,9 +62,13 @@ impl SyncStageFactory for FileSyncStageFactory {
             .prefix("ofdb-sync-")
             .suffix(".stage")
             .tempfile_in(&self.directory)?;
+        if let Some(tracking) = &self.tracking {
+            (tracking.created)(file.path())?;
+        }
         Ok(FileSyncStage {
             file: Some(file),
             finished: false,
+            tracking: self.tracking.clone(),
         })
     }
 }
@@ -39,12 +76,19 @@ impl SyncStageFactory for FileSyncStageFactory {
 pub struct FileSyncStage {
     file: Option<NamedTempFile>,
     finished: bool,
+    tracking: Option<Tracking>,
 }
 impl FileSyncStage {
     /// Closes the handle and removes the file, reporting cleanup failure explicitly.
     /// Drop also attempts cleanup and reports errors to stderr, without masking a session error.
     pub fn close(mut self) -> io::Result<()> {
-        self.file.take().expect("stage owns file").close()
+        let file = self.file.take().expect("stage owns file");
+        let path = file.path().to_path_buf();
+        file.close()?;
+        if let Some(tracking) = &self.tracking {
+            (tracking.closed)(&path);
+        }
+        Ok(())
     }
 }
 impl SyncStage for FileSyncStage {
@@ -111,10 +155,16 @@ impl SyncStage for FileSyncStage {
 }
 impl Drop for FileSyncStage {
     fn drop(&mut self) {
-        if let Some(file) = self.file.take()
-            && let Err(error) = file.close()
-        {
-            std::eprintln!("ofdb sync stage cleanup failed: {error}");
+        if let Some(file) = self.file.take() {
+            let path = file.path().to_path_buf();
+            match file.close() {
+                Ok(()) => {
+                    if let Some(tracking) = &self.tracking {
+                        (tracking.closed)(&path);
+                    }
+                }
+                Err(error) => std::eprintln!("ofdb sync stage cleanup failed: {error}"),
+            }
         }
     }
 }

@@ -167,19 +167,50 @@ impl Transaction {
         Self::run(self.request_deadline, self.execute_untimed(statements)).await
     }
 
+    async fn execute_translated<F>(
+        &mut self,
+        translation: F,
+    ) -> Result<Vec<QueryResult>, QueryError>
+    where
+        F: Future<Output = Result<Vec<Statement>, QueryError>>,
+    {
+        let translation = async {
+            let statements = translation.await?;
+            if statements.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorKind::Validation,
+                    "statement batch must not be empty",
+                ));
+            }
+            Ok(statements)
+        };
+        match &mut self.backend {
+            #[cfg(any(feature = "redb", feature = "in-memory"))]
+            TransactionBackend::Embedded(transaction) => {
+                transaction.execute_translated(translation).await
+            }
+            #[cfg(feature = "remote")]
+            TransactionBackend::Remote(transaction) => {
+                transaction.execute(translation.await?).await
+            }
+        }
+    }
+
     pub async fn translate_and_execute<T: Translator>(
         &mut self,
         query: &str,
         translator: &T,
     ) -> Result<Vec<QueryResult>, QueryError> {
         Self::run(self.request_deadline, async {
-            let statements = translator.translate(query).await.map_err(|error| {
-                QueryError::new(
-                    QueryErrorKind::Validation,
-                    format!("Translate error: {error}"),
-                )
-            })?;
-            self.execute_untimed(statements).await
+            let translation = async {
+                translator.translate(query).await.map_err(|error| {
+                    QueryError::new(
+                        QueryErrorKind::Validation,
+                        format!("Translate error: {error}"),
+                    )
+                })
+            };
+            self.execute_translated(translation).await
         })
         .await
     }
@@ -191,16 +222,18 @@ impl Transaction {
         translator: &T,
     ) -> Result<Vec<QueryResult>, QueryError> {
         Self::run(self.request_deadline, async {
-            let statements = translator
-                .translate_with_params(query, params)
-                .await
-                .map_err(|error| {
-                    QueryError::new(
-                        QueryErrorKind::Validation,
-                        format!("Translate error: {error}"),
-                    )
-                })?;
-            self.execute_untimed(statements).await
+            let translation = async {
+                translator
+                    .translate_with_params(query, params)
+                    .await
+                    .map_err(|error| {
+                        QueryError::new(
+                            QueryErrorKind::Validation,
+                            format!("Translate error: {error}"),
+                        )
+                    })
+            };
+            self.execute_translated(translation).await
         })
         .await
     }

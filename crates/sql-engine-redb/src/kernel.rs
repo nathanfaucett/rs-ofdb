@@ -34,6 +34,7 @@ impl Kernel for RedbKernel {
     async fn transaction(&self) -> EngineResult<Self::Transaction> {
         self.database
             .transaction()
+            .await
             .map(|database| RedbKernelTransaction { database })
             .map_err(EngineError::custom)
     }

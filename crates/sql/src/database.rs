@@ -39,14 +39,19 @@ pub struct Database {
 #[derive(Clone)]
 enum DatabaseBackend {
     #[cfg(feature = "redb")]
-    File(Engine<RedbKernel, AutomergeRowCodec>),
+    File(engine_redb::NativeResource<Engine<RedbKernel, AutomergeRowCodec>>),
     #[cfg(feature = "in-memory")]
     InMemory(Engine<InMemoryKernel, AutomergeRowCodec>),
 }
 
 pub(crate) enum EmbeddedTransaction {
     #[cfg(feature = "redb")]
-    File(Box<EngineTransaction<RedbKernel, AutomergeRowCodec>>),
+    File(
+        engine_redb::NativeTransaction<
+            Engine<RedbKernel, AutomergeRowCodec>,
+            Box<EngineTransaction<RedbKernel, AutomergeRowCodec>>,
+        >,
+    ),
     #[cfg(feature = "in-memory")]
     InMemory(EngineTransaction<InMemoryKernel, AutomergeRowCodec>),
 }
@@ -56,6 +61,9 @@ impl EmbeddedTransaction {
         match self {
             #[cfg(feature = "redb")]
             Self::File(transaction) => transaction
+                .read()
+                .await
+                .map_err(native_error)?
                 .row_conflicts(table, key)
                 .await
                 .map_err(crate::error::from_engine),
@@ -75,6 +83,9 @@ impl EmbeddedTransaction {
         match self {
             #[cfg(feature = "redb")]
             Self::File(transaction) => transaction
+                .read()
+                .await
+                .map_err(native_error)?
                 .row_conflict_values(table, key)
                 .await
                 .map_err(crate::error::from_engine),
@@ -93,6 +104,9 @@ impl EmbeddedTransaction {
         match self {
             #[cfg(feature = "redb")]
             Self::File(transaction) => transaction
+                .read()
+                .await
+                .map_err(native_error)?
                 .execute(statements)
                 .await
                 .map_err(crate::error::from_engine),
@@ -104,13 +118,40 @@ impl EmbeddedTransaction {
         }
     }
 
+    pub(crate) async fn execute_translated<F>(
+        &mut self,
+        translation: F,
+    ) -> SqlResult<Vec<QueryResult>>
+    where
+        F: core::future::Future<Output = SqlResult<Vec<Statement>>>,
+    {
+        match self {
+            #[cfg(feature = "redb")]
+            Self::File(transaction) => {
+                let mut transaction = transaction.read().await.map_err(native_error)?;
+                transaction
+                    .execute(translation.await?)
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
+            #[cfg(feature = "in-memory")]
+            Self::InMemory(transaction) => transaction
+                .execute(translation.await?)
+                .await
+                .map_err(crate::error::from_engine),
+        }
+    }
+
     pub async fn commit(self) -> SqlResult<()> {
         match self {
             #[cfg(feature = "redb")]
-            Self::File(transaction) => transaction
-                .commit()
-                .await
-                .map_err(crate::error::from_engine),
+            Self::File(transaction) => {
+                let (_admitted, transaction) = transaction.take().await.map_err(native_error)?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
                 .commit()
@@ -122,10 +163,13 @@ impl EmbeddedTransaction {
     pub async fn rollback(self) -> SqlResult<()> {
         match self {
             #[cfg(feature = "redb")]
-            Self::File(transaction) => transaction
-                .rollback()
-                .await
-                .map_err(crate::error::from_engine),
+            Self::File(transaction) => {
+                let (_admitted, transaction) = transaction.take().await.map_err(native_error)?;
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
                 .rollback()
@@ -141,7 +185,11 @@ macro_rules! database_call {
     ($database:expr, |$engine:ident| $body:expr) => {{
         match &$database.backend {
             #[cfg(feature = "redb")]
-            DatabaseBackend::File($engine) => $body.map_err(crate::error::from_engine),
+            DatabaseBackend::File(resource) => {
+                let admitted = resource.read().await.map_err(native_error)?;
+                let $engine = &*admitted;
+                $body.map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory($engine) => $body.map_err(crate::error::from_engine),
         }
@@ -149,19 +197,79 @@ macro_rules! database_call {
 }
 
 impl Database {
+    /// Permanently fences issued handles and opens, drains admitted operations,
+    /// cancels sessions, rolls back idle transactions, then removes this dedicated file.
+    /// Native hosting is not managed: an owner that attempted native hosting returns Unsupported.
+    /// Unix-only; callers must exclusively own the pathname and marker namespace.
+    /// The permanent `.ofdb-retired` marker is retained, including after success.
+    #[cfg(feature = "redb")]
+    pub async fn retire_and_remove(&self) -> std::io::Result<()> {
+        match &self.backend {
+            DatabaseBackend::File(resource) => resource.retire_and_remove().await,
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not a native resource",
+            )),
+        }
+    }
+
+    /// Resumes cleanup of a permanently retired file, refusing live native owners.
+    #[cfg(feature = "redb")]
+    pub fn remove_retired(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        engine_redb::remove_retired(path)
+    }
+
+    #[cfg(feature = "native-stage")]
+    fn native_stage_factory(
+        &self,
+        directory: impl AsRef<std::path::Path>,
+    ) -> crate::FileSyncStageFactory {
+        let factory = crate::FileSyncStageFactory::new(directory);
+        match &self.backend {
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(resource) => {
+                #[cfg(unix)]
+                {
+                    let tracker = resource.stage_tracker();
+                    let closed = tracker.clone();
+                    factory.with_file_tracking(
+                        move |path| tracker.track(path),
+                        move |path| closed.forget(path),
+                    )
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = resource;
+                    factory
+                }
+            }
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(_) => factory,
+        }
+    }
+
     pub fn client(&self) -> crate::Client {
         crate::Client::embedded(self.clone())
     }
 
     #[cfg(feature = "redb")]
     pub fn open(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
+        engine_redb::check_not_retired(path.as_ref()).map_err(native_error)?;
+        let path = path.as_ref();
         let database = redb::Database::create(path)
             .map_err(|error| QueryError::new(crate::ErrorKind::Storage, error.to_string()))?;
         Ok(Self {
-            backend: DatabaseBackend::File(Engine::new(
-                RedbKernel::new(std::sync::Arc::new(database)),
-                AutomergeRowCodec::new(),
-            )),
+            backend: DatabaseBackend::File(
+                engine_redb::NativeResource::new(
+                    path,
+                    Engine::new(
+                        RedbKernel::new(std::sync::Arc::new(database)),
+                        AutomergeRowCodec::new(),
+                    ),
+                )
+                .map_err(native_error)?,
+            ),
         })
     }
 
@@ -178,12 +286,16 @@ impl Database {
     pub(crate) async fn begin_transaction(&self) -> SqlResult<EmbeddedTransaction> {
         match &self.backend {
             #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => engine
-                .transaction()
-                .await
-                .map(Box::new)
-                .map(EmbeddedTransaction::File)
-                .map_err(crate::error::from_engine),
+            DatabaseBackend::File(resource) => {
+                let engine = resource.read().await.map_err(native_error)?;
+                let transaction = engine
+                    .transaction()
+                    .await
+                    .map_err(crate::error::from_engine)?;
+                Ok(EmbeddedTransaction::File(
+                    resource.transaction(Box::new(transaction)),
+                ))
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => engine
                 .transaction()
@@ -305,19 +417,24 @@ impl Database {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => {
-                let server =
-                    crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()));
-                let server = match identity.take() {
-                    Some((certificate, private_key)) => {
-                        server.tls_identity(certificate, private_key)
-                    }
-                    None => server,
-                };
-                let server = match client_ca {
-                    Some(ca) => server.tls_client_ca(ca),
-                    None => server,
-                };
-                server.serve(shutdown).await
+                engine
+                    .hosting(async {
+                        let engine = engine.hosting_backend().await?;
+                        let server =
+                            crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()));
+                        let server = match identity.take() {
+                            Some((certificate, private_key)) => {
+                                server.tls_identity(certificate, private_key)
+                            }
+                            None => server,
+                        };
+                        let server = match client_ca {
+                            Some(ca) => server.tls_client_ca(ca),
+                            None => server,
+                        };
+                        server.serve(shutdown).await
+                    })
+                    .await?
             }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
@@ -347,9 +464,14 @@ impl Database {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => {
-                crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
-                    .serve(shutdown)
-                    .await
+                engine
+                    .hosting(async {
+                        let engine = engine.hosting_backend().await?;
+                        crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
+                            .serve(shutdown)
+                            .await
+                    })
+                    .await?
             }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
@@ -377,9 +499,16 @@ impl Database {
         {
             match &self.backend {
                 #[cfg(feature = "redb")]
-                DatabaseBackend::File(engine) => {
-                    synchronize_engine(engine, transport, config, role).await
-                }
+                DatabaseBackend::File(engine) => engine
+                    .session(async {
+                        let engine = engine
+                            .read()
+                            .await
+                            .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                        synchronize_engine(&*engine, transport, config, role).await
+                    })
+                    .await
+                    .map_err(|error| SyncError::PreApply(error.to_string()))?,
                 #[cfg(feature = "in-memory")]
                 DatabaseBackend::InMemory(engine) => {
                     synchronize_engine(engine, transport, config, role).await
@@ -408,9 +537,17 @@ impl Database {
         {
             match &self.backend {
                 #[cfg(feature = "redb")]
-                DatabaseBackend::File(engine) => {
-                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
-                }
+                DatabaseBackend::File(engine) => engine
+                    .session(async {
+                        let engine = engine
+                            .read()
+                            .await
+                            .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                        synchronize_staged_engine(&*engine, transport, config, role, stage_factory)
+                            .await
+                    })
+                    .await
+                    .map_err(|error| SyncError::PreApply(error.to_string()))?,
                 #[cfg(feature = "in-memory")]
                 DatabaseBackend::InMemory(engine) => {
                     synchronize_staged_engine(engine, transport, config, role, stage_factory).await
@@ -432,7 +569,7 @@ impl Database {
         T: SyncTransport,
         T::Error: core::fmt::Display,
     {
-        let factory = crate::FileSyncStageFactory::new(directory);
+        let factory = self.native_stage_factory(directory);
         self.synchronize_with_stage_factory(transport, config, role, &factory)
             .await
     }
@@ -480,12 +617,19 @@ impl Database {
     {
         match &self.backend {
             #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => {
-                sync::synchronize_with_stage_factory_checked(
-                    engine, transport, config, role, factory, check,
-                )
+            DatabaseBackend::File(engine) => engine
+                .session(async {
+                    let engine = engine
+                        .read()
+                        .await
+                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                    sync::synchronize_with_stage_factory_checked(
+                        &*engine, transport, config, role, factory, check,
+                    )
+                    .await
+                })
                 .await
-            }
+                .map_err(|error| SyncError::PreApply(error.to_string()))?,
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 sync::synchronize_with_stage_factory_checked(
@@ -514,7 +658,7 @@ impl Database {
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
-        let factory = crate::FileSyncStageFactory::new(directory);
+        let factory = self.native_stage_factory(directory);
         self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
             .await
     }
@@ -643,7 +787,7 @@ impl Database {
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
-        let factory = crate::FileSyncStageFactory::new(directory);
+        let factory = self.native_stage_factory(directory);
         self.synchronize_tables_staged_checked(
             transport, config, role, &factory, tables, validate, None, check,
         )
@@ -725,7 +869,7 @@ impl Database {
         Q: FnMut() -> U + Send,
         U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
     {
-        let factory = crate::FileSyncStageFactory::new(directory);
+        let factory = self.native_stage_factory(directory);
         self.synchronize_tables_staged_checked(
             transport,
             config,
@@ -763,20 +907,27 @@ impl Database {
     {
         match &self.backend {
             #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => {
-                if let Some(candidate) = validate_candidate {
-                    sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                        engine, transport, config, role, factory, tables, validate, candidate,
-                        check,
-                    )
-                    .await
-                } else {
-                    sync::synchronize_tables_with_stage_factory_validated_checked(
-                        engine, transport, config, role, factory, tables, validate, check,
-                    )
-                    .await
-                }
-            }
+            DatabaseBackend::File(engine) => engine
+                .session(async {
+                    let engine = engine
+                        .read()
+                        .await
+                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                    if let Some(candidate) = validate_candidate {
+                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                            &*engine, transport, config, role, factory, tables, validate,
+                            candidate, check,
+                        )
+                        .await
+                    } else {
+                        sync::synchronize_tables_with_stage_factory_validated_checked(
+                            &*engine, transport, config, role, factory, tables, validate, check,
+                        )
+                        .await
+                    }
+                })
+                .await
+                .map_err(|error| SyncError::PreApply(error.to_string()))?,
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 if let Some(candidate) = validate_candidate {
@@ -880,4 +1031,9 @@ mod tests {
             let _ = std::fs::remove_file(&database_path);
         });
     }
+}
+
+#[cfg(feature = "redb")]
+fn native_error(error: std::io::Error) -> QueryError {
+    QueryError::new(crate::ErrorKind::Storage, error.to_string())
 }

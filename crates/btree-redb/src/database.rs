@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_lock::{Mutex, MutexGuardArc};
 use redb::{Database, WriteTransaction};
 
 use btree::BTreeResult;
@@ -12,15 +13,21 @@ use crate::{
 #[derive(Clone)]
 pub struct RedbDatabase {
     inner: Arc<Database>,
+    admission: Arc<Mutex<()>>,
 }
 
 impl RedbDatabase {
     pub fn new(inner: Arc<Database>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            admission: Arc::new(Mutex::new(())),
+        }
     }
 
-    pub fn transaction(&self) -> BTreeResult<RedbDatabaseTransaction> {
+    pub async fn transaction(&self) -> BTreeResult<RedbDatabaseTransaction> {
+        let admission = self.admission.lock_arc().await;
         Ok(RedbDatabaseTransaction {
+            _admission: admission,
             inner: self
                 .inner
                 .begin_write()
@@ -31,6 +38,7 @@ impl RedbDatabase {
 
 pub struct RedbDatabaseTransaction {
     inner: WriteTransaction,
+    _admission: MutexGuardArc<()>,
 }
 
 impl RedbDatabaseTransaction {

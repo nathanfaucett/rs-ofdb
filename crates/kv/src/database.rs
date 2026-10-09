@@ -17,7 +17,7 @@ pub(super) enum Storage {
     #[cfg(feature = "in-memory")]
     Memory(KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>>),
     #[cfg(feature = "redb")]
-    Redb(KvStore<btree_redb::RedbByteBTree>),
+    Redb(btree_redb::NativeResource<KvStore<btree_redb::RedbByteBTree>>),
 }
 
 pub struct Database {
@@ -25,6 +25,29 @@ pub struct Database {
 }
 
 impl Database {
+    /// Permanently fences issued handles and opens, drains admitted operations,
+    /// cancels sessions, rolls back idle transactions, then removes this dedicated file.
+    /// Native hosting is not managed: an owner that attempted native hosting returns Unsupported.
+    /// Unix-only; callers must exclusively own the pathname and marker namespace.
+    /// The permanent `.ofdb-retired` marker is retained, including after success.
+    #[cfg(feature = "redb")]
+    pub async fn retire_and_remove(&self) -> std::io::Result<()> {
+        match &self.storage {
+            Storage::Redb(resource) => resource.retire_and_remove().await,
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not a native resource",
+            )),
+        }
+    }
+
+    /// Resumes cleanup of a permanently retired file, refusing live native owners.
+    #[cfg(feature = "redb")]
+    pub fn remove_retired(path: impl AsRef<Path>) -> std::io::Result<()> {
+        btree_redb::remove_retired(path)
+    }
+
     /// Creates an owned query-only handle that shares this database's storage.
     /// The client remains usable after this handle is dropped.
     pub fn client(&self) -> crate::Client {
@@ -54,6 +77,8 @@ impl Database {
         path: impl AsRef<Path>,
         table: impl Into<String>,
     ) -> Result<Self, Error> {
+        btree_redb::check_not_retired(path.as_ref())
+            .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
         let table = table.into();
         let path = path.as_ref();
         let existed = path.exists();
@@ -89,7 +114,10 @@ impl Database {
             .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
         let tree = btree_redb::RedbByteBTree::new(Arc::new(db), table);
         Ok(Self {
-            storage: Storage::Redb(KvStore::new(tree, uuid_timestamp)),
+            storage: Storage::Redb(
+                btree_redb::NativeResource::new(path, KvStore::new(tree, uuid_timestamp))
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?,
+            ),
         })
     }
 
@@ -99,7 +127,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_get(store, key, now).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => read_get(store, key, now).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                read_get(&*store, key, now).await
+            }
         }
     }
 
@@ -113,7 +147,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => write_set(store, key, value, expires_at).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => write_set(store, key, value, expires_at).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                write_set(&*store, key, value, expires_at).await
+            }
         }
     }
 
@@ -122,7 +162,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => write_delete(store, key).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => write_delete(store, key).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                write_delete(&*store, key).await
+            }
         }
     }
 
@@ -136,7 +182,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_scan(store, start, end, now).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => read_scan(store, start, end, now).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                read_scan(&*store, start, end, now).await
+            }
         }
     }
 
@@ -149,7 +201,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_prefix(store, prefix, now).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => read_prefix(store, prefix, now).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                read_prefix(&*store, prefix, now).await
+            }
         }
     }
 
@@ -159,7 +217,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_all(store, now).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => read_all(store, now).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                read_all(&*store, now).await
+            }
         }
     }
 
@@ -209,18 +273,23 @@ impl Database {
             }
             #[cfg(feature = "redb")]
             Storage::Redb(store) => {
-                let server = kv_server::Server::tcp(address, store.clone());
-                let server = match identity {
-                    Some((certificate, private_key)) => {
-                        server.tls_identity(certificate, private_key)
-                    }
-                    None => server,
-                };
-                let server = match client_ca {
-                    Some(certificate) => server.tls_client_ca(certificate),
-                    None => server,
-                };
-                server.serve(shutdown).await
+                store
+                    .hosting(async {
+                        let store = store.hosting_backend().await?;
+                        let server = kv_server::Server::tcp(address, store.clone());
+                        let server = match identity {
+                            Some((certificate, private_key)) => {
+                                server.tls_identity(certificate, private_key)
+                            }
+                            None => server,
+                        };
+                        let server = match client_ca {
+                            Some(certificate) => server.tls_client_ca(certificate),
+                            None => server,
+                        };
+                        server.serve(shutdown).await
+                    })
+                    .await?
             }
         }
     }
@@ -240,9 +309,14 @@ impl Database {
             }
             #[cfg(feature = "redb")]
             Storage::Redb(store) => {
-                kv_server::Server::unix(path, store.clone())
-                    .serve(shutdown)
-                    .await
+                store
+                    .hosting(async {
+                        let store = store.hosting_backend().await?;
+                        kv_server::Server::unix(path, store.clone())
+                            .serve(shutdown)
+                            .await
+                    })
+                    .await?
             }
         }
     }
@@ -254,7 +328,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => export_snapshots(store).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => export_snapshots(store).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                export_snapshots(&*store).await
+            }
         }
     }
 
@@ -267,7 +347,13 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => import_snapshots(store, snapshots).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => import_snapshots(store, snapshots).await,
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                import_snapshots(&*store, snapshots).await
+            }
         }
     }
 
@@ -293,9 +379,16 @@ impl Database {
                 kv_sync::synchronize_checked(store, transport, role, config, check).await
             }
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => {
-                kv_sync::synchronize_checked(store, transport, role, config, check).await
-            }
+            Storage::Redb(store) => store
+                .session(async {
+                    let store = store
+                        .read()
+                        .await
+                        .map_err(|error| crate::SyncError::PreApply(error.to_string()))?;
+                    kv_sync::synchronize_checked(&*store, transport, role, config, check).await
+                })
+                .await
+                .map_err(|error| crate::SyncError::PreApply(error.to_string()))?,
         }
     }
 
@@ -311,7 +404,16 @@ impl Database {
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => kv_sync::synchronize(store, transport, role, config).await,
             #[cfg(feature = "redb")]
-            Storage::Redb(store) => kv_sync::synchronize(store, transport, role, config).await,
+            Storage::Redb(store) => store
+                .session(async {
+                    let store = store
+                        .read()
+                        .await
+                        .map_err(|error| crate::SyncError::PreApply(error.to_string()))?;
+                    kv_sync::synchronize(&*store, transport, role, config).await
+                })
+                .await
+                .map_err(|error| crate::SyncError::PreApply(error.to_string()))?,
         }
     }
 }

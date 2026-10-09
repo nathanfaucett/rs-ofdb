@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, ops::RangeBounds};
 
+use async_lock::MutexGuardArc;
 use async_stream::stream;
 use futures::Stream;
 use redb::{ReadableTable, WriteTransaction};
@@ -18,17 +19,29 @@ trait WriteTransactionHandle {
     fn rollback(self) -> BTreeResult<()>;
 }
 
-impl WriteTransactionHandle for WriteTransaction {
+pub struct NativeWriteTransaction {
+    inner: WriteTransaction,
+    _admission: MutexGuardArc<()>,
+}
+
+impl NativeWriteTransaction {
+    pub(crate) fn new(inner: WriteTransaction, admission: MutexGuardArc<()>) -> Self {
+        Self {
+            inner,
+            _admission: admission,
+        }
+    }
+}
+
+impl WriteTransactionHandle for NativeWriteTransaction {
     fn transaction(&self) -> &WriteTransaction {
-        self
+        &self.inner
     }
-
     fn commit(self) -> BTreeResult<()> {
-        WriteTransaction::commit(self).map_err(BTreeError::custom)
+        self.inner.commit().map_err(BTreeError::custom)
     }
-
     fn rollback(self) -> BTreeResult<()> {
-        WriteTransaction::abort(self).map_err(BTreeError::custom)
+        self.inner.abort().map_err(BTreeError::custom)
     }
 }
 
@@ -52,7 +65,7 @@ pub struct RedbBTreeTransactionCore<T, K, V> {
     _phantom_marker: PhantomData<fn(K, V)>,
 }
 
-pub type RedbBTreeTransaction<K, V> = RedbBTreeTransactionCore<WriteTransaction, K, V>;
+pub type RedbBTreeTransaction<K, V> = RedbBTreeTransactionCore<NativeWriteTransaction, K, V>;
 pub type RedbBTreeScopedTransaction<'a, K, V> =
     RedbBTreeTransactionCore<&'a WriteTransaction, K, V>;
 
