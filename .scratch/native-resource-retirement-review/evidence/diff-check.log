@@ -1,0 +1,3 @@
+command: ['git', '--no-pager', 'diff', '--check']
+
+exit=0

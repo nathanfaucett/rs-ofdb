@@ -77,18 +77,11 @@ impl Database {
         path: impl AsRef<Path>,
         table: impl Into<String>,
     ) -> Result<Self, Error> {
-        btree_redb::check_not_retired(path.as_ref())
-            .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
         let table = table.into();
         let path = path.as_ref();
         let existed = path.exists();
-        let db = if existed {
-            redb::Database::open(path)
-                .map_err(|error| Error::from(btree::BTreeError::custom(error)))?
-        } else {
-            redb::Database::create(path)
-                .map_err(|error| Error::from(btree::BTreeError::custom(error)))?
-        };
+        let db = btree_redb::open_unretired(path, !existed)
+            .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
         let definition = btree_redb::table_definition::<btree_redb::Bytes, Vec<u8>>(&table);
         if existed {
             use redb::ReadableDatabase;

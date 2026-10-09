@@ -60,7 +60,20 @@ fn marker(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-pub fn check_not_retired(path: &Path) -> io::Result<()> {
+// ponytail: namespace IO is serialized process-wide; use per-path locks if open/retire throughput matters.
+static NAMESPACE: StdMutex<()> = StdMutex::new(());
+
+pub fn open_unretired(path: &Path, create: bool) -> io::Result<redb::Database> {
+    let _namespace = NAMESPACE.lock().expect("native namespace lock");
+    check_not_retired(path)?;
+    if create {
+        redb::Database::create(path).map_err(io::Error::other)
+    } else {
+        redb::Database::open(path).map_err(io::Error::other)
+    }
+}
+
+fn check_not_retired(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
             return Err(io::Error::new(
@@ -186,6 +199,7 @@ fn read_record(path: &Path) -> io::Result<(String, Vec<OwnedFile>)> {
 /// owner still holds persistence. The permanent marker fences ordinary opens.
 pub fn remove_retired(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
+    let _namespace = NAMESPACE.lock().expect("native namespace lock");
     let (identity, stages) = read_record(path)?;
     let persistence = OwnedFile {
         path: path.to_path_buf(),
@@ -354,6 +368,7 @@ impl<R: Clone> NativeResource<R> {
     }
 
     fn persist_retirement(&self) -> io::Result<()> {
+        let _namespace = NAMESPACE.lock().expect("native namespace lock");
         let marker_path = marker(&self.inner.path);
         let identity = self
             .inner

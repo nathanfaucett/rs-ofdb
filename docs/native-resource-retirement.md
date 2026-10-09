@@ -2,8 +2,12 @@
 
 Implemented on the isolated `native-resource-retirement` branch based on
 `storage-sync-integration` at `4cd65c17c08733c7eb74ef65850380c2ba74f8c6`.
-**Pending independent review; not integrated.** Qualification and limits are recorded
-in [the owner follow-up](../.scratch/native-resource-retirement/issues/01-public-native-retirement.md).
+**Independently reviewed and corrected; owner contract qualified for integration.**
+The review of `2b424b5` found and test-first repaired a concurrent native-open fence
+bypass. Qualification and limits are recorded in
+[the owner follow-up](../.scratch/native-resource-retirement/issues/01-public-native-retirement.md) and
+[the independent review](../.scratch/native-resource-retirement-review/review.md).
+Actual integration and consumer handoff are recorded locally in owner ticket 15.
 
 ## Public contract
 
@@ -31,6 +35,9 @@ Once a retirement future is polled:
 
 1. Gate new operations. Atomically publish and fsync `<path>.ofdb-retired`, including
    the native file identity and exact identities/paths of owner-native stages.
+   Managed native opens, marker publication and restart cleanup serialize namespace
+   IO within the process; an opener cannot pass the marker check then recreate the
+   resource after removal. Query/transaction drain does not hold that namespace lock.
 2. Abort active sync waits without sending/waiting for network messages. Executors
    must continue polling or drop admitted futures for them to drain. Already
    admitted local operations finish; idle explicit transactions are rolled back by
@@ -62,7 +69,10 @@ cleanup failure. Neither deletes the permanent retirement marker.
 - The caller exclusively owns the database pathname and reserved marker namespace.
   A file must belong to one logical resource, not an unrelated shared multi-table
   store. No hard-link/alternate-path owner coordination or protection against
-  concurrent external namespace replacement is promised. Marker data is trusted
+  concurrent external namespace replacement is promised. Exclusive namespace
+  ownership includes excluding concurrent constructors/cleanup in other processes;
+  the process-local namespace lock is not a cross-process lifecycle coordinator.
+  Marker data is trusted
   owner metadata, not untrusted wire input.
 - **Permanent fence; no recreation/ungate API.** Ordinary opens of a retired pathname
   deny even after successful removal. Do not have consumers unlink the marker to

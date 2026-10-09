@@ -344,6 +344,53 @@ async fn unmanaged_native_hosting_refuses_retirement() {
 }
 
 #[tokio::test]
+async fn admitted_transaction_operation_drains_before_native_removal() {
+    use ofdb_sql::{QueryParams, SqlTranslator, Statement, TranslateError, Translator};
+    struct Paused(tokio::sync::Notify);
+    impl Translator for Paused {
+        async fn translate_with_params(
+            &self,
+            query: &str,
+            params: Option<&QueryParams>,
+        ) -> Result<Vec<Statement>, TranslateError> {
+            self.0.notified().await;
+            SqlTranslator.translate_with_params(query, params).await
+        }
+    }
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("resource.redb");
+    let database = Database::open(&path).expect("open");
+    let mut transaction = database.client().transaction().await.expect("transaction");
+    let translator = Paused(tokio::sync::Notify::new());
+    let mut operation = Box::pin(
+        transaction
+            .translate_and_execute("CREATE TABLE admitted (id UUID PRIMARY KEY)", &translator),
+    );
+    assert!(futures::poll!(operation.as_mut()).is_pending());
+    let mut retirement = Box::pin(database.retire_and_remove());
+    assert!(futures::poll!(retirement.as_mut()).is_pending());
+    assert!(
+        path.exists(),
+        "admitted transaction still owns native persistence"
+    );
+    assert!(database.client().transaction().await.is_err());
+    assert!(
+        Database::remove_retired(&path).is_err(),
+        "live native transaction must prevent unlink"
+    );
+    translator.0.notify_one();
+    operation
+        .await
+        .expect("admitted transaction operation finishes");
+    retirement.await.expect("drain then remove");
+    assert!(
+        transaction.commit().await.is_err(),
+        "later commit is a new operation, not previously admitted work"
+    );
+    assert!(!path.exists());
+}
+
+#[tokio::test]
 async fn retired_transaction_denies_before_calling_user_translation() {
     use ofdb_sql::{QueryParams, Statement, TranslateError, Translator};
     struct MustNotRun;

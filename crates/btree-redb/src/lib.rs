@@ -18,6 +18,6 @@ pub use redb::{RedbKey, RedbValue, table_definition};
 pub use transaction::{RedbBTreeScopedTransaction, RedbBTreeTransaction};
 pub use value::Value;
 
-pub use resource::{NativeResource, NativeTransaction, check_not_retired, remove_retired};
+pub use resource::{NativeResource, NativeTransaction, open_unretired, remove_retired};
 
 pub use stage_cleanup::NativeStageTracker;

@@ -94,6 +94,49 @@ async fn failed_removal_is_fenced_and_retryable_without_touching_replacement() {
     assert!(!path.exists());
 }
 
+#[tokio::test]
+async fn opener_paused_before_native_construction_cannot_recreate_retired_resource() {
+    struct PausedTable {
+        entered: std::sync::mpsc::Sender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    }
+    impl From<PausedTable> for String {
+        fn from(table: PausedTable) -> Self {
+            table.entered.send(()).expect("signal paused opener");
+            table.resume.recv().expect("resume opener");
+            "kv".to_owned()
+        }
+    }
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("resource.redb");
+    let database = Database::open_with_table(&path, "kv").expect("open");
+    let (entered, paused) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    let opening_path = path.clone();
+    let opener = std::thread::spawn(move || {
+        Database::open_with_table(
+            &opening_path,
+            PausedTable {
+                entered,
+                resume: resumed,
+            },
+        )
+    });
+    paused
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("opener paused");
+    database.retire_and_remove().await.expect("retire");
+    resume.send(()).expect("resume opener");
+    assert!(
+        opener.join().expect("opener thread").is_err(),
+        "a concurrent opener must not bypass the retirement fence"
+    );
+    assert!(
+        !path.exists(),
+        "denied opener must not recreate persistence"
+    );
+}
+
 #[cfg(feature = "sync")]
 #[tokio::test]
 async fn checked_and_unchecked_sync_waits_cancel_on_retirement() {

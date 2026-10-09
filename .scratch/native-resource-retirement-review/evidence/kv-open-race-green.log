@@ -1,0 +1,10 @@
+   Compiling ofdb-btree-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/btree-redb)
+   Compiling ofdb-kv v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/kv)
+    Finished `test` profile [optimized] target(s) in 8.54s
+     Running tests/retirement.rs (target/owner-retirement-review/debug/deps/retirement-f19f2724c7b60a53)
+
+running 1 test
+test opener_paused_before_native_construction_cannot_recreate_retired_resource ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.03s
+

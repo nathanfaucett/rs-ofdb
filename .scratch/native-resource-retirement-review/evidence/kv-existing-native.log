@@ -1,0 +1,14 @@
+command: ['cargo', 'test', '--config', 'profile.dev.package."*".opt-level=0', '-p', 'ofdb-kv', '--features', 'redb', '--test', 'embedded_redb_client']
+   Compiling ofdb-kv v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/kv)
+    Finished `test` profile [optimized] target(s) in 2.63s
+     Running tests/embedded_redb_client.rs (target/owner-retirement-review/debug/deps/embedded_redb_client-7a0ffd22d99b25db)
+
+running 3 tests
+test unsupported_named_table_is_not_replaced ... ok
+test redb_client_shares_storage_and_survives_database_drop ... ok
+test existing_named_table_transactions_reopen_without_conversion ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+exit=0

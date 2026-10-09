@@ -26,7 +26,7 @@ type CandidateValidator<'a> =
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use engine_automerge::AutomergeRowCodec;
 #[cfg(feature = "redb")]
-use engine_redb::{RedbKernel, redb};
+use engine_redb::RedbKernel;
 
 /// An application-facing database using the Automerge row codec.
 /// Explicit user-row keys accept RFC UUIDv5 or UUIDv7; generated and catalog
@@ -255,10 +255,8 @@ impl Database {
 
     #[cfg(feature = "redb")]
     pub fn open(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
-        engine_redb::check_not_retired(path.as_ref()).map_err(native_error)?;
         let path = path.as_ref();
-        let database = redb::Database::create(path)
-            .map_err(|error| QueryError::new(crate::ErrorKind::Storage, error.to_string()))?;
+        let database = engine_redb::open_unretired(path, true).map_err(native_error)?;
         Ok(Self {
             backend: DatabaseBackend::File(
                 engine_redb::NativeResource::new(

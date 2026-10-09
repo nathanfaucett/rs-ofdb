@@ -1,6 +1,6 @@
 # 01 — Public native SQL/KV whole-resource retirement
 
-Status: claimed — implemented focused contract; pending independent review; not integrated
+Status: resolved — managed native owner contract independently reviewed, corrected and qualified for authorized integration
 
 ## Request and scope
 
@@ -11,7 +11,8 @@ Read-only consumer handoff:
 Own isolated branch/worktree: `native-resource-retirement`,
 `ofdb/.scratch/worktrees/native-resource-retirement`.
 Base: `storage-sync-integration`, `4cd65c17c08733c7eb74ef65850380c2ba74f8c6`.
-No `of`/`offs` edits or changes to original integration. No merge authorized.
+No `of`/`offs` edits. Original implementation did not have merge authorization;
+subsequent recovery request authorizes reviewed integration into storage-sync-integration.
 
 Assessment before implementation: high-priority concrete consumer capability gap;
 medium/high lifecycle risk (native writer exclusion, retained transactions,
@@ -97,15 +98,40 @@ All commands use only this worktree and the initially empty isolated
 
 ## Independent review and integration
 
-**No independent review has been obtained; no integration is authorized.** Review
+Historical pre-review handoff: no independent review or integration authorization
+had been obtained at `2b424b5`. Requested review scope:
 shared admission races/async writer ordering, idle-transaction rollback, abort/drop
 stage lifetime, marker fsync/publication/identity validation, exact stage/persistence
 cleanup and native lock probe, failure/cancellation/restart idempotence, and the
-hosting/permanent-fence/custom-stage limits against the consumer handoff. Parent
-must direct reviewed integration separately. This does not complete of05 or the
-entire offline-first implementation.
+hosting/permanent-fence/custom-stage limits against the consumer handoff. The recovery request now directs reviewed integration after fixes and focused
+qualification. This does not complete of05 or the entire offline-first implementation.
 
 ## Comments
 
 2026-10-09: Generic owner implementation and focused native evidence retained on the
 isolated branch. Consumer policy/completion remains in `of`; no consumer edits.
+
+2026-10-09 independent recovery review: reviewed the entire `4cd65c1..2b424b5`
+change from correctness/QA, lifecycle/design, architecture and security/data
+perspectives. Global change-review instructions loaded directly (tool registration
+unavailable); no subagent tools available. Confirmed a blocker via deterministic
+public KV paused-opener regression: marker precheck raced retirement, then redb
+construction recreated a live retired resource. RED and GREEN are retained in
+`../../native-resource-retirement-review/evidence/`. Shared native namespace
+serialization now covers both facade constructors, marker publication and restart
+cleanup; removed obsolete standalone precheck exports. No cross-process/alternate
+path coordinator claim. Added explicit SQL active-transaction-operation drain/no
+unlink/later commit denial evidence. All managed facade routes trace to the gate.
+
+Independent focused qualification after correction: SQL retirement 9/9 (one child
+fixture is a no-op in the ordinary harness); KV retirement 6/6; existing SQL native
+client 1/1, KV native named-table/client/transaction 3/3, btree multi-table commit
+1/1, SQL kernel isolation/reopen 1/1. Strict facade library Clippy, touched-file
+format and diff checks pass. Full commands, logs, review rationale and retained
+limits in `../../native-resource-retirement-review/review.md`. No powerset, CRAP,
+workspace sweep or consumer tests. Owner worktree retained; only the review-owned
+isolated target is to be cleaned after exact-path verification. Local root owner
+storage-sync ticket 15/map will record actual integration head and cleanup. The
+hosting refusal, permanent fence/reselection gap, caller-owned custom stages,
+Unix/exclusive-namespace scope, and power-loss/pre-marker-stage limits remain
+explicit; owner acceptance is not of05 consumer acceptance.
