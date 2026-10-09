@@ -55,9 +55,18 @@ One-shot client binaries `sql-client-cli` and `kv-client-cli` live in `crates/sq
 
 ## Ownership boundaries
 
-- `ofdb` owns SQL-like and KV persistence and sync semantics.
-- `of` owns application resource issuance, catalog management and client token authorization.
-- The caller binds a sync session to an approved endpoint, selected resource ID and valid grant before frames are exchanged.
+- `ofdb-kv` and `ofdb-sql` are the exclusive production database interfaces for `of` consumers; lower-level store, engine, backend, and sync plumbing stays inside `ofdb`.
+- `ofdb` owns SQL-like and KV persistence, CRDT reconciliation, sync execution, staging, batching, atomic apply, and cleanup.
+- `of` owns application resource issuance, catalog management, domain authorization decisions, and authenticated transport binding.
+- The caller binds a sync session to an approved endpoint, selected resource ID and valid grant before frames are exchanged. The target migration additionally checks caller authorization before each atomic apply operation, including staged replay, recovery, and retry, through the smallest suitable generic hook; no domain policy or mandated new trait belongs in `ofdb`.
 - `ofnet` supplies endpoint mesh transport and ALPN routing; it does not own database state or authorization policy.
+
+### Planned storage-sync migration
+
+The plan is tracked in [the storage-sync spec](../.scratch/storage-sync/spec.md) and [work map](../.scratch/storage-sync/map.md); it is not yet an implemented pre-apply authorization contract. KV already exposes named-table construction, client transactions, and explicit sync, but `of` currently constructs its lower-level KV store and calls its sync implementation directly. SQL already provides memory staging and a custom stage-factory path; move the concrete native staging currently implemented by `of` into an optional `ofdb` implementation exposed through the SQL facade, preserving the `no_std`/`alloc` core where appropriate.
+
+Authorization is checked before each complete atomic apply, not merely at session start or frame receipt. A denied operation applies nothing; an already-authorized operation may finish. Preserve validation, complete-row/catalog atomicity, recovery completeness, cancellation cleanup, and earlier valid committed progress. Do not add custom byte quotas, timeouts, deadlines, or authorization freshness policy. Generic persistence/sync tests belong in `ofdb`; real authorization integration belongs in `of`.
+
+All nodes may write locally while offline and later reconcile through CRDT semantics. This does not imply globally consistent authorization or instantaneous revocation. SQL and KV phases remain separate transaction scopes.
 
 File-backed database URIs describe `ofdb` persistence only. They are not filesystem IDs or filesystem storage.
