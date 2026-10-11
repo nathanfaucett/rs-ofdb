@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (directional disclosure, recovery and durable progress)
 Blocked by: None; 06 downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public directional/candidate and owner hostile-wire/forward-recovery tests with relevant host native/memory/core features. Isolated same-host peers retain both roles, complementary-direction/mismatch gates, completed/partial native reopen retry, real inventories, source unchanged, index/conflict/tombstone correctness, reverse-history rejection and forward validation/cleanup. Both scoped peers must update; metadata disclosure, memory hostile-recovery versus native durability evidence and denial-versus-cancellation limits remain explicit. Mocks do not qualify authenticated consumer bootstrap/readiness. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Concrete handoff
 
 Read ONLY of/.worktrees/equal-node-setup/docs/public-persistence.md receive-only handoff160–208, actual node_bootstrap_owner_tests.rs and original04 latest comments (14bb87c). Ordinary candidate-validated sessions abort retry at retained receiver outgoing preflight; rejecting callback is not a filter. Source/receiver constrained execution must suppress receiver State/Changes for application catalogs/indices/rows and recovery, without pretending its persisted progress empty or permitting source reverse applies. No consumer filter, domain policy, bootstrap authorization/readiness or new trait/framework.

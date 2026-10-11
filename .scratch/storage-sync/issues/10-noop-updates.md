@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Low / medium (mutation/delta identity)
 Blocked by: None
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use the bounded focused public unchanged-update regression with relevant native/sync/SQL features: direct and explicit-transaction no-ops preserve exact history/state, native reopen, later real mutation and same-host incremental convergence. Retain conflict/tombstone/hash checks; consumer no-rotation behavior still needs its owner's real rerun. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Contract and acceptance
 
 Consumer of02 comment49: active no-rotation client credential test reaches Incremental payload has no change after08. Same-value UPDATE must succeed, including explicit Transaction commit, without inventing timestamps, generating a new incremental record or ignoring integrity errors. Public facade TDD regression proves state/history unchanged; later genuine mutation and sync/reopen remain usable. Fix generic owner root cause with minimal changes, separate commit. Preserve conflicts/tombstone/hash validation and other work.

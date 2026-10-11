@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (issued-handle admission, native lifetime, safe unlink and restart)
 Blocked by: None for the qualified managed native owner capability; of05 consumer integration downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused SQL/KV retirement and selected native persistence tests on separate dedicated files/stage paths in an exclusively owned Linux namespace. Retain issued-handle denial, admitted-operation drain, idle-transaction rollback/later-commit denial, pending-sync cleanup, concurrent paused opener rejection, exact targeted unlink/unrelated retention, failure/cancellation/retry and local child-process restart after durable fence. Same-host child processes suffice for the recorded sequential restart contract, not concurrent cross-process coordination or power-loss proof. Unix-only/permanent-fence/raw/remote/hosting/custom-stage limits remain exact; unsupported retirement is not a pass or consumer completion. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Concrete handoff
 
 Read `of/.scratch/offline-first-nodes/evidence/05-completion/owner-api-audit.md` and `of/docs/public-persistence.md#managed-copy-retirement-public-owner-handoff` read-only. Original owner base `4cd65c17c08733c7eb74ef65850380c2ba74f8c6`; independently reviewed complete implementation `2b424b5c0cadbad296f0046a38fd4c5dc6d64867` and corrective work. No of/offs writes, domain catalog/Tombstone changes, remote erasure, consumer unlink implementation, powerset, CRAP or workspace sweeps.

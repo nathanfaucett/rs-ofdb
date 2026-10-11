@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (replicated history integrity)
 Blocked by: None; 06 is downstream, not a gate.
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused kernel/session/public conflict tests with relevant host native/in-memory/core features and a small explicitly bounded repeat count. Isolated same-host peers exercise sequential/concurrent writes, causal inversion across frames, forged/duplicate IDs, atomic rejection, partial resolution, native reopen and real incremental convergence without relaxing hash validation. Pre-fix persisted overlapping-bundle upgrade histories remain unqualified, not declared unsupported or fixed by narrower testing. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Scope
 
 Consumer of02 comments 35–39 and subsequent evidence report intermittent `Incremental change hash does not match key` before resolution (2/5 repetitions). Owner 07 also observed failure after resolution/reopen. Reproduce at owner baseline 1f0fe5aedb41fb728ce5ad58182381d6e11bc950, isolate generic cause, fix in owner worktree only. Preserve prior commits and hash validation, no domain workaround or consumer edits.
@@ -15,7 +19,7 @@ Consumer of02 comments 35–39 and subsequent evidence report intermittent `Incr
 
 - Deterministic red/green at existing public owner SyncRowCodec/Engine seam proves exported ID and payload correspond after sequential writes; forged payload/ID rejected atomically, duplicates remain safe.
 - Public facade native/in-memory incremental synchronization preserves concurrent values, explicit partial restrictive resolution and unresolved ownership, including native reopen and final incremental convergence. Repeated focused regressions pass with exact counts recorded.
-- Minimal generic root-cause fix; no feature/dependency/API expansion, validation weakening, domain policy or unrelated refactoring. Core no_std checks and focused suites/lints pass; final broad outcomes explicitly recorded.
+- Minimal generic root-cause fix; no feature/dependency/API expansion, validation weakening, domain policy or unrelated refactoring. Relevant host core no_std checks and bounded focused suites/targeted lints pass with exact outcomes recorded; broad sweeps are follow-up qualification, not closure gates. Preserve all historical broad outcomes below.
 - Sync current integration tip before commit/report; never merge owner into integration. Preserve other work and original dirty docs.
 
 ## Evidence

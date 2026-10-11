@@ -8,6 +8,10 @@ Blocked by: None
 Priority: High
 Complexity / risk: High / high
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused SQL facade/catalog/recovery tests and host core/native feature checks. Isolated same-host peers cover both roles, every complete catalog/row/replay/retry/recovery apply, changing decisions, malformed payload rejection, denied-operation rollback, prior progress and pending-Abort/cancellation stage cleanup. Fake hooks prove check placement only; real authenticated peer/resource and domain decisions remain of-owned evidence, not mock qualification. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Scope and deliverable
 
 Thread the smallest suitable generic caller check through public SQL sync, atomic apply, staged replay, recovery and retries in `crates/sql-sync/src/session.rs` and `crates/sql/src/database.rs`. Prefer an existing seam or function/closure; no mandated new trait or shared policy framework. No IdP/Management types or policy model.

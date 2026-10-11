@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (history disclosure and mutation boundary)
 Blocked by: None; 06 downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public historical-value/scoped-wire tests with relevant host native/memory/core features. Isolated same-host peers retain both-role default/overwritten/deleted/losing-conflict checks, state/delta/fallback/recovery and late actual export validation, rejected disclosure/import, prior valid commits, native reopen and pending-Abort cleanup. Generic rejected Text proves the callback boundary, not production closed-JWK/grant/field policy; real marker3 consumer qualification remains of02-owned. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Contract
 
 Review P1 in original [of02 Comments35–37](../../../../of/.scratch/offline-first-nodes/issues/02-public-persistence-and-sync-integration.md): fixed-schema SQL-type validation alone cannot prevent a Text field carrying forbidden domain data, even if overwritten/deleted or losing a conflict. Owner supplies a generic synchronous historical-value callback; of owns closed JWK/grant/field policy. No of edits.

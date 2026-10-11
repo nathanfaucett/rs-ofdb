@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (transactional authorization observations, rollback and disclosure)
 Blocked by: None; 06 downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public candidate tests, kernel catalogless rejection and owner forced-recovery tests with relevant host native/memory/core features. Isolated same-host peers retain both-role same-transaction correlation, actual conflict/tombstone observations, schema-reorder label bijection, atomic denial/prior progress, late export rejection, native reopen and cleanup. Memory forced-recovery evidence is not native production recovery or consumer domain/provenance qualification; retain the exact evidenced split and consumer blockers. This scope note preserves resolved status and historical review/evidence; no tests run in this docs-only checkpoint.
+
 ## Consumer blocker and contract
 
 Read original of docs/public-persistence.md concrete bootstrap handoff125–155, offline-first-nodes spec and latest03 marker3 handoffs. Scalar historical-value validation cannot correlate actual complete row identity/bindings or prospective local related rows/conflicts. Actor/action/provenance and bootstrap admission remain of-owned; no ledger, original-mutator claims or domain traits belong in storage.

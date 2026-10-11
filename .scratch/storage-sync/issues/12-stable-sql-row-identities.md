@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: Medium / high (identity, reconciliation and tombstones)
 Blocked by: None; 06 downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public UUID/native-reopen, pre-first-sync-update, kernel identity and scoped-wire tests with relevant host native/memory/core features. Independent same-key writes/partitions need only isolated same-host peers; retain both roles, whole/scoped fallback, causal/hash integrity, conflict resolution, delete/update/stale replay non-resurrection and exact v5/v7/variant rejection. Record actual test stack settings; historical stack overflow remains a failure at that setting, not a default-stack pass. Consumer selection/authorization remains separately owned. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Contract
 
 Original of03 Comments35 identifies the real Management resource_selection_id blocker: deterministic UUIDv5 cannot be inserted through the native public SQL facade. Reviewed selection_policy.rs generation, insert/retry, conflict inspection and UPDATE-based deselection. No of edits or fake UUIDv7 domain keys.

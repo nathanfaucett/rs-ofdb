@@ -8,6 +8,10 @@ Blocked by: None
 Priority: High
 Complexity / risk: Medium / high
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused KV facade/snapshot-batch tests and relevant host feature checks. Isolated same-host stores cover both roles, buffered later batches, allow/deny/error, pending-Abort and cancellation, malformed-batch rollback, valid prior commits and fresh-session retry with merge/generation/tombstone semantics intact. Fake hooks qualify the owner boundary, not real consumer authentication/domain authorization. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Scope and deliverable
 
 Expose the smallest suitable generic caller check through ofdb-kv sync. Start with `crates/kv-sync/src/session.rs` received batches/transactions and `crates/kv/src/database.rs`. Prefer an existing seam or function/closure; no mandated new trait. Consumer uses public facade, not lower-level imports.

@@ -9,6 +9,10 @@ External dependencies: [of 02 — public persistence and sync integration](../..
 Priority: High
 Complexity / risk: Low / medium
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Accept externally supplied bounded, focused consumer evidence from isolated same-host instances using real Iroh/ofnet adapters and real domain authorization: authenticated peer/resource binding, per-apply denial, already-authorized completion, partial progress, SQL/KV phase separation and cleanup. Physical nodes/foreign OS/full sweeps are not gates. Facade migration, obsolete concrete-stage removal and real authorization implementation/evidence are still required; owner mocks or tracker consolidation cannot substitute. Work remains open with the exact of 02/of 03 dependencies; this docs-only checkpoint runs no consumer tests and claims no new evidence.
+
 ## Scope
 
 Record stable public contract and externally supplied integration evidence. This is an ofdb documentation ticket, not permission to edit of/offs/ofnet.
@@ -26,7 +30,7 @@ Record stable public contract and externally supplied integration evidence. This
 - 05 has local evidence; public usage/check responsibility is documented as implemented, not only planned.
 - Record delivery/test evidence on [of 02 — public persistence and sync integration](../../../../of/.scratch/offline-first-nodes/issues/02-public-persistence-and-sync-integration.md) and [of 03 — execution-boundary authorization](../../../../of/.scratch/offline-first-nodes/issues/03-execution-boundary-authorization.md); both are required, not just tracker existence.
 - Production database consumers use only ofdb-kv/ofdb-sql interfaces: no direct backend construction/lower-level sync/concrete staging for this responsibility.
-- Real Iroh authentication and domain authorization integration in of, through protocol transport adapters built atop ofnet, proves authenticated peer/resource binding, denial before next apply, permitted completion of already-authorized work, valid partial progress and cleanup across separate SQL/KV phases. Endpoint allowlists enforce connection admission, not resource permission or a substitute for per-apply authorization.
+- Bounded focused real Iroh authentication and domain authorization integration in of, through protocol transport adapters built atop ofnet on isolated same-host instances, proves authenticated peer/resource binding, denial before next apply, permitted completion of already-authorized work, valid partial progress and cleanup across separate SQL/KV phases. Endpoint allowlists enforce connection admission, not resource permission or a substitute for per-apply authorization; fake hooks alone do not satisfy this consumer gate.
 - Generic persistence/sync tests reside in ofdb, remain transport-neutral, and need no Iroh dependence; real authentication/domain integration resides in of. Record unresolved external blockers; local tests alone do not establish migration completion.
 
 ## Comments

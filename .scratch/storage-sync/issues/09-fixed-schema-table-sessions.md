@@ -7,6 +7,10 @@ Priority: High
 Complexity / risk: High / high (history confidentiality, catalog references)
 Blocked by: None; 06 downstream
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public scoped-sync and owner scoped-wire/kernel tests with relevant host native/memory/core features. Isolated same-host peers retain both-role allowlist enforcement, excluded secret history, hostile overwritten/deleted/malformed properties, catalog/index/delta/recovery widening rejection, conflicts/tombstones, native reopen, atomic rollback and pending-Abort cleanup. Structural SQL-type scope is not closed-domain value qualification (11) or real consumer authorization. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Contract
 
 Consumer b39d3fad, original of02 comments35–55 and public-persistence.md require existing checked sessions scoped by tables slice. Public Database::synchronize_tables_checked(transport, config, role, tables, check) and synchronize_tables_with_stage_directory_checked(transport, config, role, directory, tables, check). Existing zero-argument async check, transports and owner stages only. IdP eleven public metadata/grant tables and Management six RBAC/selection tables explicitly listed in of02; all local_* plus email/phone/audit tables excluded. No of edits.
@@ -16,7 +20,7 @@ Consumer b39d3fad, original of02 comments35–55 and public-persistence.md requi
 - Reject empty/duplicate/invalid scope, require locally predeclared schemas. Both directions constrain manifest, catalog/index, incremental/state and recovery; peer cannot widen scope.
 - Validate full historical column identities and encoding, including unknown overwritten/deleted properties and malformed history; reject schema widening, never prune CRDT bytes/project rows.
 - Preserve selected full conflicts, causal history, resolution and data tombstones; atomic catalog/index dependencies and existing per-apply cancellation checks/cleanup in both roles. Document committed-progress/failure transport disposal limits honestly.
-- Public facade red/green/native stages/reopen/adversarial regressions, no_std/features/lints and bounded full qualification outcomes. Minimal owner implementation, no generic auth framework/domain policy/dependency expansion.
+- Bounded focused host-local public facade red/green/native stages/reopen/adversarial regressions, relevant host no_std/feature checks and targeted lints with exact outcomes. Full sweeps are follow-up qualification, not closure gates; historical outcomes remain unchanged. Minimal owner implementation, no generic auth framework/domain policy/dependency expansion.
 
 ## Comments
 

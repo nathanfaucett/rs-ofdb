@@ -8,6 +8,10 @@ Blocked by: None
 Priority: High
 Complexity / risk: Low / medium
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused embedded Redb/in-memory/client/facade-sync tests with relevant features: named `kv` table read/write/reopen, explicit commit/rollback, ordering, expiry, generations and tombstones. Offline divergence/convergence uses isolated same-host stores and transport-neutral channels; the tested consumer uses only public facades. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Scope and deliverable
 
 Prove existing `ofdb-kv` interfaces replace direct `KvStore<RedbByteBTree>` construction. Use `crates/kv/src/{database,client,transaction}.rs` and facade integration tests. The consumer uses table `kv`, not default `ofdb-kv`. Reuse APIs; add one only for a demonstrated gap. No caller timestamps/backend types.

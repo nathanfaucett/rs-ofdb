@@ -8,6 +8,10 @@ Blocked by: None
 Priority: High
 Complexity / risk: Medium / high (security-sensitive conflict visibility and transaction snapshot semantics)
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused public conflict/transaction tests on native and in-memory stores: real concurrent writes, exact names/values, atomic invalid resolution, tombstone rejection and native reopen. Same-host remote connections must return explicit Unsupported for conflict operations, not false clear results. Check relevant host no-default/native/memory/remote feature boundaries and targeted lints; incremental repair evidence remains ticket 08, not inferred from whole-state convergence. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Consumer blocker and scope
 
 Consumer of02's `of/.worktrees/public-persistence/docs/public-persistence.md` Remaining migration and integration gaps identifies missing Database/Client conflict functionality. Original `of/crates/db/src/native.rs` constructs Engine/RedbKernel/AutomergeRowCodec/raw Redb through facade reexports; IdP/Management cannot remove these backend dependencies without conflict-aware public operations. This is a concrete migration unblocker, not scope expansion. Ticket 06 is downstream handoff evidence and must not gate 07 or of02.
@@ -28,7 +32,7 @@ Through Database::client(), Client exposes row_conflicts(table: &str, key: &Row)
 - Preserve existing engine validation and atomic resolution: unknown, repeated, nonconflicted and primary-key fields/empty assignment/malformed keys/missing rows rejected; failed operation leaves valid prior state and conflicts unchanged. Resolution cannot resurrect tombstoned rows.
 - Transaction-local names/values match active snapshot, see local writes, allow caller fail-closed checks; failed/closed transactions cannot return misleading clear results. No second transaction/deadlock or backend escape. Read-only snapshot errors must not cause hidden commits.
 - Caller policy remains external: facade returns all values, no automatic safe/unsafe security decisions, audit changes or last-writer-wins projection. Client deadline behavior remains consistent with existing methods.
-- Focused facade native/reopen and transaction tests pass after observed red/green. Native/in-memory/no-default/remote-only feature builds and no_std engine checks retain boundaries; focused regressions/lints pass with exact commands recorded. Final broad validation outcomes must be explicit, never infer timeouts are passes.
+- Bounded focused host-local facade native/reopen and transaction tests pass after observed red/green. Relevant native/in-memory/no-default/remote-only feature checks and host no_std engine checks retain boundaries; targeted regressions/lints pass with exact commands recorded. Unrun/unsupported cases and timeouts remain explicit; broad sweeps are follow-up qualification, not closure gates, and historical outcomes below are not rewritten.
 - Work only ofdb owner worktree and original ignored tracker/map. Preserve dirty original docs and prior owner commits. Merge current integration tip before committing/reporting; no owner-branch merge back into integration and no consumer edits.
 
 ## Evidence

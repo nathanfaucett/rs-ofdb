@@ -8,6 +8,10 @@ Blocked by: None
 Priority: High
 Complexity / risk: Medium / medium
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused native-stage/facade tests with isolated temporary directories and relevant core/native feature checks on the host. Retain append/replay order, malformed/truncated records, lifecycle, creation failure, handle closure, denial/error/drop/cancellation cleanup and observable cleanup failure. Native SQL composition may use isolated same-host peers; no foreign filesystem gate or power-loss/drop-cleanup promise is added. This scope note preserves resolved status and historical evidence; no tests run in this docs-only checkpoint.
+
 ## Scope and deliverable
 
 Add optional file-backed SQL staging and usable public ofdb-sql setup. Start with `crates/sql-sync/src/staging.rs`, its manifest, and `crates/sql/src/{api,database}.rs`. Reference caller `of/crates/storage-server/src/sync_stage.rs` for lifecycle/generic tests, not IdP IDs or custom policy constants. Exact feature/setup shape is an implementation choice.

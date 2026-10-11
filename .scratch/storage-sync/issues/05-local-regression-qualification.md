@@ -8,6 +8,10 @@ Blocked by: None (baseline CRAP coverage aggregation limitation recorded, not a 
 Priority: High
 Complexity / risk: Medium / high
 
+## Machine-local validation scope
+
+Apply the [common Ubuntu Linux x86_64 policy](../spec.md#machine-local-validation-scope). Use bounded focused SQL catalog/native-stage/facade/cluster and KV facade/cluster tests plus the public-only persisted consumer fixture, with only relevant supported feature combinations. Isolated same-host stores/processes cover offline divergence, recovery/retry, both roles, invalid payload/replay, denial/disconnect/cancellation, complete-operation rollback, prior progress and separate SQL/KV scopes. Host no-default/no_std, remote-only dependency boundaries and targeted formatting/Clippy remain feasible; blanket sweeps are follow-up qualification, not closure gates. This scope note preserves resolved status and all historical broad results/limits; no tests run in this docs-only checkpoint.
+
 ## Scope and deliverable
 
 Additional composition coverage for facade parity, native stages and checks. Extend existing SQL catalog/cluster and KV sync/facade suites. Record local qualification evidence; external of/offs implementation is not a prerequisite.
@@ -21,7 +25,7 @@ Additional composition coverage for facade parity, native stages and checks. Ext
 - SQL-then-KV failure respects separate scopes, not cross-store/session rollback.
 - Deterministic cancellation/fault injection adds no production timeout/byte-budget policy.
 - Verify no_std/alloc core lacks native/runtime dependencies, remote-only facade graphs lack local engine/Redb/Automerge/sync, and optional native/public-only consumer builds work.
-- Record focused results, then final `cargo hack test --feature-powerset --all-targets`, `just crap`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets --all-features`. Explicitly record missing tooling, unsupported combinations, timeouts and unrelated failures; never claim unobserved passes.
+- Record bounded focused host-local test/check results for the relevant suites and supported features, with targeted formatting and package/suite Clippy. No full Cargo Hack, CRAP or workspace/all-target/all-feature sweep is a current closure gate or authorized run. Explicitly distinguish missing tooling, unrun or unsupported cases, timeouts and failures; never claim unobserved passes. Historical broad qualification below remains exact revision-specific evidence.
 
 ## Exclusions and integration
 
