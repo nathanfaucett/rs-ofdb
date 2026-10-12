@@ -1,0 +1,44 @@
+Running as unit: ofdb-sync-support-01.service; invocation ID: d7bbd889eec1443e808b905d3d3885e3
+   Compiling thiserror v2.0.18
+   Compiling serde v1.0.228
+   Compiling getrandom v0.4.2
+   Compiling heapless v0.7.17
+   Compiling uuid v1.23.3
+   Compiling cobs v0.3.0
+   Compiling postcard v1.1.3
+   Compiling redb v4.3.0
+   Compiling futures-macro v0.3.32
+   Compiling typenum v1.20.1
+   Compiling futures-util v0.3.32
+   Compiling generic-array v0.14.7
+   Compiling ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+   Compiling futures-executor v0.3.32
+   Compiling futures v0.3.32
+   Compiling ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling async-stream v0.3.6
+   Compiling digest v0.10.7
+   Compiling ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+   Compiling ofdb-btree v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree)
+   Compiling sha2 v0.10.9
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-btree-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-redb)
+   Compiling ofdb-sql-translator v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-translator)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+   Compiling tokio v1.53.1
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 55s
+     Running tests/catalog.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/catalog-fa8890d469d7e441)
+
+running 1 test
+test manifest_matches_exported_state_digests ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 1min 55.679s
+CPU time consumed: 1min 57.174s
+Memory peak: 256.0K
+Memory swap peak: 0B

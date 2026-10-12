@@ -1,0 +1,41 @@
+Running as unit: ofdb-select-catalog-green-02.service; invocation ID: 68692b15d3cb4f8dad59783854c50413
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+   Compiling ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+   Compiling ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+   Compiling ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+    Finished `test` profile [optimized + debuginfo] target(s) in 54.67s
+     Running tests/conflicts.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/conflicts-0b402531fcb16d50)
+
+running 3 tests
+test native_conflicts_and_explicit_resolution_survive_reopen_and_converge ... ok
+test transaction_conflict_checks_use_local_snapshot_and_reject_aborted_state ... ok
+test unchanged_updates_commit_without_new_history_and_remain_syncable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running tests/scan_layout.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/scan_layout-b99d8ca565c05cb3)
+
+running 6 tests
+test native_conflict_checks_reuse_raw_table_catalog_within_budget ... native raw table catalog: calls=512 elapsed=16.794134579s
+ok
+test native_conflict_checks_with_large_catalog_keep_fixed_budget ... native conflict catalog: calls=512 elapsed=8.112952657s
+ok
+test native_conflict_checks_with_many_tables_keep_fixed_budget ... native table catalog: calls=512 elapsed=7.775612022s
+ok
+test native_scans_observe_catalog_changes_defaults_and_tombstones_per_operation ... ok
+test native_select_reuses_current_catalog_within_fixed_budget ... native SELECT catalog: calls=512 elapsed=8.502561848s
+ok
+test native_select_with_large_catalog_keeps_scan_within_budget ... native catalog scan: rows=512 elapsed=40.487886ms
+ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 48.86s
+
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 1min 43.986s
+CPU time consumed: 1min 48.202s
+Memory peak: 256.0K
+Memory swap peak: 0B

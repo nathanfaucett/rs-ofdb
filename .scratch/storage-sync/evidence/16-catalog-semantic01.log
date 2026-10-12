@@ -1,0 +1,16 @@
+Running as unit: ofdb-catalog-semantic-01.service; invocation ID: c3ad6d6a86874249b2a8ec776cbfcf64
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.79s
+     Running tests/catalog_snapshot.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/catalog_snapshot-0eea0e7799e42a4f)
+
+running 1 test
+test catalog_snapshot_preserves_largest_identity_defaults_and_stored_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 7.870s
+CPU time consumed: 8.984s
+Memory peak: 256.0K
+Memory swap peak: 0B

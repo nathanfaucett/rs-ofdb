@@ -1,0 +1,50 @@
+Running as unit: ofdb-select-catalog-green-01.service; invocation ID: 52e91905fa2740798ed2ce3c67992c08
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+error[E0505]: cannot move out of `select.from.table` because it is borrowed
+    --> crates/sql-engine/src/executor.rs:1664:32
+     |
+1482 |     let mut select = select;
+     |         ---------- binding `select` declared here
+...
+1530 |         &select.from.table,
+     |         ------------------ borrow of `select.from.table` occurs here
+...
+1664 |             source_table: Some(select.from.table),
+     |                                ^^^^^^^^^^^^^^^^^ move out of `select.from.table` occurs here
+...
+1764 | }
+     | - borrow might be used here, when `stream` is dropped and runs the destructor for type `impl Stream<Item = Result<(uuid::Uuid, Row), EngineError>> + std::marker::Send + '_`
+     |
+help: consider cloning the value if the performance cost is acceptable
+     |
+1530 |         &select.from.table.clone(),
+     |                           ++++++++
+
+error[E0505]: cannot move out of `select.from.table` because it is borrowed
+    --> crates/sql-engine/src/executor.rs:1704:36
+     |
+1482 |     let mut select = select;
+     |         ---------- binding `select` declared here
+...
+1530 |         &select.from.table,
+     |         ------------------ borrow of `select.from.table` occurs here
+...
+1704 |                 source_table: Some(select.from.table),
+     |                                    ^^^^^^^^^^^^^^^^^ move out of `select.from.table` occurs here
+...
+1764 | }
+     | - borrow might be used here, when `stream` is dropped and runs the destructor for type `impl Stream<Item = Result<(uuid::Uuid, Row), EngineError>> + std::marker::Send + '_`
+     |
+help: consider cloning the value if the performance cost is acceptable
+     |
+1530 |         &select.from.table.clone(),
+     |                           ++++++++
+
+For more information about this error, try `rustc --explain E0505`.
+error: could not compile `ofdb-sql-engine` (lib) due to 2 previous errors
+Finished with result: exit-code
+Main processes terminated with: code=exited/status=101
+Service runtime: 1.271s
+CPU time consumed: 1.266s
+Memory peak: 512.0K
+Memory swap peak: 0B
