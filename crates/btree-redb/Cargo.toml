@@ -26,7 +26,6 @@ async-lock = { version = "3.4", default-features = false, features = ["std"] }
 async-stream = { version = "0.3", default-features = false, features = [] }
 dashmap = { version = "6.2", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
-log = { version = "0.4", default-features = false }
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
 serde = { version = "1.0", default-features = false, features = ["std"] }
 tempfile = { version = "3.27", default-features = false, features = [] }

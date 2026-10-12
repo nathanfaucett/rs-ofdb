@@ -1,10 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::BTreeMap,
-    string::String,
-    time::{Duration, Instant},
-    vec::Vec,
-};
+use std::{borrow::Cow, collections::BTreeMap, string::String, vec::Vec};
 
 use core::ops::Bound;
 
@@ -64,22 +58,6 @@ struct Column {
     default: Value,
 }
 
-struct CatalogTiming {
-    enabled: bool,
-    reconstruction: Duration,
-    count: usize,
-}
-
-impl Drop for CatalogTiming {
-    fn drop(&mut self) {
-        if self.enabled {
-            log::info!(target: "of::idp_stage_timing",
-                "ofdb.automerge.catalog_reconstruction elapsed_us={} count={}",
-                self.reconstruction.as_micros(), self.count);
-        }
-    }
-}
-
 impl AutomergeRowCodec {
     fn scoped_decode<'a, D: Deserialize<'a>>(bytes: &'a [u8]) -> EngineResult<D> {
         let (value, remaining) = postcard::take_from_bytes(bytes).map_err(EngineError::custom)?;
@@ -118,11 +96,7 @@ impl AutomergeRowCodec {
         T: KernelTransaction,
     {
         stream! {
-            let mut timing = CatalogTiming {
-                enabled: log::log_enabled!(target: "of::idp_stage_timing", log::Level::Info),
-                reconstruction: Duration::ZERO,
-                count: 0,
-            };
+
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
             let documents = reconstruct_document_values(changes.range(range).filter_map(|entry| async {
                 match &entry {
@@ -131,14 +105,7 @@ impl AutomergeRowCodec {
                 }
             }));
             pin_mut!(documents);
-            loop {
-                let started = timing.enabled.then(Instant::now);
-                let document = documents.next().await;
-                if let Some(started) = started {
-                    timing.reconstruction += started.elapsed();
-                }
-                let Some(document) = document else { break };
-                timing.count += 1;
+            while let Some(document) = documents.next().await {
                 let (id, document) = document.map_err(EngineError::custom)?;
                 let row = Self::row_id(&id)?;
                 let deleted = Self::metadata_deleted(transaction, table, &row).await?;
@@ -800,33 +767,13 @@ where
     ) -> EngineResult<Vec<usize>> {
         let table_name = table;
         let id = Self::document_id(row);
-        let started =
-            log::log_enabled!(target: "of::idp_stage_timing", log::Level::Info).then(Instant::now);
-        let document = Self::document(transaction, table, &id).await;
-        if let Some(started) = started {
-            log::info!(target: "of::idp_stage_timing",
-                "ofdb.automerge.conflict_document_reconstruction elapsed_us={}",
-                started.elapsed().as_micros());
-        }
-        let Some(document) = document? else {
+        let Some(document) = Self::document(transaction, table, &id).await? else {
             return Ok(Vec::new());
         };
-        let started = started.map(|_| Instant::now());
-        let columns = Self::columns(transaction, table_name, 0, Some((table_rows, table_fields)))
-            .await
-            .and_then(|columns| {
-                if columns.is_empty() {
-                    Ok(Self::document_columns_for(&document, &columns)?.into_owned())
-                } else {
-                    Ok(columns)
-                }
-            });
-        if let Some(started) = started {
-            log::info!(target: "of::idp_stage_timing",
-                "ofdb.automerge.conflict_document_columns elapsed_us={}",
-                started.elapsed().as_micros());
-        }
-        Self::conflicted_columns(&document, &columns?)
+        let columns =
+            Self::columns(transaction, table_name, 0, Some((table_rows, table_fields))).await?;
+        let columns = Self::document_columns_for(&document, &columns)?;
+        Self::conflicted_columns(&document, &columns)
     }
 
     async fn conflict_values(

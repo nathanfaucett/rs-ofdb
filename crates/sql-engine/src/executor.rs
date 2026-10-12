@@ -28,7 +28,6 @@ use crate::{
         lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
         table_schema as schema_table_schema, table_schema_with_fields,
     },
-    stage_timing::StageTiming,
 };
 
 pub async fn execute_statement<K, R>(
@@ -1255,21 +1254,14 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let (table_id, table_rows) = {
-        let _timing = StageTiming::new("ofdb.row_conflicts.lookup");
-        lookup_table_id_with_rows(transaction, reconciler, table_name).await?
-    };
+    let (table_id, table_rows) =
+        lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
     let row = key_row_id(key)?;
-    let (schema, table_fields) = {
-        let _timing = StageTiming::new("ofdb.row_conflicts.schema");
-        table_schema_with_fields(transaction, reconciler, table_name, table_id).await?
-    };
-    let conflicts = {
-        let _timing = StageTiming::new("ofdb.row_conflicts.codec");
-        reconciler
-            .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
-            .await?
-    };
+    let (schema, table_fields) =
+        table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
+    let conflicts = reconciler
+        .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
+        .await?;
     conflicts
         .into_iter()
         .map(|index| {
