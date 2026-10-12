@@ -625,16 +625,17 @@ pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     table: &str,
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
-    read_columns(transaction, codec, table, |_| {}).await
+    let table_id = lookup_table_id(transaction, codec, table).await?;
+    read_columns(transaction, codec, table, table_id, |_| {}).await
 }
 
 async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
+    table_id: Uuid,
     mut observe: impl FnMut(&Row) + Send,
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
-    let table_id = lookup_table_id(transaction, codec, table).await?;
     let mut timing = StageTiming::new("ofdb.schema.columns_catalog");
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);
@@ -696,7 +697,6 @@ pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     name: &str,
 ) -> EngineResult<TableSchema> {
-    lookup_table_name(transaction, codec, name).await?;
     table_schema_for(transaction, codec, name, name.to_string()).await
 }
 
@@ -704,10 +704,13 @@ pub(crate) async fn table_schema_with_fields<T: KernelTransaction, R: RowCodec<T
     transaction: &T,
     codec: &R,
     name: &str,
+    table_id: Uuid,
 ) -> EngineResult<(TableSchema, Vec<Row>)> {
-    lookup_table_name(transaction, codec, name).await?;
     let mut fields = Vec::new();
-    let columns = read_columns(transaction, codec, name, |row| fields.push(row.clone())).await?;
+    let columns = read_columns(transaction, codec, name, table_id, |row| {
+        fields.push(row.clone())
+    })
+    .await?;
     Ok((
         TableSchema {
             name: name.to_string(),

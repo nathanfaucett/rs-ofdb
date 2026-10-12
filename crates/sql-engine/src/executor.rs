@@ -1255,19 +1255,19 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let table = {
+    let table_id = {
         let _timing = StageTiming::new("ofdb.row_conflicts.lookup");
-        lookup_table_name(transaction, reconciler, table_name).await?
+        lookup_table_id(transaction, reconciler, table_name).await?
     };
     let row = key_row_id(key)?;
     let (schema, table_fields) = {
         let _timing = StageTiming::new("ofdb.row_conflicts.schema");
-        table_schema_with_fields(transaction, reconciler, table_name).await?
+        table_schema_with_fields(transaction, reconciler, table_name, table_id).await?
     };
     let conflicts = {
         let _timing = StageTiming::new("ofdb.row_conflicts.codec");
         reconciler
-            .conflicted_columns(transaction, &table, &row, &table_fields)
+            .conflicted_columns(transaction, table_name, &row, &table_fields)
             .await?
     };
     conflicts
@@ -1331,10 +1331,11 @@ where
             "Resolution requires an assignment",
         ));
     }
-    let table = lookup_table_name(transaction, reconciler, table_name).await?;
+    let table_id = lookup_table_id(transaction, reconciler, table_name).await?;
+    let table = String::from(table_name);
     let row_id = key_row_id(key)?;
     let (schema, table_fields) =
-        table_schema_with_fields(transaction, reconciler, table_name).await?;
+        table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
     let conflicts = reconciler
         .conflicted_columns(transaction, &table, &row_id, &table_fields)
         .await?;
