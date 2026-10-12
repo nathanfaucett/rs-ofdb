@@ -1,0 +1,23 @@
+Running as unit: ofdb-conflict-layout-green-01.service; invocation ID: f98c94e33ab543939bf1bb0e0c00138b
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+   Compiling ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+   Compiling ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+   Compiling ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+    Finished `test` profile [optimized + debuginfo] target(s) in 22.40s
+     Running tests/scan_layout.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/scan_layout-b99d8ca565c05cb3)
+
+running 1 test
+test native_conflict_checks_with_large_catalog_keep_fixed_budget ... native conflict catalog: calls=512 elapsed=7.488326755s
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 8.12s
+
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 30.723s
+CPU time consumed: 31.643s
+Memory peak: 256.0K
+Memory swap peak: 0B

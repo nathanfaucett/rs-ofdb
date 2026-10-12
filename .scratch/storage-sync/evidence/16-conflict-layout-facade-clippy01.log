@@ -1,0 +1,24 @@
+Running as unit: ofdb-conflict-layout-facade-clippy-01.service; invocation ID: 004af6fc127a48e5abc76763ab29fb91
+    Checking ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+    Checking ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+    Checking ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+    Checking ofdb-btree v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree)
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-sql-proto v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-proto)
+    Checking ofdb-btree-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-automerge)
+    Checking ofdb-btree-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-redb)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Checking ofdb-sql-translator v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-translator)
+    Checking ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+    Checking ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+    Checking ofdb-sql-protocol v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-protocol)
+    Checking ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+    Checking ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+    Checking ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 11.15s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 11.274s
+CPU time consumed: 11.205s
+Memory peak: 292.0K
+Memory swap peak: 0B
