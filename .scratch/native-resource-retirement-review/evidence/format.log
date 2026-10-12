@@ -1,3 +1,0 @@
-command: ['rustfmt', '--check', '--edition', '2024', 'crates/btree-redb/src/resource.rs', 'crates/btree-redb/src/lib.rs', 'crates/sql-engine-redb/src/lib.rs', 'crates/sql/src/database.rs', 'crates/kv/src/database.rs', 'crates/sql/tests/retirement.rs', 'crates/kv/tests/retirement.rs']
-
-exit=0

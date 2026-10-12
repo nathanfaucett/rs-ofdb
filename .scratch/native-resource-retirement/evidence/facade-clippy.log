@@ -1,7 +1,0 @@
-RUST_MIN_STACK=16777216 CARGO_TARGET_DIR=target/native-retirement cargo clippy -p ofdb-sql --features redb,sql,native-stage,server --test retirement -p ofdb-kv --features redb,sync,server --test retirement
-
-    Checking ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/sql)
-    Checking ofdb-kv v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/kv)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.53s
-
-exit=0

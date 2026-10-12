@@ -1,6 +1,0 @@
-RUST_MIN_STACK=16777216 CARGO_TARGET_DIR=target/native-retirement cargo check -p ofdb-sql --features redb,in-memory,sql,native-stage,server,remote -p ofdb-kv --features redb,in-memory,sync,server,remote
-
-    Checking ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/.scratch/worktrees/native-resource-retirement/crates/sql)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.32s
-
-exit=0
