@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     string::String,
     time::{Duration, Instant},
@@ -57,6 +58,7 @@ impl Default for AutomergeRowCodec {
     }
 }
 
+#[derive(Clone)]
 struct Column {
     id: String,
     default: Value,
@@ -515,20 +517,33 @@ impl AutomergeRowCodec {
         T: KernelTransaction,
     {
         let columns = Self::columns(transaction, table, 0).await?;
+        if columns.is_empty() {
+            Ok(Self::document_columns_for(document, &columns)?.into_owned())
+        } else {
+            Ok(columns)
+        }
+    }
+
+    fn document_columns_for<'a>(
+        document: &AutoCommit,
+        columns: &'a [Column],
+    ) -> EngineResult<Cow<'a, [Column]>> {
         if !columns.is_empty() {
-            return Ok(columns);
+            return Ok(Cow::Borrowed(columns));
         }
         if let Some(columns) = Self::stored_columns(document)? {
-            return Ok(columns);
+            return Ok(Cow::Owned(columns));
         }
-        Ok(document
-            .keys(ROOT)
-            .filter(|key| key != DOCUMENT_COLUMNS)
-            .map(|id| Column {
-                id: id.to_string(),
-                default: Value::Null,
-            })
-            .collect())
+        Ok(Cow::Owned(
+            document
+                .keys(ROOT)
+                .filter(|key| key != DOCUMENT_COLUMNS)
+                .map(|id| Column {
+                    id: id.to_string(),
+                    default: Value::Null,
+                })
+                .collect(),
+        ))
     }
 
     async fn table_definition_id<T>(transaction: &T, table: &str) -> EngineResult<Option<Uuid>>
@@ -673,6 +688,7 @@ where
                 }
             }));
             pin_mut!(documents);
+            let mut columns = None;
 
             while let Some(document) = documents.next().await {
                 let (id, document) = document.map_err(EngineError::custom)?;
@@ -681,7 +697,13 @@ where
                     continue;
                 }
 
-                let columns = Self::document_columns(transaction, table, &row, &document).await?;
+                if columns.is_none() {
+                    columns = Some(Self::columns(transaction, table, 0).await?);
+                }
+                let columns = Self::document_columns_for(
+                    &document,
+                    columns.as_deref().expect("scan initialized current column layout"),
+                )?;
                 yield Self::decode_row(&document, &columns).map(|value| (row, value));
             }
         }
@@ -709,11 +731,18 @@ where
                     }
                 }));
                 pin_mut!(documents);
+                let mut columns = None;
                 while let Some(document) = documents.next().await {
                     let (id, document) = document.map_err(EngineError::custom)?;
                     let row = Self::row_id(&id)?;
                     let deleted = Self::metadata_deleted(transaction, table, &row).await?;
-                    let columns = Self::document_columns(transaction, table, &row, &document).await?;
+                    if columns.is_none() {
+                        columns = Some(Self::columns(transaction, table, 0).await?);
+                    }
+                    let columns = Self::document_columns_for(
+                        &document,
+                        columns.as_deref().expect("scan initialized current column layout"),
+                    )?;
                     yield Self::decode_row(&document, &columns).map(|value| (row, value, deleted));
                 }
             }
