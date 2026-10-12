@@ -1,0 +1,167 @@
+Running as unit: ofdb-scan-layout-red-01.service; invocation ID: 98816ab16a1f4e34900332400344b932
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling syn v2.0.117
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling futures-core v0.3.32
+   Compiling serde_core v1.0.228
+   Compiling memchr v2.8.2
+   Compiling futures-sink v0.3.32
+   Compiling futures-channel v0.3.32
+   Compiling bytes v1.11.1
+   Compiling futures-macro v0.3.32
+   Compiling futures-io v0.3.32
+   Compiling thiserror v2.0.18
+   Compiling futures-task v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling thiserror-impl v2.0.18
+   Compiling getrandom v0.4.2
+   Compiling log v0.4.32
+   Compiling serde v1.0.228
+   Compiling either v1.16.0
+   Compiling itertools v0.14.0
+   Compiling serde_derive v1.0.228
+   Compiling hashbrown v0.17.1
+   Compiling tracing-attributes v0.1.31
+   Compiling syn v3.0.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling tokio-macros v2.7.2
+   Compiling tracing v0.1.44
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling zmij v1.0.21
+   Compiling uuid v1.23.3
+   Compiling tokio v1.53.1
+   Compiling spin v0.9.8
+   Compiling anyhow v1.0.102
+   Compiling serde_json v1.0.150
+   Compiling heapless v0.7.17
+   Compiling cobs v0.3.0
+   Compiling smallvec v1.15.2
+   Compiling bitflags v2.13.0
+   Compiling rustix v1.1.5
+   Compiling postcard v1.1.3
+   Compiling redb v4.3.0
+   Compiling generic-array v0.14.7
+   Compiling concurrent-queue v2.5.0
+   Compiling http v1.5.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling event-listener v5.4.1
+   Compiling cc v1.2.64
+   Compiling prost-derive v0.14.4
+   Compiling ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+   Compiling ring v0.17.14
+   Compiling event-listener-strategy v0.5.4
+   Compiling http-body v1.1.0
+   Compiling tokio-util v0.7.19
+   Compiling indexmap v2.14.0
+   Compiling futures-executor v0.3.32
+   Compiling async-stream-impl v0.3.6
+   Compiling async-stream v0.3.6
+   Compiling futures v0.3.32
+   Compiling async-lock v3.4.2
+   Compiling ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling prettyplease v0.2.37
+   Compiling digest v0.10.7
+   Compiling ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+   Compiling ofdb-btree v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree)
+   Compiling hybrid-array v0.4.12
+   Compiling getrandom v0.2.17
+   Compiling zeroize v1.9.0
+   Compiling regex-syntax v0.8.11
+   Compiling foldhash v0.1.5
+   Compiling h2 v0.4.19
+   Compiling prost v0.14.4
+   Compiling hashbrown v0.15.5
+   Compiling regex-automata v0.4.14
+   Compiling rustls-pki-types v1.15.1
+   Compiling sha2 v0.10.9
+   Compiling sync_wrapper v1.0.2
+   Compiling fixedbitset v0.5.7
+   Compiling cpufeatures v0.3.0
+   Compiling crc32fast v1.5.0
+   Compiling once_cell v1.21.4
+   Compiling hyper v1.11.1
+   Compiling tempfile v3.27.0
+   Compiling rustls v0.23.45
+   Compiling petgraph v0.8.3
+   Compiling rustls-webpki v0.103.15
+   Compiling regex v1.13.0
+   Compiling prost-types v0.14.4
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling http-body-util v0.1.5
+   Compiling subtle v2.6.1
+   Compiling multimap v0.10.1
+   Compiling simd-adler32 v0.3.9
+   Compiling miniz_oxide v0.8.9
+   Compiling axum-core v0.5.6
+   Compiling prost-build v0.14.4
+   Compiling digest v0.11.3
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling chacha20 v0.10.0
+   Compiling tonic-build v0.14.6
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling pin-project-internal v1.1.13
+   Compiling leb128 v0.2.6
+   Compiling tinyvec_macros v0.1.1
+   Compiling axum v0.8.9
+   Compiling tinyvec v1.11.0
+   Compiling hexane v0.2.1
+   Compiling pin-project v1.1.13
+   Compiling tonic-prost-build v0.14.6
+   Compiling rand v0.10.1
+   Compiling hyper-timeout v0.5.2
+   Compiling flate2 v1.1.9
+   Compiling sha2 v0.11.0
+   Compiling parking_lot_core v0.9.12
+   Compiling tokio-rustls v0.26.5
+   Compiling tokio-stream v0.1.19
+   Compiling smol_str v0.3.6
+   Compiling async-trait v0.1.89
+   Compiling automerge v0.10.0
+   Compiling dashmap v6.2.1
+   Compiling tonic v0.14.6
+   Compiling ofdb-sql-proto v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-proto)
+   Compiling ofdb-btree-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-automerge)
+   Compiling ofdb-btree-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-redb)
+   Compiling tonic-prost v0.14.6
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+   Compiling sqlparser v0.62.0
+   Compiling ofdb-sql-translator v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-translator)
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+   Compiling ofdb-sql-protocol v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-protocol)
+   Compiling ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+   Compiling ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+   Compiling ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9m 33s
+     Running tests/scan_layout.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/scan_layout-b99d8ca565c05cb3)
+
+running 1 test
+test native_select_with_large_catalog_keeps_scan_within_budget ... native catalog scan: rows=512 elapsed=7.087856604s
+
+thread 'native_select_with_large_catalog_keeps_scan_within_budget' (1617997) panicked at crates/sql/tests/scan_layout.rs:55:5:
+native SELECT scan exceeded fixed 2s machine-local regression budget: 7.087856604s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    native_select_with_large_catalog_keeps_scan_within_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.02s
+
+error: test failed, to rerun pass `-p ofdb-sql --test scan_layout`
+Finished with result: exit-code
+Main processes terminated with: code=exited/status=101
+Service runtime: 9min 41.231s
+CPU time consumed: 9min 47.806s
+Memory peak: 256.0K
+Memory swap peak: 0B

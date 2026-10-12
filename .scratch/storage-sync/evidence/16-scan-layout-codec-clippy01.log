@@ -1,0 +1,37 @@
+Running as unit: ofdb-scan-layout-codec-clippy-01.service; invocation ID: c9465569821a4bbd91ed616f962c889d
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.186
+    Checking getrandom v0.4.2
+   Compiling crossbeam-utils v0.8.21
+    Checking serde v1.0.228
+    Checking futures-sink v0.3.32
+    Checking futures-channel v0.3.32
+    Checking slab v0.4.12
+    Checking uuid v1.23.3
+    Checking futures-util v0.3.32
+    Checking concurrent-queue v2.5.0
+    Checking event-listener v5.4.1
+    Checking serde_json v1.0.150
+    Checking futures-executor v0.3.32
+    Checking futures v0.3.32
+    Checking ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+    Checking event-listener-strategy v0.5.4
+    Checking async-lock v3.4.2
+    Checking ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+    Checking ofdb-btree v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree)
+    Checking postcard v1.1.3
+    Checking rand v0.10.1
+    Checking ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+    Checking smol_str v0.3.6
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+    Checking automerge v0.10.0
+    Checking ofdb-btree-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-automerge)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Checking ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 16.61s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 16.716s
+CPU time consumed: 16.802s
+Memory peak: 256.0K
+Memory swap peak: 0B
