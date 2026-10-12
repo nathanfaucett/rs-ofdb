@@ -1,0 +1,20 @@
+Running as unit: ofdb-table-lookup-clippy-01.service; invocation ID: e2673bdd13e84fa8be7c68091d1c984f
+   Compiling thiserror v2.0.18
+   Compiling serde v1.0.228
+    Checking uuid v1.23.3
+    Checking ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+    Checking ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+    Checking futures v0.3.32
+    Checking cobs v0.3.0
+    Checking postcard v1.1.3
+    Checking ofdb-btree v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree)
+    Checking ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 5.76s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 5.874s
+CPU time consumed: 5.958s
+Memory peak: 256.0K
+Memory swap peak: 0B

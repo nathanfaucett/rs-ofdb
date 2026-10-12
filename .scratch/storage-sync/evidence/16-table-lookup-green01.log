@@ -1,0 +1,34 @@
+Running as unit: ofdb-table-lookup-green-01.service; invocation ID: 7ce3e0e901ca4051b0dfade07cae6ca7
+    Blocking waiting for file lock on build directory
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+   Compiling ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+   Compiling ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+   Compiling ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+    Finished `test` profile [optimized + debuginfo] target(s) in 22.40s
+     Running tests/scan_layout.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/scan_layout-b99d8ca565c05cb3)
+
+running 1 test
+test native_conflict_checks_with_many_tables_keep_fixed_budget ... native table catalog: calls=512 elapsed=15.270589408s
+
+thread 'native_conflict_checks_with_many_tables_keep_fixed_budget' (1676590) panicked at crates/sql/tests/scan_layout.rs:37:5:
+public conflict inspections exceeded fixed 15s machine-local table-catalog budget: 15.270589408s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    native_conflict_checks_with_many_tables_keep_fixed_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 16.91s
+
+error: test failed, to rerun pass `-p ofdb-sql --test scan_layout`
+Finished with result: exit-code
+Main processes terminated with: code=exited/status=101
+Service runtime: 39.417s
+CPU time consumed: 37.461s
+Memory peak: 256.0K
+Memory swap peak: 0B
