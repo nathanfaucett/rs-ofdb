@@ -63,9 +63,15 @@ Outer terminal bound910000ms, systemd total build/run bound900s as existing hand
 - Log result: **`oom-kill`**, main process `code=killed/status=TERM`; service runtime **8min 25.181s**, CPU **8min 18.201s**, reported memory peak **1.4G**, swap peak **0B**. Preserve the log's exact accounting values rather than replacing them with a separate journal accounting sample.
 - Compilation reached `unified-server` after the listed owner/consumer crates. There is no `Finished test profile`, test-runner launch, `running 1 test`, result or native stage timing output. **Test never ran.** This is incomplete build/resource failure, not a failing runtime probe, successful compile qualification or profiling evidence.
 
-### Executed-command provenance gap
+### Exact executed invocation — command provenance complete
 
-The supplied log records the unit and compilation output, **not the literal shell/Cargo invocation**. The consumer evidence Markdown available at inspection also contains no attempt01 command. Read-only journal/unit inspection could not recover executed argv after transient-unit collection. The command in the original handoff is a proposal with a different unit name and 2G cap, not the exact attempted command. Do not relabel it as executed or invent unrecorded flags/environment/outer bounds. Coordinator must supply the literal attempt01 command to complete this receipt; the verified revisions, log outcome and reported actual limits above are retained meanwhile.
+The initial command gap is now filled by the coordinator-reported literal invocation committed at consumer **`57426e363d413d3f29b16665459605683e9ad52f`**, `.scratch/offline-first-nodes/evidence/08-full-nodes.md`, final section **“Attempted native-owner stage timing run01 — compile OOM, NO TEST RESULT”**, subsection **“Exact attempted focused command”**. Read that exact committed version with `git show`, not an inferred reconstruction of the original owner proposal. The receipt revision is not the attempted source: consumer437c9bf / ownerb1d957d remain the execution revisions.
+
+```sh
+systemd-run --user --wait --pipe --collect --unit=of-ticket08-native-stage-timing-01 --property=MemoryMax=1500M --property=MemorySwapMax=0 --property=RuntimeMaxSec=900 --working-directory=/home/nathan/code/rust/aicacia/of/.worktrees/ticket08-full-nodes env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS OF_IDP_STAGE_TIMING=1 RUST_MIN_STACK=67108864 CARGO_BUILD_JOBS=1 cargo test --offline --locked --jobs=1 --target-dir /home/nathan/code/rust/aicacia/of/target -p unified-server --features cli --lib local_provisioning_tests::full_nodes::probe::single_full_host_refresh_replay_and_restriction_put_with_extra_service_clients -- --exact --nocapture --test-threads=1
+```
+
+**No remaining command provenance gap.** The raw log itself still does not echo argv/properties; the literal command provenance is the committed coordinator execution receipt above, not independent recovery from the collected transient unit. The actual1500M cap, zero swap, service900s bound, same exact probe, shared target, jobs1 and environment are preserved verbatim. Existing HTTP10s/internal diagnostic120s bounds are unchanged. This documentation update executes none of the quoted commands and authorizes no retry; the OOM/no-test/no-attribution outcome remains unchanged.
 
 ### Current conclusion and prerequisites
 
