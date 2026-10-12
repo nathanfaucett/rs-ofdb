@@ -1,6 +1,12 @@
 # Storage sync work map
 
-## Current documentation checkpoint — 2026-10-12
+## Qualified owner16 integration preparation — 2026-10-12
+
+[16 — measured native catalog correction](issues/16-temporary-native-stage-profiling.md#answer) is resolved within its measured Ubuntu owner-local scope. Original root is on `integration/native-catalog-reuse`, branched from diagnostic `3ec105590794331d62f67f33ccc4a7f56e623351`; that exact diagnostic ref/history remains preserved. Cleanup source `72aae34b75f0fd65f4feadfb49e13ae948b41f6c` retains all reviewed corrections/tests/evidence, removes runtime timers/log-only edges, and passes focused native/semantic/sync/no_std/strict-Clippy/format gates. Main remains `8a848b2749dafb073d1491c7969c079e6be5bae5`, unmerged. [Final receipt](evidence/16-qualified-integration.md).
+
+Consumer be22adc / owner3ec1055 four-run sequence30–33 passed all three existing pair slices plus one restrictions repeat with ordinary teardown; exact provenance/reviews and earlier genuine failures remain in16. This is not absolute deadline reliability, arbitrary mutable-kernel, deployment/platform/provider or full-spec qualification. No of08 closure, consumer-source edit, push, Cargo Hack/CRAP or main merge. Historical root/diagnostic instructions below are superseded by this preparation, not instructions to reactivate an old tip or remove preserved diagnostics.
+
+## Consolidated main documentation checkpoint (before owner16 correction) — 2026-10-12
 
 - Local `main` contains the reviewed owner delivery through `8b94799cfadeefd85cd297b4199330776d1ae0bd` (26 commits fast-forwarded from `3c4bf50`). This checkpoint persists only this map, the spec and tickets 01–15; no raw logs, private caches or unrelated planning are added.
 - Tickets 01–15 are resolved within their recorded contracts. [06 final Answer](issues/06-consumer-integration-handoff.md#answer) accepts final of02/of03 producer evidence with exact revisions, commands and inherited caveats; this is not acceptance from tracker consolidation or new runtime qualification.
@@ -20,7 +26,7 @@ Foreign-platform/deployment qualification and full workspace/all-target/all-feat
 
 Authorized ofdb-only cleanup on 2026-10-11 removed the fully integrated, tracked-clean `.scratch/worktrees/native-resource-retirement`, its verified Cargo cache (13,010 files, about 6.0 GiB allocated), the empty `.scratch/worktrees/` parent and merged `native-resource-retirement` branch. Worktrees: 2 → 1; scratch directories: 5 → 4; scratch allocation: about 6.0 GiB → 460 KiB. Root `target/`, all linked retirement/review evidence, storage-sync history and unfinished KV-sharding plans were preserved. No archive, push, GC/pruning or consumer acceptance was performed. The older `uniform-row-identity-integration` ref at `355d24d` was also deleted after confirming no worktree or active workflow references in the inspected local trackers/docs and no commits outside `main`; its full history remains in `main`. Local branches after both cleanups: 4 → 2 (`main` and retained `storage-sync-integration`).
 
-## Owner cleanup/handoff — 2026-10-12
+## Historical owner cleanup/handoff — 2026-10-12 (superseded for16)
 
 - Clean original owner root switched from `diagnostics/native-idp-stage-timing` at `b21c5839ee7f0578be891e9c8aae6d1b687e108f` to `main` at `bad307121960ab9856742a9a386a3dff5e5a2192` before docs edits. Diagnostics source/evidence is preserved on that branch; its instrumentation commit `b1d957d8afb33b0cb9e6981d6a09793d97659e35` and two receipt commits are not merged/cherry-picked. Ticket16 remains profiling-only and runtime-blocked; attempt01 OOM occurred before any test and proves no owner bottleneck or fix.
 - Historical pre-authorization checkpoint (superseded by the 2026-10-12 retirement receipt): read-only `git merge-base --is-ancestor storage-sync-integration main` passed; `git log main..storage-sync-integration` is empty. Its tip `d6ccbb07de6c3399bb756a78d89941d5407861f8` is safely retained in main history. `git worktree list` shows only the original root, now main. Recommend retiring the merged `storage-sync-integration` ref after coordinator authorization; no branch/worktree/cache is deleted here. Retiring that ref does not retire diagnostics16 or delete linked evidence.
@@ -54,6 +60,7 @@ Scope: ofdb only. Contract: [spec.md](spec.md). Follow [local tracker rules](../
 | [14 — Directional scoped sessions](issues/14-directional-scoped-sessions.md) | Receive-only native retry without reverse catalog/index/data/recovery publication | ready-for-agent / resolved | None; 06 downstream |
 
 | [15 — Native managed-resource retirement](issues/15-native-resource-retirement.md) | Public SQL/KV gate, admitted-operation drain, exact native removal and durable retry | ready-for-agent / resolved | None for qualified managed owner capability; of05 consumer evidence downstream |
+| [16 — Measured native catalog correction](issues/16-temporary-native-stage-profiling.md) | Qualified operation-local catalog reuse, semantic/public tests, timing retirement and preserved evidence | ready-for-agent / resolved | None within owner-local scope; parent final review/main integration separately authorized |
 
 01–04 include focused tests and can complete locally. 05 adds composition coverage, not all testing deferred to the end. 06 is documentation/evidence handoff, not authorization to edit another workspace.
 

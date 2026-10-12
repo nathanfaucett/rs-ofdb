@@ -1,0 +1,19 @@
+[
+  "rustfmt",
+  "--check",
+  "--edition",
+  "2024",
+  "--config",
+  "skip_children=true",
+  "crates/btree-redb/src/database.rs",
+  "crates/sql-engine/src/codec.rs",
+  "crates/sql-engine/src/executor.rs",
+  "crates/sql-engine/src/index.rs",
+  "crates/sql-engine/src/lib.rs",
+  "crates/sql-engine/src/schema.rs",
+  "crates/sql-engine-automerge/src/codec.rs",
+  "crates/sql-engine-automerge/tests/catalog_snapshot.rs",
+  "crates/sql-engine-automerge/tests/kernel.rs",
+  "crates/sql-sync/tests/support/mod.rs",
+  "crates/sql/tests/scan_layout.rs"
+]

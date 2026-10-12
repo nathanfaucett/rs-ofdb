@@ -1,0 +1,16 @@
+Running as unit: ofdb-qualified-clippy-01.service; invocation ID: d9ff38b7a7154aaa8a985479e6cca753
+    Checking ofdb-value v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/value)
+    Checking ofdb-sql-schema v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-schema)
+    Checking ofdb-sql-query v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-query)
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+    Checking ofdb-btree-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-automerge)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Checking ofdb-btree-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/btree-redb)
+    Checking ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 5.15s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 5.257s
+CPU time consumed: 5.235s
+Memory peak: 256.0K
+Memory swap peak: 0B
