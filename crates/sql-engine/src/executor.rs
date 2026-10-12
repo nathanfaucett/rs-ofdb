@@ -27,6 +27,7 @@ use crate::{
         ensure as ensure_schema, index_storage, largest_schema_name_claim, lookup_index_id,
         lookup_table_id, lookup_table_name, table_schema as schema_table_schema,
     },
+    stage_timing::StageTiming,
 };
 
 pub async fn execute_statement<K, R>(
@@ -1253,12 +1254,22 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let table = lookup_table_name(transaction, reconciler, table_name).await?;
+    let table = {
+        let _timing = StageTiming::new("ofdb.row_conflicts.lookup");
+        lookup_table_name(transaction, reconciler, table_name).await?
+    };
     let row = key_row_id(key)?;
-    let schema = table_schema(transaction, reconciler, table_name).await?;
-    reconciler
-        .conflicted_columns(transaction, &table, &row)
-        .await?
+    let schema = {
+        let _timing = StageTiming::new("ofdb.row_conflicts.schema");
+        table_schema(transaction, reconciler, table_name).await?
+    };
+    let conflicts = {
+        let _timing = StageTiming::new("ofdb.row_conflicts.codec");
+        reconciler
+            .conflicted_columns(transaction, &table, &row)
+            .await?
+    };
+    conflicts
         .into_iter()
         .map(|index| {
             schema

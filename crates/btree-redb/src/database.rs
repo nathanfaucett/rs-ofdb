@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_lock::{Mutex, MutexGuardArc};
 use redb::{Database, WriteTransaction};
@@ -25,13 +25,23 @@ impl RedbDatabase {
     }
 
     pub async fn transaction(&self) -> BTreeResult<RedbDatabaseTransaction> {
+        let started =
+            log::log_enabled!(target: "of::idp_stage_timing", log::Level::Info).then(Instant::now);
         let admission = self.admission.lock_arc().await;
+        if let Some(started) = started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.admission elapsed_us={}", started.elapsed().as_micros());
+        }
+        let started = started.map(|_| Instant::now());
+        let inner = self.inner.begin_write().map_err(btree::BTreeError::custom);
+        if let Some(started) = started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.begin_write elapsed_us={}", started.elapsed().as_micros());
+        }
         Ok(RedbDatabaseTransaction {
             _admission: admission,
-            inner: self
-                .inner
-                .begin_write()
-                .map_err(btree::BTreeError::custom)?,
+            inner: inner?,
+            body_started: started.map(|_| Instant::now()),
         })
     }
 }
@@ -39,6 +49,7 @@ impl RedbDatabase {
 pub struct RedbDatabaseTransaction {
     inner: WriteTransaction,
     _admission: MutexGuardArc<()>,
+    body_started: Option<Instant>,
 }
 
 impl RedbDatabaseTransaction {
@@ -68,10 +79,30 @@ impl RedbDatabaseTransaction {
     }
 
     pub fn commit(self) -> BTreeResult<()> {
-        self.inner.commit().map_err(btree::BTreeError::custom)
+        if let Some(started) = self.body_started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.body_commit elapsed_us={}", started.elapsed().as_micros());
+        }
+        let started = self.body_started.map(|_| Instant::now());
+        let result = self.inner.commit().map_err(btree::BTreeError::custom);
+        if let Some(started) = started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.commit elapsed_us={}", started.elapsed().as_micros());
+        }
+        result
     }
 
     pub fn rollback(self) -> BTreeResult<()> {
-        self.inner.abort().map_err(btree::BTreeError::custom)
+        if let Some(started) = self.body_started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.body_rollback elapsed_us={}", started.elapsed().as_micros());
+        }
+        let started = self.body_started.map(|_| Instant::now());
+        let result = self.inner.abort().map_err(btree::BTreeError::custom);
+        if let Some(started) = started {
+            log::info!(target: "of::idp_stage_timing",
+                "ofdb.native.rollback elapsed_us={}", started.elapsed().as_micros());
+        }
+        result
     }
 }

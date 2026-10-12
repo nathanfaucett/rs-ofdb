@@ -17,6 +17,7 @@ mod kernel;
 
 mod row_table;
 mod schema;
+mod stage_timing;
 mod state_transfer;
 
 pub use bytes_table::{BytesTable, BytesTableTransaction};

@@ -9,7 +9,7 @@ use schema::{ColumnSchema, ColumnSchemaIndex, IndexSchema, TableSchema};
 use uuid::Uuid;
 use value::{Row, Value, ValueType};
 
-use crate::{EngineError, EngineResult, KernelTransaction, RowCodec};
+use crate::{EngineError, EngineResult, KernelTransaction, RowCodec, stage_timing::StageTiming};
 
 pub const ENGINE_TABLES_STORAGE: &str = "__engine_tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "__engine_table_fields";
@@ -529,10 +529,12 @@ pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     name: &str,
 ) -> EngineResult<Uuid> {
+    let mut timing = StageTiming::new("ofdb.schema.lookup_table_catalog");
     let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
     pin_mut!(rows);
     let mut selected = None;
     while let Some(entry) = rows.next().await {
+        timing.count += 1;
         let (id, value, deleted) = entry?;
         if deleted || TableRow::try_from(&value)?.name != name {
             continue;
@@ -624,10 +626,12 @@ pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     table: &str,
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
     let table_id = lookup_table_id(transaction, codec, table).await?;
+    let mut timing = StageTiming::new("ofdb.schema.columns_catalog");
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);
     let mut result = Vec::new();
     while let Some(row) = rows.next().await {
+        timing.count += 1;
         let (_, value, deleted) = row?;
         if deleted {
             continue;
