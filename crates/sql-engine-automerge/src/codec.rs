@@ -31,6 +31,8 @@ const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
 const DOCUMENT_SCHEMA: &str = "\0engine_schema";
 
+type CatalogRows<'a> = (&'a [(Uuid, Row)], &'a [Row]);
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RowMetadata {
     pub version: u8,
@@ -155,7 +157,7 @@ impl AutomergeRowCodec {
         transaction: &'a T,
         table: &'a str,
         fallback_count: usize,
-        table_fields: Option<&'a [Row]>,
+        catalog: Option<CatalogRows<'a>>,
     ) -> impl core::future::Future<Output = EngineResult<Vec<Column>>> + Send + 'a
     where
         T: KernelTransaction,
@@ -172,7 +174,13 @@ impl AutomergeRowCodec {
                     .collect());
             }
 
-            let tables = Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE);
+            let tables = match catalog {
+                Some((tables, _)) => futures::stream::iter(
+                    tables.iter().map(|(id, row)| Ok((*id, row.clone(), false))),
+                )
+                .boxed(),
+                None => Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE).boxed(),
+            };
             pin_mut!(tables);
             let mut table_id = None;
             while let Some(entry) = tables.next().await {
@@ -186,8 +194,8 @@ impl AutomergeRowCodec {
             }
             let mut columns = Vec::new();
             if let Some(table_id) = table_id {
-                let fields = match table_fields {
-                    Some(fields) => futures::stream::iter(
+                let fields = match catalog {
+                    Some((_, fields)) => futures::stream::iter(
                         fields
                             .iter()
                             .map(|field| Ok((Uuid::nil(), field.clone(), false))),
@@ -788,6 +796,7 @@ where
         transaction: &T,
         table: &str,
         row: &Uuid,
+        table_rows: &[(Uuid, Row)],
         table_fields: &[Row],
     ) -> EngineResult<Vec<usize>> {
         let table_name = table;
@@ -804,7 +813,7 @@ where
             return Ok(Vec::new());
         };
         let started = started.map(|_| Instant::now());
-        let columns = Self::columns(transaction, table_name, 0, Some(table_fields))
+        let columns = Self::columns(transaction, table_name, 0, Some((table_rows, table_fields)))
             .await
             .and_then(|columns| {
                 if columns.is_empty() {

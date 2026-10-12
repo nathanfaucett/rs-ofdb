@@ -25,8 +25,8 @@ use crate::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
         ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id, columns as schema_columns,
         ensure as ensure_schema, index_storage, largest_schema_name_claim, lookup_index_id,
-        lookup_table_id, lookup_table_name, table_schema as schema_table_schema,
-        table_schema_with_fields,
+        lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
+        table_schema as schema_table_schema, table_schema_with_fields,
     },
     stage_timing::StageTiming,
 };
@@ -1255,9 +1255,9 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let table_id = {
+    let (table_id, table_rows) = {
         let _timing = StageTiming::new("ofdb.row_conflicts.lookup");
-        lookup_table_id(transaction, reconciler, table_name).await?
+        lookup_table_id_with_rows(transaction, reconciler, table_name).await?
     };
     let row = key_row_id(key)?;
     let (schema, table_fields) = {
@@ -1267,7 +1267,7 @@ where
     let conflicts = {
         let _timing = StageTiming::new("ofdb.row_conflicts.codec");
         reconciler
-            .conflicted_columns(transaction, table_name, &row, &table_fields)
+            .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
             .await?
     };
     conflicts
@@ -1331,13 +1331,14 @@ where
             "Resolution requires an assignment",
         ));
     }
-    let table_id = lookup_table_id(transaction, reconciler, table_name).await?;
+    let (table_id, table_rows) =
+        lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
     let table = String::from(table_name);
     let row_id = key_row_id(key)?;
     let (schema, table_fields) =
         table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
     let conflicts = reconciler
-        .conflicted_columns(transaction, &table, &row_id, &table_fields)
+        .conflicted_columns(transaction, &table, &row_id, &table_rows, &table_fields)
         .await?;
     let mut row = reconciler
         .get_row(transaction, &table, &row_id)

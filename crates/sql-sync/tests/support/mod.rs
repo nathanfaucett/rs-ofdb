@@ -85,6 +85,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         _transaction: &T,
         _table: &str,
         _row: &Uuid,
+        _table_rows: &[(Uuid, Row)],
         _table_fields: &[Row],
     ) -> EngineResult<Vec<usize>> {
         Ok(Vec::new())

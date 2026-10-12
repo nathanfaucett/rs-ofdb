@@ -1907,6 +1907,7 @@ fn internal_rows_share_automerge_conflict_and_resolution_behavior() {
                             engine::ENGINE_TABLE_FIELDS_STORAGE,
                             &row,
                             &[],
+                            &[],
                         )
                         .await
                 })
@@ -1977,6 +1978,7 @@ fn internal_rows_share_automerge_conflict_and_resolution_behavior() {
                                     transaction,
                                     engine::ENGINE_TABLE_FIELDS_STORAGE,
                                     &row,
+                                    &[],
                                     &[],
                                 )
                                 .await?,

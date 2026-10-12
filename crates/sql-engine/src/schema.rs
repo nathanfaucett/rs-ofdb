@@ -529,6 +529,28 @@ pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     name: &str,
 ) -> EngineResult<Uuid> {
+    read_table_id(transaction, codec, name, |_, _| {}).await
+}
+
+pub(crate) async fn lookup_table_id_with_rows<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    name: &str,
+) -> EngineResult<(Uuid, Vec<(Uuid, Row)>)> {
+    let mut rows = Vec::new();
+    let id = read_table_id(transaction, codec, name, |id, row| {
+        rows.push((id, row.clone()))
+    })
+    .await?;
+    Ok((id, rows))
+}
+
+async fn read_table_id<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    name: &str,
+    mut observe: impl FnMut(Uuid, &Row) + Send,
+) -> EngineResult<Uuid> {
     let mut timing = StageTiming::new("ofdb.schema.lookup_table_catalog");
     let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
     pin_mut!(rows);
@@ -536,7 +558,11 @@ pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     while let Some(entry) = rows.next().await {
         timing.count += 1;
         let (id, value, deleted) = entry?;
-        if deleted || TableRow::try_from(&value)?.name != name {
+        if deleted {
+            continue;
+        }
+        observe(id, &value);
+        if TableRow::try_from(&value)?.name != name {
             continue;
         }
         if selected

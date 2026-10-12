@@ -5,6 +5,42 @@ use std::time::{Duration, Instant};
 use ofdb_sql::{Database, Row, Uuid, Value};
 
 #[tokio::test]
+async fn native_conflict_checks_reuse_raw_table_catalog_within_budget() {
+    let directory = tempfile::tempdir().expect("native raw catalog store");
+    let database = Database::open(directory.path().join("raw.redb")).expect("native database");
+    let client = database.client();
+    client.execute_sql("CREATE TABLE items (id UUID PRIMARY KEY); INSERT INTO items VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID))", None).await.expect("catalog target row");
+    for index in 0..256 {
+        client
+            .execute_sql(
+                &format!("CREATE TABLE inventory_{index} (id UUID PRIMARY KEY)"),
+                None,
+            )
+            .await
+            .expect("table catalog entry");
+    }
+    let key = Row::new(vec![Value::Uuid(
+        Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("target key"),
+    )]);
+    let started = Instant::now();
+    for _ in 0..512 {
+        assert!(
+            client
+                .row_conflicts("items", &key)
+                .await
+                .expect("public conflict inspection")
+                .is_empty()
+        );
+    }
+    let elapsed = started.elapsed();
+    eprintln!("native raw table catalog: calls=512 elapsed={elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(18),
+        "public conflict inspections exceeded fixed 18s machine-local raw-catalog budget: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn native_conflict_checks_with_many_tables_keep_fixed_budget() {
     let directory = tempfile::tempdir().expect("native table catalog store");
     let database = Database::open(directory.path().join("tables.redb")).expect("native database");
