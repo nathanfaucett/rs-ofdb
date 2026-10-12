@@ -22,7 +22,7 @@ mod state_transfer;
 
 pub use bytes_table::{BytesTable, BytesTableTransaction};
 pub use change::{Change, ChangeKey};
-pub use codec::RowCodec;
+pub use codec::{RowCatalog, RowCodec};
 pub use engine::{Engine, EngineError, EngineResult, EngineTransaction, TimestampProvider};
 pub use schema::{
     CatalogTable, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,

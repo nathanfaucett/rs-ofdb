@@ -5,6 +5,36 @@ use std::time::{Duration, Instant};
 use ofdb_sql::{Database, Row, Uuid, Value};
 
 #[tokio::test]
+async fn native_select_reuses_current_catalog_within_fixed_budget() {
+    let directory = tempfile::tempdir().expect("native SELECT catalog store");
+    let database = Database::open(directory.path().join("select.redb")).expect("native database");
+    let client = database.client();
+    client.execute_sql("CREATE TABLE items (id UUID PRIMARY KEY, value INTEGER); INSERT INTO items VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 1)", None).await.expect("SELECT target");
+    let fields = (0..200)
+        .map(|index| format!("field_{index} TEXT"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    client
+        .execute_sql(
+            &format!("CREATE TABLE catalog_inventory (id UUID PRIMARY KEY, {fields})"),
+            None,
+        )
+        .await
+        .expect("representative current catalog");
+    let started = Instant::now();
+    for _ in 0..512 {
+        let result = client.execute_sql("SELECT value FROM items WHERE id = CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID)", None).await.expect("public predicate SELECT");
+        assert_eq!(result[0].rows, vec![Row::from([1])]);
+    }
+    let elapsed = started.elapsed();
+    eprintln!("native SELECT catalog: calls=512 elapsed={elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(12),
+        "public SELECTs exceeded fixed 12s machine-local catalog budget: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn native_conflict_checks_reuse_raw_table_catalog_within_budget() {
     let directory = tempfile::tempdir().expect("native raw catalog store");
     let database = Database::open(directory.path().join("raw.redb")).expect("native database");

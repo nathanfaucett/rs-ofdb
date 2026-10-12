@@ -30,6 +30,7 @@ impl<T: KernelTransaction> RowCodec<T> for TestCodec {
         &'a self,
         transaction: &'a T,
         table: &'a str,
+        _catalog: Option<engine::RowCatalog<'a>>,
     ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a {
         transaction.scan_bytes(table).map(|entry| {
             let (id, value) = entry?;

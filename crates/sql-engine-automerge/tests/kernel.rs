@@ -2185,7 +2185,7 @@ fn removing_a_logical_row_writes_a_tombstone() {
             assert!(row_ids.next().await.is_none());
         }
         {
-            let rows = reconciler.scan_rows(&transaction, table);
+            let rows = reconciler.scan_rows(&transaction, table, None);
             futures::pin_mut!(rows);
             assert!(rows.next().await.is_none());
         }

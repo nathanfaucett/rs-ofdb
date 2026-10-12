@@ -8,6 +8,9 @@ use value::Row;
 
 use crate::{EngineResult, KernelTransaction};
 
+/// Complete live raw table/field catalogs from the same transaction operation as the scan.
+pub type RowCatalog<'a> = (&'a [(Uuid, Row)], &'a [Row]);
+
 pub trait RowCodec<T>: Send + Sync
 where
     T: KernelTransaction,
@@ -32,6 +35,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
+        catalog: Option<RowCatalog<'a>>,
     ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a;
     fn scan_row_states<'a>(
         &'a self,
@@ -39,7 +43,7 @@ where
         table: &'a str,
     ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a {
         stream! {
-            let rows = self.scan_rows(transaction, table);
+            let rows = self.scan_rows(transaction, table, None);
             pin_mut!(rows);
             while let Some(row) = rows.next().await {
                 let (id, value) = row?;

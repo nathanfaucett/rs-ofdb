@@ -17,7 +17,7 @@ async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     table: &str,
 ) -> EngineResult<Vec<(String, IndexSchema)>> {
-    let entries = codec.scan_rows(transaction, ENGINE_INDICES_STORAGE);
+    let entries = codec.scan_rows(transaction, ENGINE_INDICES_STORAGE, None);
     pin_mut!(entries);
     let mut names: Vec<String> = Vec::new();
     while let Some(entry) = entries.next().await {
@@ -181,7 +181,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
         }
     }
     let rows = {
-        let stream = codec.scan_rows(transaction, table);
+        let stream = codec.scan_rows(transaction, table, None);
         pin_mut!(stream);
         let mut rows = Vec::new();
         while let Some(row) = stream.next().await {

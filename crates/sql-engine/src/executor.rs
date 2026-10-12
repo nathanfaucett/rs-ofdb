@@ -442,7 +442,7 @@ where
     R: RowCodec<T>,
 {
     let rows = {
-        let rows = codec.scan_rows(transaction, table);
+        let rows = codec.scan_rows(transaction, table, None);
         pin_mut!(rows);
         let mut ids = Vec::new();
         while let Some(row) = rows.next().await {
@@ -1396,7 +1396,7 @@ where
     R: RowCodec<T>,
 {
     let table = lookup_table_name(transaction, reconciler, table_name).await?;
-    let stream = reconciler.scan_rows(transaction, &table);
+    let stream = reconciler.scan_rows(transaction, &table, None);
     pin_mut!(stream);
     let mut rows = Vec::new();
 
@@ -1499,7 +1499,10 @@ where
     }
     let distinct = select.distinct;
 
-    let schema = table_schema(transaction, reconciler, &select.from.table).await?;
+    let (table_id, table_rows) =
+        lookup_table_id_with_rows(transaction, reconciler, &select.from.table).await?;
+    let (schema, table_fields) =
+        table_schema_with_fields(transaction, reconciler, &select.from.table, table_id).await?;
     let mut projection = projection(&schema, &select.from.table, &select.projection)?;
     for (position, concat) in select.text_concats.iter().enumerate() {
         let Some(concat) = concat else { continue };
@@ -1522,8 +1525,8 @@ where
         column.source_column = None;
     }
     let ordering = order_columns(&schema, &select.from.table, &select.order_by)?;
-    let table = lookup_table_name(transaction, reconciler, &select.from.table).await?;
-    let stream = reconciler.scan_rows(transaction, &table);
+    let table = String::from(select.from.table.as_str());
+    let stream = reconciler.scan_rows(transaction, &table, Some((&table_rows, &table_fields)));
     pin_mut!(stream);
     let mut rows = Vec::new();
 
@@ -1784,13 +1787,13 @@ where
     let right_schema = table_schema(transaction, reconciler, &join.table).await?;
     let left_table = lookup_table_name(transaction, reconciler, &select.from.table).await?;
     let right_table = lookup_table_name(transaction, reconciler, &join.table).await?;
-    let left_stream = reconciler.scan_rows(transaction, &left_table);
+    let left_stream = reconciler.scan_rows(transaction, &left_table, None);
     pin_mut!(left_stream);
     let mut left_rows = Vec::new();
     while let Some(item) = left_stream.next().await {
         left_rows.push(materialize_defaults(&left_schema, item?.1));
     }
-    let right_stream = reconciler.scan_rows(transaction, &right_table);
+    let right_stream = reconciler.scan_rows(transaction, &right_table, None);
     pin_mut!(right_stream);
     let mut right_rows = Vec::new();
     while let Some(item) = right_stream.next().await {

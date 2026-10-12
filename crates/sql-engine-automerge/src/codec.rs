@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use engine::{
     BytesTable, BytesTableTransaction, ENGINE_TABLE_FIELDS_STORAGE, EngineError, EngineResult,
-    KernelTransaction, RowCodec, Uuid, catalog_table_for_storage,
+    KernelTransaction, RowCatalog, RowCodec, Uuid, catalog_table_for_storage,
 };
 use futures::{Stream, StreamExt, pin_mut};
 use sync::{InspectedHistory, StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
@@ -30,8 +30,6 @@ use value::{Row, Value, ValueType};
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
 const DOCUMENT_COLUMNS: &str = "\0engine_columns";
 const DOCUMENT_SCHEMA: &str = "\0engine_schema";
-
-type CatalogRows<'a> = (&'a [(Uuid, Row)], &'a [Row]);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RowMetadata {
@@ -157,7 +155,7 @@ impl AutomergeRowCodec {
         transaction: &'a T,
         table: &'a str,
         fallback_count: usize,
-        catalog: Option<CatalogRows<'a>>,
+        catalog: Option<RowCatalog<'a>>,
     ) -> impl core::future::Future<Output = EngineResult<Vec<Column>>> + Send + 'a
     where
         T: KernelTransaction,
@@ -694,6 +692,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
+        catalog: Option<RowCatalog<'a>>,
     ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a {
         stream! {
             let storage = table;
@@ -715,7 +714,7 @@ where
                 }
 
                 if columns.is_none() {
-                    columns = Some(Self::columns(transaction, table, 0, None).await?);
+                    columns = Some(Self::columns(transaction, table, 0, catalog).await?);
                 }
                 let columns = Self::document_columns_for(
                     &document,
