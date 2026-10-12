@@ -1,0 +1,10 @@
+Running as unit: ofdb-raw-table-nostd-01.service; invocation ID: 6d06b9079a46404b97fd03d178158bdd
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.69s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 1.768s
+CPU time consumed: 1.738s
+Memory peak: 256.0K
+Memory swap peak: 0B

@@ -1,0 +1,21 @@
+Running as unit: ofdb-raw-table-boundary-01.service; invocation ID: f7dff053c8874dc6b60ce4246b58336a
+   Compiling ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+   Compiling ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+   Compiling ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+   Compiling ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+    Finished `test` profile [optimized + debuginfo] target(s) in 50.09s
+     Running tests/kernel.rs (/home/nathan/code/rust/aicacia/of/target/debug/deps/kernel-8ae75185d8391335)
+
+running 3 tests
+test internal_rows_share_automerge_conflict_and_resolution_behavior ... ok
+test reordered_compatible_schemas_preserve_row_conflicts_and_resolution ... ok
+test replicated_unique_conflict_keeps_largest_uuid_and_does_not_promote_deleted_row ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.34s
+
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 50.517s
+CPU time consumed: 52.011s
+Memory peak: 256.0K
+Memory swap peak: 0B

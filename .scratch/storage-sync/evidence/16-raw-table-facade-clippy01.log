@@ -1,0 +1,15 @@
+Running as unit: ofdb-raw-table-facade-clippy-01.service; invocation ID: 666c448f5c8a46269406664b4f35c2f1
+    Checking ofdb-sql-engine v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine)
+    Checking ofdb-sql-sync v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-sync)
+    Checking ofdb-sql-engine-automerge v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-automerge)
+    Checking ofdb-sql-engine-redb v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-engine-redb)
+    Checking ofdb-sql-server v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-server)
+    Checking ofdb-sql v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql)
+    Checking ofdb-sql-test v0.1.0 (/home/nathan/code/rust/aicacia/ofdb/crates/sql-test)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 4.31s
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 4.427s
+CPU time consumed: 4.361s
+Memory peak: 256.0K
+Memory swap peak: 0B
