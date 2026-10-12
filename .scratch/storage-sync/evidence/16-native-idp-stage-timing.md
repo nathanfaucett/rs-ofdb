@@ -1,6 +1,6 @@
 # Temporary native transaction / conflict-inspection profiling
 
-2026-10-12. Source-only handoff; **no build, test, Clippy, runtime probe, powerset or CRAP run authorized or performed by this agent**. This is instrumentation, not a generic fix or acceptance evidence.
+2026-10-12. Initial source-only handoff; **no build, test, Clippy, runtime probe, powerset or CRAP run performed by this agent**. The later coordinator-run build failed under OOM before test execution, recorded below. This is instrumentation, not a generic fix or acceptance evidence.
 
 ## Provenance and scope
 
@@ -35,7 +35,7 @@ Labels are nested/overlapping; do not sum all records as disjoint work. Native b
 
 Native transactions implicitly dropped on errors/cancellation have no explicit body/completion record; cancelled admission has no completed admission record. Scopes starting before logger installation stay untimed. Background work may interleave records, and no IDs/correlation data are added to distinguish transactions. Use lexical nesting on sequential request paths and repeated dominant timings as evidence, not a per-request causal attribution to all concurrent native records. The existing probe logger is installed immediately before PUT only when `OF_IDP_STAGE_TIMING=1` and `--features cli` is enabled.
 
-## Coordinator run needs — NOT authorization to execute
+## Original proposed coordinator run needs — historical, NOT retry authorization
 
 1. Review the instrumentation commit returned with this handoff. Reserve the **exclusive Rust build slot**, inspect available memory, keep original shared `of/target`, jobs1, standard profiles and **MemoryMax=2G**, zero swap. No simultaneous owner/consumer build.
 2. Keep original owner checkout on the instrumentation commit throughout the run. Existing `.worktrees/ofdb` link resolves to original `/home/nathan/code/rust/aicacia/ofdb`; read-only `realpath ../ofdb/crates/sql` from the consumer confirmed this. **No dependency wiring change is needed** for this root-branch delivery.
@@ -50,3 +50,27 @@ Outer terminal bound910000ms, systemd total build/run bound900s as existing hand
 
 5. Capture literal command, reviewed owner/consumer revisions plus consumer lock diff, complete output, exactly one matched test, status and timing counts in coordinator-owned evidence. Owner evidence can retain only stage measurements and findings without fixture IDs/credentials. Compare admission vs begin_write vs body vs completion, then conflict lookup/schema vs reconstruction. Resource/compile failure is not runtime evidence; a failed HTTP test can still supply diagnostic timings, not acceptance.
 6. Only measured evidence can motivate a generic follow-up. No cache, permission weakening, alternative persistence, retry, deadline change, sync policy change or crypto rewrite has been introduced. Temporary instrumentation should be removed once the measurement question is answered; no merge to main or generic fix commit here.
+
+## Coordinator native profiling attempt01 — resource failure, no test execution
+
+2026-10-12. Coordinator supplied the attempted revisions and run limits; this agent read the complete consumer `of/.worktrees/ticket08-full-nodes/.scratch/offline-first-nodes/evidence/08-native-stage-timing-run01.log` and performed read-only provenance checks. No build or retry was initiated here.
+
+- Owner instrumentation: `b1d957d8afb33b0cb9e6981d6a09793d97659e35`, branch `diagnostics/native-idp-stage-timing`, clean before this documentation update. Main remains `bad307121960ab9856742a9a386a3dff5e5a2192`; diagnostics are not main-integrated.
+- Attempted consumer: `437c9bf2105decab02b4a60cf46e817080663a5f`, `diagnostics: lock existing log dependency edges for owner profiling` (revision verified read-only). This includes the coordinator-owned consumer lock refresh; no consumer/root user files were written, staged or reset by this agent.
+- Source reviewer identifier `42596023`: coordinator reports approval with no blockers. This is a reviewer identifier, not a verified Git revision. Wall-clock/scheduling and logging observer effects remain interpretation limits; approval supplies no runtime qualification.
+- Unit: `of-ticket08-native-stage-timing-01.service`; invocation `6cd19be7d3c740d8898539d885fc199c`.
+- Actual limits, coordinator-reported: `MemoryMax=1500M`, `MemorySwapMax=0`, `RuntimeMaxSec=900`. These supersede the original proposed 2G cap for this attempt only. Unit resource journal additionally records `MEMORY_PEAK=1572864000`; complete transient-unit configuration is no longer available after collection.
+- Log result: **`oom-kill`**, main process `code=killed/status=TERM`; service runtime **8min 25.181s**, CPU **8min 18.201s**, reported memory peak **1.4G**, swap peak **0B**. Preserve the log's exact accounting values rather than replacing them with a separate journal accounting sample.
+- Compilation reached `unified-server` after the listed owner/consumer crates. There is no `Finished test profile`, test-runner launch, `running 1 test`, result or native stage timing output. **Test never ran.** This is incomplete build/resource failure, not a failing runtime probe, successful compile qualification or profiling evidence.
+
+### Executed-command provenance gap
+
+The supplied log records the unit and compilation output, **not the literal shell/Cargo invocation**. The consumer evidence Markdown available at inspection also contains no attempt01 command. Read-only journal/unit inspection could not recover executed argv after transient-unit collection. The command in the original handoff is a proposal with a different unit name and 2G cap, not the exact attempted command. Do not relabel it as executed or invent unrecorded flags/environment/outer bounds. Coordinator must supply the literal attempt01 command to complete this receipt; the verified revisions, log outcome and reported actual limits above are retained meanwhile.
+
+### Current conclusion and prerequisites
+
+**No attribution to native admission, transaction body/commit, schema/catalog or Automerge reconstruction is possible from attempt01. No generic fix is proven.** Earlier request-stage latency evidence remains unchanged; neither source review nor compilation progress identifies its cause.
+
+Coordinator reports working available memory approximately **1.9GiB**, host swap full. This is reported current capacity, not a memory sample taken by this agent or an assertion that a retry will fit. Sufficient free memory and a fresh exclusive build-slot authorization are prerequisites before another attempt. No automatic retry, cap/budget increase, target cleanup, profile change, alternative persistence, cache or deadline change is authorized here. Preserve the diagnostics branch and instrumentation unchanged, not main-integrated.
+
+Documentation-only validation for this receipt: reviewed exact log and source IDs, scoped diff/whitespace checks; no Cargo/build/test/Clippy/powerset/CRAP execution. Root `of/Cargo.lock`'s previously reported automated three-edge update (possibly rust-analyzer; writer unverified) and all root user dirt remain outside this owner documentation commit.

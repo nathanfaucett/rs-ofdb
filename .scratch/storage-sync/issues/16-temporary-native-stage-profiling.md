@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 Type: task
-Work status: source implemented; coordinator review/run authorization pending
+Work status: source approved; coordinator build OOM before test; runtime evidence blocked
 Owner: ofdb generic instrumentation/evidence only
 Priority: High
 Complexity / risk: Low / medium (observer overhead and interpretation)
@@ -14,10 +14,12 @@ On an exact main-based dedicated root branch, measure native transaction admissi
 ## Acceptance / pending evidence
 
 - Source-only implementation and review recorded in [measurement handoff](../evidence/16-native-idp-stage-timing.md).
-- Coordinator must review the stable instrumentation commit, authorize exclusive shared-target jobs1 build with 2G memory cap, and approve consumer lock dependency-edge refresh.
-- The next execution is the SAME exact existing consumer probe at d2720cb, not a new test/workload or broad owner suite. No build/test is authorized by this ticket.
+- Coordinator reports reviewer42596023 approved source b1d957d with no blockers; consumer437c9bf records the lock dependency-edge refresh.
+- Coordinator attempt01 used reported 1500M/zero-swap/900s limits and was OOM-killed during compilation; the SAME existing consumer probe never ran. Literal executed command remains missing from supplied log and must be supplied by coordinator.
+- Runtime evidence is blocked on sufficient free memory (coordinator reports approximately1.9GiB available, swap full) and fresh exclusive-slot authorization. No build/retry is authorized by this ticket.
 - Record measured native versus schema/catalog/reconstruction costs before proposing a generic fix. No GREEN or integration acceptance inferred from instrumentation.
 
 ## Comments
 
 - 2026-10-12: Verified clean owner main bad3071 and clean consumer d2720cb. Dedicated owner root branch `diagnostics/native-idp-stage-timing`, no worktree/configuration change. Existing evidence proves slow request-path loads but does not yet isolate an owner cause. Source-only handoff; runtime evidence and any fix remain pending. Existing tickets/spec/map statuses untouched.
+- 2026-10-12 attempt01 receipt: consumer437c9bf / ownerb1d957d; source reviewer42596023 approved, observer effects retained. Log reports oom-kill, runtime8min25.181s, CPU8min18.201s, memory1.4G, swap0B; no test executed and no bottleneck attribution or generic fix proven. Documentation-only update, no new build initiated, diagnostics branch preserved outside main.
