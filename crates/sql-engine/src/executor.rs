@@ -26,6 +26,7 @@ use crate::{
         ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id, columns as schema_columns,
         ensure as ensure_schema, index_storage, largest_schema_name_claim, lookup_index_id,
         lookup_table_id, lookup_table_name, table_schema as schema_table_schema,
+        table_schema_with_fields,
     },
     stage_timing::StageTiming,
 };
@@ -1259,14 +1260,14 @@ where
         lookup_table_name(transaction, reconciler, table_name).await?
     };
     let row = key_row_id(key)?;
-    let schema = {
+    let (schema, table_fields) = {
         let _timing = StageTiming::new("ofdb.row_conflicts.schema");
-        table_schema(transaction, reconciler, table_name).await?
+        table_schema_with_fields(transaction, reconciler, table_name).await?
     };
     let conflicts = {
         let _timing = StageTiming::new("ofdb.row_conflicts.codec");
         reconciler
-            .conflicted_columns(transaction, &table, &row)
+            .conflicted_columns(transaction, &table, &row, &table_fields)
             .await?
     };
     conflicts
@@ -1332,9 +1333,10 @@ where
     }
     let table = lookup_table_name(transaction, reconciler, table_name).await?;
     let row_id = key_row_id(key)?;
-    let schema = table_schema(transaction, reconciler, table_name).await?;
+    let (schema, table_fields) =
+        table_schema_with_fields(transaction, reconciler, table_name).await?;
     let conflicts = reconciler
-        .conflicted_columns(transaction, &table, &row_id)
+        .conflicted_columns(transaction, &table, &row_id, &table_fields)
         .await?;
     let mut row = reconciler
         .get_row(transaction, &table, &row_id)

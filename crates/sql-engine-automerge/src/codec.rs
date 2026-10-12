@@ -155,6 +155,7 @@ impl AutomergeRowCodec {
         transaction: &'a T,
         table: &'a str,
         fallback_count: usize,
+        table_fields: Option<&'a [Row]>,
     ) -> impl core::future::Future<Output = EngineResult<Vec<Column>>> + Send + 'a
     where
         T: KernelTransaction,
@@ -185,7 +186,15 @@ impl AutomergeRowCodec {
             }
             let mut columns = Vec::new();
             if let Some(table_id) = table_id {
-                let fields = Self::catalog_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
+                let fields = match table_fields {
+                    Some(fields) => futures::stream::iter(
+                        fields
+                            .iter()
+                            .map(|field| Ok((Uuid::nil(), field.clone(), false))),
+                    )
+                    .boxed(),
+                    None => Self::catalog_states(transaction, ENGINE_TABLE_FIELDS_STORAGE).boxed(),
+                };
                 pin_mut!(fields);
                 while let Some(field) = fields.next().await {
                     let (_, field, deleted) = field?;
@@ -516,7 +525,7 @@ impl AutomergeRowCodec {
     where
         T: KernelTransaction,
     {
-        let columns = Self::columns(transaction, table, 0).await?;
+        let columns = Self::columns(transaction, table, 0, None).await?;
         if columns.is_empty() {
             Ok(Self::document_columns_for(document, &columns)?.into_owned())
         } else {
@@ -698,7 +707,7 @@ where
                 }
 
                 if columns.is_none() {
-                    columns = Some(Self::columns(transaction, table, 0).await?);
+                    columns = Some(Self::columns(transaction, table, 0, None).await?);
                 }
                 let columns = Self::document_columns_for(
                     &document,
@@ -737,7 +746,7 @@ where
                     let row = Self::row_id(&id)?;
                     let deleted = Self::metadata_deleted(transaction, table, &row).await?;
                     if columns.is_none() {
-                        columns = Some(Self::columns(transaction, table, 0).await?);
+                        columns = Some(Self::columns(transaction, table, 0, None).await?);
                     }
                     let columns = Self::document_columns_for(
                         &document,
@@ -763,7 +772,7 @@ where
             .await?
             .unwrap_or_else(AutoCommit::new)
             .with_actor(self.actor.clone());
-        let columns = Self::columns(transaction, table_name, row.values.len()).await?;
+        let columns = Self::columns(transaction, table_name, row.values.len(), None).await?;
         if Self::has_conflicts(&document, &columns, changed_columns)? {
             return Err(EngineError::InvalidQuery(
                 "Logical row column is conflicted",
@@ -779,6 +788,7 @@ where
         transaction: &T,
         table: &str,
         row: &Uuid,
+        table_fields: &[Row],
     ) -> EngineResult<Vec<usize>> {
         let table_name = table;
         let id = Self::document_id(row);
@@ -794,7 +804,15 @@ where
             return Ok(Vec::new());
         };
         let started = started.map(|_| Instant::now());
-        let columns = Self::document_columns(transaction, table_name, row, &document).await;
+        let columns = Self::columns(transaction, table_name, 0, Some(table_fields))
+            .await
+            .and_then(|columns| {
+                if columns.is_empty() {
+                    Ok(Self::document_columns_for(&document, &columns)?.into_owned())
+                } else {
+                    Ok(columns)
+                }
+            });
         if let Some(started) = started {
             log::info!(target: "of::idp_stage_timing",
                 "ofdb.automerge.conflict_document_columns elapsed_us={}",
@@ -857,7 +875,7 @@ where
             .await?
             .unwrap_or_else(AutoCommit::new)
             .with_actor(self.actor.clone());
-        let columns = Self::columns(transaction, table_name, row.values.len()).await?;
+        let columns = Self::columns(transaction, table_name, row.values.len(), None).await?;
         let previous_heads = document.get_heads();
         Self::update_document_columns(&mut document, row, &columns, changed_columns)?;
         Self::encode_incremental(columns.len(), document.save_after(&previous_heads))
@@ -902,7 +920,7 @@ where
             self.delete_row(transaction, table, &row).await?;
             return Ok(None);
         }
-        let columns = Self::columns(transaction, table_name, column_count).await?;
+        let columns = Self::columns(transaction, table_name, column_count, None).await?;
         let row = Self::decode_row(&document, &columns)?;
 
         let mut changes = AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table));
@@ -1067,7 +1085,7 @@ where
             return Err(EngineError::InvalidQuery("Logical row is metadatad"));
         }
         let table_name = table;
-        let columns = Self::columns(transaction, table_name, value.values.len()).await?;
+        let columns = Self::columns(transaction, table_name, value.values.len(), None).await?;
         let id = Self::document_id(&row);
         self.store_row(transaction, table, id, &columns, &value)
             .await
@@ -1088,7 +1106,7 @@ where
     T: KernelTransaction + Send,
 {
     async fn candidate_columns(&self, transaction: &T, table: &str) -> EngineResult<Vec<String>> {
-        let columns = Self::columns(transaction, table, 0).await?;
+        let columns = Self::columns(transaction, table, 0, None).await?;
         if columns.is_empty() {
             return Err(EngineError::Unsupported(
                 "Candidate rows require a transaction catalog layout",

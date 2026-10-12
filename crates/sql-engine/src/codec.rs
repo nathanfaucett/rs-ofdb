@@ -69,11 +69,13 @@ where
         value: &Row,
         changed_columns: &[usize],
     ) -> impl Future<Output = EngineResult<Vec<u8>>> + Send;
+    /// `table_fields` contains every live field-catalog row from the same operation's snapshot.
     fn conflicted_columns(
         &self,
         transaction: &T,
         table: &str,
         row: &Uuid,
+        table_fields: &[Row],
     ) -> impl Future<Output = EngineResult<Vec<usize>>> + Send;
     fn conflict_values(
         &self,

@@ -1902,7 +1902,12 @@ fn internal_rows_share_automerge_conflict_and_resolution_behavior() {
                 let row = field_id;
                 Box::pin(async move {
                     codec
-                        .conflicted_columns(transaction, engine::ENGINE_TABLE_FIELDS_STORAGE, &row)
+                        .conflicted_columns(
+                            transaction,
+                            engine::ENGINE_TABLE_FIELDS_STORAGE,
+                            &row,
+                            &[],
+                        )
                         .await
                 })
             })
@@ -1972,6 +1977,7 @@ fn internal_rows_share_automerge_conflict_and_resolution_behavior() {
                                     transaction,
                                     engine::ENGINE_TABLE_FIELDS_STORAGE,
                                     &row,
+                                    &[],
                                 )
                                 .await?,
                             codec

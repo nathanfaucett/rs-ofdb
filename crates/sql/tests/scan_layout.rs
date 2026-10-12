@@ -5,6 +5,44 @@ use std::time::{Duration, Instant};
 use ofdb_sql::{Database, Row, Uuid, Value};
 
 #[tokio::test]
+async fn native_conflict_checks_with_large_catalog_keep_fixed_budget() {
+    let directory = tempfile::tempdir().expect("native conflict store");
+    let database = Database::open(directory.path().join("conflict.redb")).expect("native database");
+    let client = database.client();
+    client.execute_sql("CREATE TABLE items (id UUID PRIMARY KEY, value INTEGER); INSERT INTO items VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 1)", None).await.expect("conflict-free row");
+    let fields = (0..200)
+        .map(|index| format!("field_{index} TEXT"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    client
+        .execute_sql(
+            &format!("CREATE TABLE catalog_inventory (id UUID PRIMARY KEY, {fields})"),
+            None,
+        )
+        .await
+        .expect("large current catalog");
+    let key = Row::new(vec![Value::Uuid(
+        Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("row key"),
+    )]);
+    let started = Instant::now();
+    for _ in 0..512 {
+        assert!(
+            client
+                .row_conflicts("items", &key)
+                .await
+                .expect("public conflict inspection")
+                .is_empty()
+        );
+    }
+    let elapsed = started.elapsed();
+    eprintln!("native conflict catalog: calls=512 elapsed={elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(12),
+        "public conflict inspections exceeded fixed 12s machine-local regression budget: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn native_select_with_large_catalog_keeps_scan_within_budget() {
     let directory = tempfile::tempdir().expect("native scan store");
     let database = Database::open(directory.path().join("scan.redb")).expect("native database");
