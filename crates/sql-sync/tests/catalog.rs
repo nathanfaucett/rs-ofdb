@@ -11,8 +11,8 @@ use std::sync::{
 };
 
 use engine::{
-    ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine,
-    InMemoryKernel, Kernel, KernelTransaction, Uuid,
+    ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
+    ENGINE_TABLES_STORAGE, Engine, InMemoryKernel, Kernel, KernelTransaction, Uuid,
 };
 use engine_redb::{RedbKernel, redb};
 use futures::{
@@ -24,10 +24,27 @@ use futures::{
 use support::TestCodec;
 use sync::{
     MAX_APPLY_BATCH_BYTES, SessionConfig, SyncChangeId, SyncIncrementalChange, SyncKey,
-    SyncMessage, SyncRole, SyncStateUnit, SyncTransport, apply_sync_state_batch_for,
+    SyncMessage, SyncRole, SyncRowCodec, SyncStateUnit, SyncTransport, apply_sync_state_batch_for,
     export_sync_state_for, sync_manifest_for, synchronize,
 };
 use value::{Row, Value, ValueType};
+
+#[test]
+fn complete_table_state_observation_requires_codec_support() {
+    block_on(async {
+        let database = Engine::new(InMemoryKernel::new(), TestCodec);
+        let error = database
+            .read_transaction(|codec, transaction| {
+                Box::pin(async move { codec.observe_table_state(transaction, "items").await })
+            })
+            .await
+            .expect_err("unsupported codecs must not silently omit rows or conflicts");
+        assert!(matches!(
+            error,
+            engine::EngineError::Unsupported("Codec cannot observe complete table state")
+        ));
+    });
+}
 
 #[derive(Debug)]
 struct Closed;
@@ -46,6 +63,7 @@ struct Transport {
     omit_recoverable_row: bool,
     reverse_states: bool,
     buffered: Vec<Vec<u8>>,
+    sent: Option<Vec<SyncMessage>>,
 }
 
 impl SyncTransport for Transport {
@@ -57,6 +75,9 @@ impl SyncTransport for Transport {
 
     async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
         let mut message: SyncMessage = postcard::from_bytes(&frame).expect("decode frame");
+        if let Some(sent) = &mut self.sent {
+            sent.push(message.clone());
+        }
         let mut frame = frame;
         if self.omit_recoverable_row
             && let SyncMessage::State(units) = &mut message
@@ -118,6 +139,7 @@ fn transport_pair(interrupt: bool) -> (Transport, Transport) {
         omit_recoverable_row: false,
         reverse_states: false,
         buffered: Vec::new(),
+        sent: None,
     };
     (
         transport(left_receiver, left_sender, interrupt),
@@ -454,6 +476,142 @@ async fn source_with_rows(user_rows: usize) -> Engine<InMemoryKernel, TestCodec>
     }
     transaction.commit().await.expect("commit source");
     Engine::new(kernel, TestCodec)
+}
+
+#[test]
+fn greeting_manifest_is_empty_and_actual_manifest_contains_rows() {
+    block_on(async {
+        for role in [SyncRole::Initiator, SyncRole::Responder] {
+            let source = source().await;
+            let destination = destination();
+            let (mut left, mut right) = transport_pair(false);
+            left.sent = Some(Vec::new());
+            let peer_role = match role {
+                SyncRole::Initiator => SyncRole::Responder,
+                SyncRole::Responder => SyncRole::Initiator,
+            };
+            let config = SessionConfig::default();
+            let (sent, received) = futures::join!(
+                synchronize(&source, &mut left, &config, role),
+                synchronize(&destination, &mut right, &config, peer_role),
+            );
+            sent.expect("source sync");
+            received.expect("destination sync");
+
+            let frames = left.sent.expect("recorded source frames");
+            let Some(SyncMessage::Hello(hello)) = frames.first() else {
+                panic!("source must send Hello first");
+            };
+            assert_eq!(hello.protocol_version, sync::PROTOCOL_VERSION);
+            assert!(
+                hello.manifest.entries.is_empty(),
+                "greeting must not export rows"
+            );
+            let Some(SyncMessage::Manifest(manifest)) = frames.get(1) else {
+                panic!("source must send the actual Manifest after Hello");
+            };
+            assert!(
+                manifest.entries.iter().any(|(key, _)| {
+                    *key == SyncKey::Row {
+                        table: "people".into(),
+                        row: row_uuid(4),
+                    }
+                }),
+                "actual manifest must include the seeded user row"
+            );
+            assert_eq!(
+                *manifest,
+                sync_manifest_for(&destination)
+                    .await
+                    .expect("imported manifest"),
+                "actual manifest must describe the synchronized state",
+            );
+        }
+    });
+}
+
+#[test]
+fn checked_staged_sync_accepts_non_send_transport_futures() {
+    struct LocalTransport {
+        inner: Transport,
+        marker: std::rc::Rc<()>,
+    }
+
+    impl SyncTransport for LocalTransport {
+        type Error = Closed;
+
+        async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+            let marker = std::rc::Rc::clone(&self.marker);
+            let result = self.inner.receive().await;
+            drop(marker);
+            result
+        }
+
+        async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+            let marker = std::rc::Rc::clone(&self.marker);
+            let result = self.inner.send(frame).await;
+            drop(marker);
+            result
+        }
+    }
+
+    block_on(async {
+        let source = source().await;
+        let target = destination();
+        let factory = sync::MemorySyncStageFactory::new(sync::DEFAULT_MAX_SESSION_BYTES);
+        let config = SessionConfig {
+            max_units_per_frame: 1,
+            ..SessionConfig::default()
+        };
+        let (left, right) = transport_pair(false);
+        let local = |inner| LocalTransport {
+            inner,
+            marker: std::rc::Rc::new(()),
+        };
+        let (mut left, mut right) = (local(left), local(right));
+        let checks = AtomicUsize::new(0);
+        let (sent, received) = futures::join!(
+            sync::synchronize_with_stage_factory_checked(
+                &source,
+                &mut left,
+                &config,
+                SyncRole::Initiator,
+                &factory,
+                || core::future::ready(Ok(())),
+            ),
+            sync::synchronize_with_stage_factory_checked(
+                &target,
+                &mut right,
+                &config,
+                SyncRole::Responder,
+                &factory,
+                || {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                    core::future::ready(Ok(()))
+                },
+            ),
+        );
+        sent.expect("local source sync");
+        received.expect("local target sync");
+        assert!(checks.load(Ordering::SeqCst) > 0);
+        let units = export_sync_state_for(&target)
+            .await
+            .expect("committed target state");
+        let row = units
+            .iter()
+            .find(|unit| {
+                unit.key
+                    == SyncKey::Row {
+                        table: "people".into(),
+                        row: row_uuid(4),
+                    }
+            })
+            .expect("imported source row");
+        assert_eq!(
+            postcard::from_bytes::<Row>(&row.state).expect("decode imported row"),
+            Row::new(vec![Value::Uuid(row_uuid(4)), Value::from("")])
+        );
+    });
 }
 
 #[test]
@@ -1077,6 +1235,174 @@ fn invalid_complete_catalog_definition_is_rejected_atomically() {
                 .expect("destination catalog")
                 .is_empty()
         );
+    });
+}
+
+#[test]
+fn catalog_validation_preserves_field_ownership_and_rejects_inactive_index_columns() {
+    block_on(async {
+        let source = source().await;
+        let mut units = export_sync_state_for(&source)
+            .await
+            .expect("export catalog");
+        units.retain(|unit| {
+            matches!(&unit.key, SyncKey::Row { table, .. }
+                if table == ENGINE_TABLES_STORAGE || table == ENGINE_TABLE_FIELDS_STORAGE)
+        });
+        let foreign_table = Uuid::now_v7();
+        let index_id = Uuid::now_v7();
+        let payload = units
+            .iter_mut()
+            .find(|unit| {
+                matches!(&unit.key, SyncKey::Row { table, .. } if table == ENGINE_TABLE_FIELDS_STORAGE)
+                    && postcard::from_bytes::<Row>(&unit.state)
+                        .expect("decode table field")
+                        .values[2].as_text() == Some("payload")
+            })
+            .expect("payload field");
+        let mut value: Row = postcard::from_bytes(&payload.state).expect("decode payload field");
+        value.values[0] = Value::Uuid(foreign_table);
+        *payload = SyncStateUnit::new(
+            payload.key.clone(),
+            postcard::to_allocvec(&value).expect("encode payload field"),
+            Vec::new(),
+        );
+        for (table, row, values) in [
+            (
+                ENGINE_INDICES_STORAGE,
+                index_id,
+                vec![
+                    Value::from("by_payload"),
+                    Value::from("people"),
+                    Value::Bool(false),
+                    Value::Uuid(foreign_table),
+                ],
+            ),
+            (
+                ENGINE_INDEX_FIELDS_STORAGE,
+                Uuid::now_v7(),
+                vec![
+                    Value::Uuid(index_id),
+                    Value::Integer(0),
+                    Value::from("payload"),
+                    Value::Uuid(foreign_table),
+                ],
+            ),
+        ] {
+            units.push(SyncStateUnit::new(
+                SyncKey::Row {
+                    table: table.into(),
+                    row,
+                },
+                postcard::to_allocvec(&Row::new(values)).expect("encode index catalog row"),
+                Vec::new(),
+            ));
+        }
+        let error = apply_sync_state_batch_for(&destination(), units.clone())
+            .await
+            .expect_err("the later index rebuild must reject an inactive column identity");
+        assert!(
+            error
+                .to_string()
+                .contains("Index column identity is inactive"),
+            "{error}"
+        );
+
+        for (column, replacement, expected) in [
+            (0, Value::Uuid(foreign_table), "table people has no fields"),
+            (1, Value::from("orphan"), "table people has no fields"),
+            (
+                3,
+                Value::from(ValueType::Text),
+                "table people has no UUID primary key",
+            ),
+            (
+                6,
+                Value::Bool(false),
+                "table people has no UUID primary key",
+            ),
+        ] {
+            let mut invalid = units.clone();
+            let primary = invalid.iter_mut().find(|unit| {
+                matches!(&unit.key, SyncKey::Row { table, .. } if table == ENGINE_TABLE_FIELDS_STORAGE)
+                    && postcard::from_bytes::<Row>(&unit.state)
+                        .expect("decode table field")
+                        .values[2].as_text() == Some("id")
+            }).expect("primary field");
+            let mut value: Row = postcard::from_bytes(&primary.state).expect("decode primary");
+            value.values[column] = replacement;
+            *primary = SyncStateUnit::new(
+                primary.key.clone(),
+                postcard::to_allocvec(&value).expect("encode primary"),
+                Vec::new(),
+            );
+            let target = destination();
+            let error = apply_sync_state_batch_for(&target, invalid)
+                .await
+                .expect_err("invalid primary field must not satisfy table definition");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(
+                target
+                    .table_names()
+                    .await
+                    .expect("target catalog")
+                    .is_empty()
+            );
+        }
+
+        let mut missing_column = units.clone();
+        let field = missing_column.iter_mut().find(|unit| {
+            matches!(&unit.key, SyncKey::Row { table, .. } if table == ENGINE_INDEX_FIELDS_STORAGE)
+        }).expect("index field");
+        let mut value: Row = postcard::from_bytes(&field.state).expect("decode index field");
+        value.values[2] = Value::from("missing");
+        *field = SyncStateUnit::new(
+            field.key.clone(),
+            postcard::to_allocvec(&value).expect("encode index field"),
+            Vec::new(),
+        );
+        let target = destination();
+        let error = apply_sync_state_batch_for(&target, missing_column)
+            .await
+            .expect_err("index column must exist by name");
+        assert!(
+            error
+                .to_string()
+                .contains("references missing column missing"),
+            "{error}"
+        );
+        assert!(
+            target
+                .table_names()
+                .await
+                .expect("target catalog")
+                .is_empty()
+        );
+
+        for table in [ENGINE_TABLE_FIELDS_STORAGE, ENGINE_INDEX_FIELDS_STORAGE] {
+            let mut invalid = units.clone();
+            invalid.push(SyncStateUnit::new(
+                SyncKey::Row {
+                    table: table.into(),
+                    row: Uuid::now_v7(),
+                },
+                postcard::to_allocvec(&Row::new(vec![Value::Uuid(Uuid::now_v7())]))
+                    .expect("encode malformed unrelated row"),
+                Vec::new(),
+            ));
+            let target = destination();
+            let error = apply_sync_state_batch_for(&target, invalid)
+                .await
+                .expect_err("malformed unrelated catalog rows must still be validated");
+            assert!(error.to_string().contains("Invalid catalog row"), "{error}");
+            assert!(
+                target
+                    .table_names()
+                    .await
+                    .expect("target catalog")
+                    .is_empty()
+            );
+        }
     });
 }
 

@@ -10,7 +10,7 @@ use engine::{
     ENGINE_TABLES_STORAGE, Engine, EngineError, EngineResult, Kernel, Uuid,
     catalog_table_for_storage,
 };
-use futures::{StreamExt, pin_mut};
+
 use value::{Row, Value, ValueType};
 
 use crate::candidate::CandidateValidator;
@@ -74,14 +74,15 @@ impl<'a> TableScope<'a> {
         if names.is_empty() {
             return Err(rejected());
         }
+        let mut unique = BTreeSet::new();
         for name in names {
-            if name.is_empty()
-                || catalog_table_for_storage(name).is_some()
-                || scope.columns.contains_key(*name)
+            if name.is_empty() || catalog_table_for_storage(name).is_some() || !unique.insert(*name)
             {
                 return Err(rejected());
             }
-            let schema = engine.table_schema(name).await?;
+        }
+        let (schemas, indices, rows) = engine.observe_schema(names, None).await?;
+        for (name, schema) in names.iter().zip(schemas) {
             scope.columns.insert(
                 name.to_string(),
                 schema
@@ -96,27 +97,7 @@ impl<'a> TableScope<'a> {
             scope.names.push(name.to_string());
         }
         scope.names.sort();
-        let rows = engine
-            .read_transaction(|codec, tx| {
-                Box::pin(async move {
-                    let mut result = Vec::new();
-                    for table in [
-                        ENGINE_TABLES_STORAGE,
-                        ENGINE_TABLE_FIELDS_STORAGE,
-                        ENGINE_INDICES_STORAGE,
-                        ENGINE_INDEX_FIELDS_STORAGE,
-                    ] {
-                        let rows = codec.scan_row_states(tx, table);
-                        pin_mut!(rows);
-                        while let Some(row) = rows.next().await {
-                            let (id, value, _) = row?;
-                            result.push((table, id, value));
-                        }
-                    }
-                    Ok(result)
-                })
-            })
-            .await?;
+
         for (table, id, row) in &rows {
             let selected = match *table {
                 ENGINE_TABLES_STORAGE => scope.columns.contains_key(&text(row, 0)?),
@@ -131,7 +112,10 @@ impl<'a> TableScope<'a> {
             }
             if *table == ENGINE_INDICES_STORAGE {
                 let name = text(row, 0)?;
-                let index = engine.index_schema(&name).await?;
+                let index = indices
+                    .iter()
+                    .find(|index| index.name == name)
+                    .ok_or_else(rejected)?;
                 let columns = scope.columns.get(&index.table_name).ok_or_else(rejected)?;
                 let fields = index
                     .column_indices
@@ -145,7 +129,7 @@ impl<'a> TableScope<'a> {
                     .collect::<EngineResult<Vec<_>>>()?;
                 scope
                     .indices
-                    .insert(name, (index.table_name, index.unique, fields));
+                    .insert(name, (index.table_name.clone(), index.unique, fields));
             }
             scope.admit_catalog(table, *id, row)?;
         }
@@ -311,12 +295,14 @@ impl<'a> TableScope<'a> {
         K: Kernel,
         R: SyncRowCodec<K::Transaction>,
     {
-        for (name, expected) in &self.columns {
-            let current = engine.table_schema(name).await?;
+        let names = self.columns.keys().map(String::as_str).collect::<Vec<_>>();
+        let index_names = self.indices.keys().map(String::as_str).collect::<Vec<_>>();
+        let (tables, indices, _) = engine.observe_schema(&names, Some(&index_names)).await?;
+        for ((_, expected), current) in self.columns.iter().zip(&tables) {
             let mut actual = current
                 .columns
-                .into_iter()
-                .map(|c| (c.name, c.r#type, c.default, c.primary_key))
+                .iter()
+                .map(|c| (c.name.clone(), c.r#type, c.default.clone(), c.primary_key))
                 .collect::<Vec<_>>();
             let mut expected = expected.clone();
             actual.sort_by(|a, b| a.0.cmp(&b.0));
@@ -325,9 +311,12 @@ impl<'a> TableScope<'a> {
                 return Err(rejected());
             }
         }
-        for (name, (table, unique, fields)) in &self.indices {
-            let current = engine.index_schema(name).await?;
-            let columns = engine.table_schema(table).await?.columns;
+        for ((_, (table, unique, fields)), current) in self.indices.iter().zip(indices) {
+            let columns = &tables
+                .iter()
+                .find(|schema| schema.name == *table)
+                .ok_or_else(rejected)?
+                .columns;
             let actual = current
                 .column_indices
                 .iter()

@@ -1,7 +1,11 @@
 use core::fmt;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Instant,
+};
 
-use engine::{Engine, InMemoryKernel, RowCodec};
+use engine::{Engine, InMemoryKernel, MutationSummary, RowCodec};
 use engine_automerge::AutomergeRowCodec;
 use futures::{StreamExt, channel::mpsc, executor::block_on};
 use query::{DataDefinition, Query, QueryInsert, Statement};
@@ -112,6 +116,144 @@ async fn sync(
     left_result.unwrap();
     right_result.unwrap();
     left_transport.sent.borrow().clone()
+}
+
+#[test]
+fn data_mutation_maintenance_tail_preserves_rows_and_indices_across_catalog_sizes() {
+    block_on(async {
+        for (table_count, field_count, index_count, index_field_count) in
+            [(1, 9, 1, 2), (23, 200, 20, 34)]
+        {
+            let database = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+            let names = (0..table_count)
+                .map(|index| format!("inventory_{index}"))
+                .collect::<Vec<_>>();
+            let mut statements = Vec::new();
+            for (index, name) in names.iter().enumerate() {
+                let columns = (1..if index < 16 { 9 } else { 8 })
+                    .map(|column| format!("field_{column} TEXT"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "CREATE TABLE {name} (id UUID PRIMARY KEY, {columns})"
+                ));
+            }
+            for index in 0..index_count {
+                let columns = if index < 14 {
+                    "field_1, field_2"
+                } else {
+                    "field_1"
+                };
+                statements.push(format!(
+                    "CREATE UNIQUE INDEX lookup_{index} ON inventory_{index} ({columns})"
+                ));
+                let id = row_uuid(index as u128 + 1);
+                statements.push(format!(
+                    "INSERT INTO inventory_{index} (id, field_1, field_2) VALUES \
+                     (CAST('{id}' AS UUID), 'before-{index}', 'stable')"
+                ));
+            }
+            database
+                .translate_and_execute(&statements.join("; "), &SqlTranslator)
+                .await
+                .expect("generated catalog and indexed rows");
+            let requested = names.iter().map(String::as_str).collect::<Vec<_>>();
+            let (tables, indices, raw) = database
+                .observe_schema(&requested, None)
+                .await
+                .expect("actual generated catalog shape");
+            assert_eq!(tables.len(), table_count);
+            assert_eq!(indices.len(), index_count);
+            assert_eq!(
+                [
+                    engine::ENGINE_TABLES_STORAGE,
+                    engine::ENGINE_TABLE_FIELDS_STORAGE,
+                    engine::ENGINE_INDICES_STORAGE,
+                    engine::ENGINE_INDEX_FIELDS_STORAGE,
+                ]
+                .map(|storage| raw.iter().filter(|(table, _, _)| *table == storage).count()),
+                [table_count, field_count, index_count, index_field_count]
+            );
+
+            let maintenance_started = Cell::new(None);
+            let changed = database
+                .mutate_tables_validated(
+                    &[String::from("inventory_0")],
+                    |codec, transaction| {
+                        Box::pin(async move {
+                            let id = row_uuid(1);
+                            let mut row = codec
+                                .get_row(transaction, "inventory_0", &id)
+                                .await?
+                                .expect("existing indexed row");
+                            row.values[1] = Value::from("after");
+                            codec
+                                .put_row(transaction, "inventory_0", id, row.clone())
+                                .await?;
+                            let mut summary = MutationSummary::default();
+                            summary.record_table("inventory_0");
+                            Ok((row, summary))
+                        })
+                    },
+                    |row| {
+                        assert_eq!(row.values[0], Value::Uuid(row_uuid(1)));
+                        assert_eq!(row.values[1], Value::from("after"));
+                        maintenance_started.set(Some(Instant::now()));
+                        Ok(())
+                    },
+                )
+                .await
+                .expect("validated row mutation and maintenance commit");
+            let elapsed = maintenance_started
+                .get()
+                .expect("validation starts maintenance measurement")
+                .elapsed();
+            eprintln!(
+                "data mutation maintenance tail: tables={table_count} fields={field_count} \
+                 indices={index_count} index_fields={index_field_count} elapsed={elapsed:?}"
+            );
+
+            let mut expected = vec![Value::Null; 9];
+            expected[0] = Value::Uuid(row_uuid(1));
+            expected[1] = Value::from("after");
+            expected[2] = Value::from("stable");
+            let expected = Row::new(expected);
+            assert_eq!(changed, expected);
+            let rows = database
+                .translate_and_execute("SELECT * FROM inventory_0", &SqlTranslator)
+                .await
+                .expect("committed row readback");
+            assert_eq!(rows[0].rows, vec![expected.clone()]);
+            assert_eq!(
+                database
+                    .index_lookup("lookup_0", &Row::from(["before-0", "stable"]))
+                    .await
+                    .expect("old index key lookup"),
+                None
+            );
+            assert_eq!(
+                database
+                    .index_lookup("lookup_0", &Row::from(["after", "stable"]))
+                    .await
+                    .expect("new index key lookup"),
+                Some(expected)
+            );
+            for index in 1..index_count {
+                let mut values = vec![Value::from(format!("before-{index}"))];
+                if index < 14 {
+                    values.push(Value::from("stable"));
+                }
+                let row = database
+                    .index_lookup(&format!("lookup_{index}"), &Row::new(values))
+                    .await
+                    .expect("unrelated index lookup")
+                    .expect("unrelated indexed row retained");
+                assert_eq!(row.values[0], Value::Uuid(row_uuid(index as u128 + 1)));
+                assert_eq!(row.values[1], Value::from(format!("before-{index}")));
+                assert_eq!(row.values[2], Value::from("stable"));
+            }
+        }
+    });
 }
 
 #[test]

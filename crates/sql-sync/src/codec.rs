@@ -3,7 +3,7 @@ use alloc::{string::String, vec::Vec};
 use engine::{EngineResult, KernelTransaction, RowCodec, Uuid};
 use value::{Row, Value, ValueType};
 
-use crate::{StateDigest, SyncChangeId, SyncStateUnit};
+use crate::{StateDigest, SyncChangeId, SyncStateUnit, SyncTableView};
 
 pub type InspectedHistory = (Row, Vec<Uuid>, Vec<(String, Value)>);
 
@@ -11,18 +11,20 @@ pub trait SyncRowCodec<T>: RowCodec<T>
 where
     T: KernelTransaction,
 {
-    /// Column names in the exact order used by row decoding and conflict indices
-    /// in this transaction. Reject when the layout cannot be established.
-    /// Required only for opt-in complete candidate observations.
-    fn candidate_columns(
+    /// Observe every row, including tombstones and all losing conflict values,
+    /// using the actual decoder column order/defaults from this immutable transaction.
+    /// Conflict names refer to that same layout. Reject if it cannot be established,
+    /// even for an empty table; stored positional fallback is not authoritative.
+    /// Codecs without complete observations must reject instead of omitting evidence.
+    fn observe_table_state(
         &self,
         transaction: &T,
         table: &str,
-    ) -> impl Future<Output = EngineResult<Vec<String>>> + Send {
+    ) -> impl Future<Output = EngineResult<SyncTableView>> + Send {
         let _ = (transaction, table);
         async {
             Err(engine::EngineError::Unsupported(
-                "Codec cannot establish candidate column layout",
+                "Codec cannot observe complete table state",
             ))
         }
     }

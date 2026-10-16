@@ -18,7 +18,10 @@ use engine::{
     KernelTransaction, RowCatalog, RowCodec, Uuid, catalog_table_for_storage,
 };
 use futures::{Stream, StreamExt, pin_mut};
-use sync::{InspectedHistory, StateDigest, SyncChangeId, SyncRowCodec, SyncStateUnit};
+use sync::{
+    InspectedHistory, StateDigest, SyncChangeId, SyncRowCodec, SyncRowView, SyncStateUnit,
+    SyncTableView,
+};
 use value::{Row, Value, ValueType};
 
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
@@ -366,6 +369,39 @@ impl AutomergeRowCodec {
             }
         }
         Ok(result)
+    }
+
+    fn document_conflict_values(
+        document: &AutoCommit,
+        columns: &[Column],
+    ) -> EngineResult<Vec<(usize, Vec<Value>)>> {
+        let mut conflicts = Vec::new();
+        for (index, column) in columns.iter().enumerate() {
+            let values = document
+                .get_all(ROOT, &column.id)
+                .map_err(EngineError::custom)?;
+            if values.len() < 2 {
+                continue;
+            }
+            let values = values
+                .into_iter()
+                .map(|(value, _)| {
+                    let AutomergeValue::Scalar(value) = value else {
+                        return Err(EngineError::custom(
+                            "Logical row column is not encoded bytes",
+                        ));
+                    };
+                    let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                        return Err(EngineError::custom(
+                            "Logical row column is not encoded bytes",
+                        ));
+                    };
+                    postcard::from_bytes(bytes.as_ref()).map_err(EngineError::custom)
+                })
+                .collect::<EngineResult<Vec<_>>>()?;
+            conflicts.push((index, values));
+        }
+        Ok(conflicts)
     }
 
     fn has_conflicts(
@@ -786,34 +822,23 @@ where
         let Some(document) = Self::document(transaction, table, &id).await? else {
             return Ok(Vec::new());
         };
-        let columns = Self::document_columns(transaction, table, row, &document).await?;
-        let mut conflicts = Vec::new();
-        for (index, column) in columns.iter().enumerate() {
-            let values = document
-                .get_all(ROOT, &column.id)
-                .map_err(EngineError::custom)?;
-            if values.len() < 2 {
-                continue;
+        let mut has_conflicts = false;
+        for key in document.keys(ROOT).filter(|key| key != DOCUMENT_COLUMNS) {
+            if document
+                .get_all(ROOT, &key)
+                .map_err(EngineError::custom)?
+                .len()
+                >= 2
+            {
+                has_conflicts = true;
+                break;
             }
-            let values = values
-                .into_iter()
-                .map(|(value, _)| {
-                    let AutomergeValue::Scalar(value) = value else {
-                        return Err(EngineError::custom(
-                            "Logical row column is not encoded bytes",
-                        ));
-                    };
-                    let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        return Err(EngineError::custom(
-                            "Logical row column is not encoded bytes",
-                        ));
-                    };
-                    postcard::from_bytes(bytes.as_ref()).map_err(EngineError::custom)
-                })
-                .collect::<EngineResult<Vec<_>>>()?;
-            conflicts.push((index, values));
         }
-        Ok(conflicts)
+        if !has_conflicts {
+            return Ok(Vec::new());
+        }
+        let columns = Self::document_columns(transaction, table, row, &document).await?;
+        Self::document_conflict_values(&document, &columns)
     }
 
     async fn encode_resolution(
@@ -1060,14 +1085,47 @@ impl<T> SyncRowCodec<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
-    async fn candidate_columns(&self, transaction: &T, table: &str) -> EngineResult<Vec<String>> {
+    async fn observe_table_state(
+        &self,
+        transaction: &T,
+        table: &str,
+    ) -> EngineResult<SyncTableView> {
         let columns = Self::columns(transaction, table, 0, None).await?;
         if columns.is_empty() {
             return Err(EngineError::Unsupported(
                 "Candidate rows require a transaction catalog layout",
             ));
         }
-        Ok(columns.into_iter().map(|column| column.id).collect())
+        let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
+        let documents = reconstruct_document_values(changes.range(..).filter_map(|entry| async {
+            match &entry {
+                Ok((key, _)) if key.r#type().is_metadata() => None,
+                _ => Some(entry),
+            }
+        }));
+        pin_mut!(documents);
+        let mut rows = Vec::new();
+        while let Some(document) = documents.next().await {
+            let (id, document) = document.map_err(EngineError::custom)?;
+            let id = Self::row_id(&id)?;
+            let deleted = Self::metadata_deleted(transaction, table, &id).await?;
+            let row = Self::decode_row(&document, &columns)?;
+            let conflicts = Self::document_conflict_values(&document, &columns)?
+                .into_iter()
+                .map(|(index, values)| (columns[index].id.clone(), values))
+                .collect();
+            rows.push(SyncRowView {
+                id,
+                row,
+                deleted,
+                conflicts,
+            });
+        }
+        Ok(SyncTableView {
+            name: table.into(),
+            columns: columns.into_iter().map(|column| column.id).collect(),
+            rows,
+        })
     }
 
     async fn inspect_history(

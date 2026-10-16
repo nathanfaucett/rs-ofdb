@@ -77,6 +77,16 @@ async fn remote_client_executes_typed_queries_over_tcp() {
             .kind,
         QueryErrorKind::Unsupported
     );
+    for keys in [core::slice::from_ref(&key), &[]] {
+        assert_eq!(
+            client
+                .row_conflicts_batch("items", keys)
+                .await
+                .expect_err("remote batch inspection remains unsupported")
+                .kind,
+            QueryErrorKind::Unsupported
+        );
+    }
     assert_eq!(
         client
             .row_conflict_values("items", &key)

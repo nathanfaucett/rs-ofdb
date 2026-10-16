@@ -379,6 +379,129 @@ async fn directional_schema(database: &Database) {
     database.client().execute_sql("CREATE TABLE records (id UUID PRIMARY KEY, name TEXT, payload TEXT); CREATE UNIQUE INDEX record_names ON records(name); CREATE TABLE local_private (id UUID PRIMARY KEY, secret TEXT)", None).await.expect("fixed directional schema and index");
 }
 
+#[tokio::test]
+async fn checked_candidate_native_stages_preserve_spawned_sync_and_cleanup() {
+    for in_memory in [false, true] {
+        let root = tempfile::tempdir().expect("sync fixture");
+        let source = if in_memory {
+            Database::in_memory()
+        } else {
+            Database::open(root.path().join("source.redb")).expect("source")
+        };
+        let target = if in_memory {
+            Database::in_memory()
+        } else {
+            Database::open(root.path().join("target.redb")).expect("target")
+        };
+        for database in [&source, &target] {
+            directional_schema(database).await;
+        }
+        source
+            .client()
+            .execute_sql(
+                &format!(
+                    "INSERT INTO records VALUES (CAST('{STABLE_ID}' AS UUID), 'source', 'payload')"
+                ),
+                None,
+            )
+            .await
+            .expect("source fixture row");
+        let outgoing = Arc::new(AtomicBool::new(false));
+        let incoming = Arc::new(AtomicBool::new(false));
+        let checked = Arc::new(AtomicBool::new(false));
+        let stages = root.path().join("stages");
+        let (mut st, mut tt) = pair();
+        let sender = {
+            let source = source.clone();
+            let stages = stages.clone();
+            let outgoing = Arc::clone(&outgoing);
+            tokio::spawn(async move {
+                let config = SessionConfig {
+                    direction: SyncDirection::SendOnly,
+                    max_units_per_frame: 1,
+                    ..SessionConfig::default()
+                };
+                source
+                    .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                        &mut st,
+                        &config,
+                        SyncRole::Initiator,
+                        stages,
+                        &["records"],
+                        |_, _, _| Ok(()),
+                        |view| {
+                            assert_eq!(view.direction, SyncValidationDirection::Outgoing);
+                            outgoing.store(true, Ordering::SeqCst);
+                            Ok(())
+                        },
+                        || async { Ok(()) },
+                    )
+                    .await
+                    .expect("spawned source sync")
+            })
+        };
+        let receiver = {
+            let target = target.clone();
+            let stages = stages.clone();
+            let incoming = Arc::clone(&incoming);
+            let checked = Arc::clone(&checked);
+            tokio::spawn(async move {
+                let config = SessionConfig {
+                    direction: SyncDirection::ReceiveOnly,
+                    max_units_per_frame: 1,
+                    ..SessionConfig::default()
+                };
+                target
+                    .synchronize_tables_with_stage_directory_candidate_validated_checked(
+                        &mut tt,
+                        &config,
+                        SyncRole::Responder,
+                        stages,
+                        &["records"],
+                        |_, _, _| Ok(()),
+                        |view| {
+                            assert_eq!(view.direction, SyncValidationDirection::Incoming);
+                            assert!(view.tables.iter().any(|table| table.name == "records"
+                                && table.rows.iter().any(|row| {
+                                    row.row.values.contains(&Value::from("payload"))
+                                })));
+                            incoming.store(true, Ordering::SeqCst);
+                            Ok(())
+                        },
+                        || {
+                            checked.store(true, Ordering::SeqCst);
+                            core::future::ready(Ok(()))
+                        },
+                    )
+                    .await
+                    .expect("spawned target sync")
+            })
+        };
+        let (sent, received) = tokio::join!(sender, receiver);
+        assert_eq!(sent.expect("source task").received_units, 0);
+        assert_eq!(received.expect("target task").sent_units, 0);
+        assert!(outgoing.load(Ordering::SeqCst));
+        assert!(incoming.load(Ordering::SeqCst));
+        assert!(checked.load(Ordering::SeqCst));
+        assert_eq!(
+            target
+                .client()
+                .execute_sql("SELECT name, payload FROM records", None)
+                .await
+                .expect("committed target row")[0]
+                .rows,
+            vec![Row::new(vec![
+                Value::from("source"),
+                Value::from("payload")
+            ])]
+        );
+        assert_eq!(
+            std::fs::read_dir(&stages).expect("stage directory").count(),
+            0
+        );
+    }
+}
+
 async fn directional_exchange<Q, U>(
     source: &Database,
     receiver: &Database,
@@ -904,6 +1027,88 @@ async fn candidate_correlation_denial_rolls_back_complete_batch_then_native_retr
 }
 
 #[tokio::test]
+async fn candidate_outgoing_export_correlates_all_selected_rows_once() {
+    let directory = tempfile::tempdir().expect("stages");
+    let source = Database::in_memory();
+    let target = Database::open(directory.path().join("target.redb")).expect("target");
+    for database in [&source, &target] {
+        candidate_schema(database).await;
+    }
+    source.client().execute_sql(&format!("INSERT INTO z_records VALUES (CAST('{STABLE_ID}' AS UUID), 'expected'); INSERT INTO a_references VALUES (CAST('{STABLE_ID}' AS UUID), CAST('{STABLE_ID}' AS UUID), 'expected')"), None).await.expect("correlated source rows");
+    let deleted_id = "018f0f8e-7b6d-7c4a-8f12-000000000099";
+    source.client().execute_sql(&format!("INSERT INTO z_records VALUES (CAST('{deleted_id}' AS UUID), 'retained tombstone'); DELETE FROM z_records WHERE id = CAST('{deleted_id}' AS UUID)"), None).await.expect("related deleted row remains candidate evidence");
+    let deleted_id = Uuid::parse_str(deleted_id).expect("deleted row identity");
+    let validate = |view: &SyncCandidateView| {
+        correlated_rows(view)?;
+        assert_eq!(view.tables.len(), 2, "all selected related tables");
+        let records = view
+            .tables
+            .iter()
+            .find(|table| table.name == "z_records")
+            .expect("related records");
+        assert_eq!(records.rows.len(), 2, "live and deleted related rows");
+        let deleted = records
+            .rows
+            .iter()
+            .find(|row| row.id == deleted_id)
+            .expect("related tombstone evidence");
+        assert!(deleted.deleted);
+        assert_eq!(deleted.row.values[1], Value::from("retained tombstone"));
+        Ok(())
+    };
+    let complete_exports = std::sync::atomic::AtomicUsize::new(0);
+    let id = Uuid::parse_str(STABLE_ID).expect("stable row identity");
+    let stages = directory.path().join("stages");
+    let (sent, received) = candidate_exchange(
+        &source,
+        &target,
+        SyncRole::Responder,
+        &stages,
+        |view| {
+            validate(view)?;
+            if view.direction == SyncValidationDirection::Outgoing
+                && ["a_references", "z_records"].iter().all(|table| {
+                    view.candidates.contains(&SyncKey::Row {
+                        table: (*table).into(),
+                        row: id,
+                    })
+                })
+            {
+                complete_exports.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        },
+        &validate,
+        || async { Ok(()) },
+    )
+    .await;
+    sent.expect("validated complete source export");
+    received.expect("validated complete target import");
+    assert_eq!(
+        complete_exports.load(Ordering::SeqCst),
+        1,
+        "one outgoing observation correlates both exported table rows"
+    );
+    for table in ["a_references", "z_records"] {
+        assert_eq!(
+            target
+                .client()
+                .execute_sql(&format!("SELECT label FROM {table}"), None)
+                .await
+                .expect("committed correlated row")[0]
+                .rows,
+            vec![Row::new(vec![Value::from("expected")])]
+        );
+    }
+    assert!(
+        std::fs::read_dir(&stages)
+            .expect("stages cleaned")
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn candidate_outgoing_correlation_denies_actual_source_rows_before_disclosure() {
     for role in [SyncRole::Initiator, SyncRole::Responder] {
         let source = Database::in_memory();
@@ -933,6 +1138,11 @@ async fn candidate_outgoing_correlation_denies_actual_source_rows_before_disclos
                         |_, _, _| Ok(()),
                         |view| {
                             assert_eq!(view.direction, SyncValidationDirection::Outgoing);
+                            assert_eq!(
+                                view.candidates.len(),
+                                2,
+                                "both exported rows share the outgoing snapshot"
+                            );
                             observed.store(true, Ordering::SeqCst);
                             correlated_rows(view)
                         },

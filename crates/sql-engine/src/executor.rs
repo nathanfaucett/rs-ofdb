@@ -1,3 +1,5 @@
+use core::{future::Future, pin::Pin};
+
 use alloc::{boxed::Box, string::String, vec, vec::Vec};
 
 use futures::{StreamExt, pin_mut};
@@ -11,6 +13,17 @@ use schema::{ColumnSchema, TableSchema};
 use uuid::Uuid;
 use value::{Row, Value};
 
+// Construct large execution futures outside dispatcher poll frames, not just on the heap.
+#[inline(never)]
+fn execution_stage<'a, T: 'a, F>(
+    make: impl FnOnce() -> F,
+) -> Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>
+where
+    F: Future<Output = EngineResult<T>> + Send + 'a,
+{
+    Box::pin(make())
+}
+
 fn next_uuid(timestamp_provider: TimestampProvider) -> EngineResult<Uuid> {
     Ok(Uuid::new_v7(timestamp_provider()))
 }
@@ -22,10 +35,10 @@ use crate::{
     engine::{Engine, TimestampProvider},
     kernel::{Kernel, KernelTransaction},
     schema::{
-        ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-        ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id, columns as schema_columns,
-        ensure as ensure_schema, index_storage, largest_schema_name_claim, lookup_index_id,
-        lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
+        CatalogSnapshot, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
+        ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id,
+        columns as schema_columns, ensure as ensure_schema, index_storage,
+        largest_schema_name_claim, lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
         table_schema as schema_table_schema, table_schema_with_fields,
     },
 };
@@ -70,8 +83,15 @@ where
     R: RowCodec<K::Transaction> + Send + Sync,
 {
     ensure_schema(transaction, engine.reconciler.as_ref()).await?;
+    let read_only = statements
+        .iter()
+        .all(|statement| matches!(statement, query::Statement::Query(Query::Select(_))));
+    let mut catalog = None;
     let mut results = Vec::with_capacity(statements.len());
     for statement in statements {
+        if !read_only {
+            catalog = None;
+        }
         let result = match statement {
             query::Statement::Query(query) => {
                 execute_query(
@@ -80,6 +100,7 @@ where
                     engine.timestamp_provider,
                     changes,
                     query,
+                    &mut catalog,
                 )
                 .await
             }
@@ -105,6 +126,7 @@ async fn execute_query<T, R>(
     timestamp_provider: TimestampProvider,
     changes: &mut Vec<Change>,
     query: Query,
+    catalog: &mut Option<CatalogSnapshot>,
 ) -> EngineResult<QueryResult>
 where
     T: KernelTransaction,
@@ -112,17 +134,31 @@ where
 {
     match query {
         Query::Insert(insert) => {
-            insert_row(transaction, reconciler, timestamp_provider, changes, insert).await
+            execution_stage(|| {
+                insert_row(transaction, reconciler, timestamp_provider, changes, insert)
+            })
+            .await
         }
         Query::InsertValues(insert) => {
-            insert_values(transaction, reconciler, timestamp_provider, changes, insert).await
+            execution_stage(|| {
+                insert_values(transaction, reconciler, timestamp_provider, changes, insert)
+            })
+            .await
         }
-        Query::Select(select) => select_rows(transaction, reconciler, select).await,
+        Query::Select(select) => {
+            execution_stage(|| select_rows(transaction, reconciler, select, catalog)).await
+        }
         Query::Update(update) => {
-            update_rows(transaction, reconciler, timestamp_provider, changes, update).await
+            execution_stage(|| {
+                update_rows(transaction, reconciler, timestamp_provider, changes, update)
+            })
+            .await
         }
         Query::Delete(delete) => {
-            delete_rows(transaction, reconciler, timestamp_provider, changes, delete).await
+            execution_stage(|| {
+                delete_rows(transaction, reconciler, timestamp_provider, changes, delete)
+            })
+            .await
         }
     }
 }
@@ -143,12 +179,18 @@ where
         | DataDefinition::CreateTableWithIndexes { .. }
         | DataDefinition::DropTable { .. }
         | DataDefinition::AlterTable { .. } => {
-            execute_table_ddl(transaction, reconciler, timestamp_provider, changes, ddl).await
+            execution_stage(|| {
+                execute_table_ddl(transaction, reconciler, timestamp_provider, changes, ddl)
+            })
+            .await
         }
         DataDefinition::CreateIndex { .. }
         | DataDefinition::CreateIndexUnresolved { .. }
         | DataDefinition::DropIndex { .. } => {
-            execute_index_ddl(transaction, reconciler, timestamp_provider, changes, ddl).await
+            execution_stage(|| {
+                execute_index_ddl(transaction, reconciler, timestamp_provider, changes, ddl)
+            })
+            .await
         }
         _ => Err(EngineError::Unsupported(
             "only CREATE TABLE and ALTER TABLE ADD COLUMN are supported",
@@ -335,18 +377,20 @@ where
     }
     let column_indices =
         unresolved_index_columns(transaction, codec, &table_name, &column_names).await?;
-    create_index(
-        transaction,
-        codec,
-        timestamp_provider,
-        changes,
-        schema::IndexSchema {
-            name: index_name,
-            table_name,
-            column_indices,
-            unique,
-        },
-    )
+    execution_stage(|| {
+        create_index(
+            transaction,
+            codec,
+            timestamp_provider,
+            changes,
+            schema::IndexSchema {
+                name: index_name,
+                table_name,
+                column_indices,
+                unique,
+            },
+        )
+    })
     .await?;
     Ok(QueryResult::default())
 }
@@ -571,17 +615,13 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    if crate::schema::index_schema(transaction, codec, name)
-        .await?
-        .is_none()
-    {
+    let Some((id, _)) = crate::schema::index_schema(transaction, codec, name).await? else {
         return if if_exists {
             Ok(())
         } else {
             Err(EngineError::InvalidQuery("Index not found"))
         };
-    }
-    let id = lookup_index_id(transaction, codec, name).await?;
+    };
     let fields = {
         let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
         pin_mut!(rows);
@@ -708,7 +748,7 @@ where
         )
         .await?;
     }
-    crate::index::rebuild_table(transaction, codec, &table, true).await
+    execution_stage(|| crate::index::rebuild_table(transaction, codec, &table, true)).await
 }
 
 async fn create_table<T, R>(
@@ -1254,26 +1294,57 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
+    Ok(row_conflicts_batch(
+        transaction,
+        reconciler,
+        table_name,
+        core::slice::from_ref(key),
+    )
+    .await?
+    .pop()
+    .expect("one key produces one conflict result"))
+}
+
+pub(crate) async fn row_conflicts_batch<T, R>(
+    transaction: &T,
+    reconciler: &R,
+    table_name: &str,
+    keys: &[Row],
+) -> EngineResult<Vec<Vec<String>>>
+where
+    T: KernelTransaction,
+    R: RowCodec<T>,
+{
+    let Some(first) = keys.first() else {
+        return Ok(Vec::new());
+    };
     let (table_id, table_rows) =
         lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
-    let row = key_row_id(key)?;
+    key_row_id(first)?;
     let (schema, table_fields) =
         table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
-    let conflicts = reconciler
-        .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
-        .await?;
-    conflicts
-        .into_iter()
-        .map(|index| {
-            schema
-                .columns
-                .get(index)
-                .map(|column| column.name.clone())
-                .ok_or(EngineError::custom(
-                    "Conflicted column is missing from schema",
-                ))
-        })
-        .collect()
+    let mut results = Vec::with_capacity(keys.len());
+    for key in keys {
+        let row = key_row_id(key)?;
+        let conflicts = reconciler
+            .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
+            .await?;
+        results.push(
+            conflicts
+                .into_iter()
+                .map(|index| {
+                    schema
+                        .columns
+                        .get(index)
+                        .map(|column| column.name.clone())
+                        .ok_or(EngineError::custom(
+                            "Conflicted column is missing from schema",
+                        ))
+                })
+                .collect::<EngineResult<Vec<_>>>()?,
+        );
+    }
+    Ok(results)
 }
 
 pub(crate) async fn row_conflict_values<T, R>(
@@ -1460,6 +1531,7 @@ async fn select_rows<T, R>(
     transaction: &T,
     reconciler: &R,
     select: QuerySelect,
+    catalog: &mut Option<CatalogSnapshot>,
 ) -> EngineResult<QueryResult>
 where
     T: KernelTransaction,
@@ -1491,10 +1563,19 @@ where
     }
     let distinct = select.distinct;
 
-    let (table_id, table_rows) =
-        lookup_table_id_with_rows(transaction, reconciler, &select.from.table).await?;
-    let (schema, table_fields) =
-        table_schema_with_fields(transaction, reconciler, &select.from.table, table_id).await?;
+    let schema = if let Some(catalog) = catalog.as_ref() {
+        catalog.table_schema(&select.from.table)?
+    } else {
+        let (table_id, tables) =
+            lookup_table_id_with_rows(transaction, reconciler, &select.from.table).await?;
+        let (schema, fields) =
+            table_schema_with_fields(transaction, reconciler, &select.from.table, table_id).await?;
+        *catalog = Some(CatalogSnapshot { tables, fields });
+        schema
+    };
+    let catalog = catalog
+        .as_ref()
+        .expect("SELECT loaded its catalog snapshot");
     let mut projection = projection(&schema, &select.from.table, &select.projection)?;
     for (position, concat) in select.text_concats.iter().enumerate() {
         let Some(concat) = concat else { continue };
@@ -1517,8 +1598,23 @@ where
         column.source_column = None;
     }
     let ordering = order_columns(&schema, &select.from.table, &select.order_by)?;
+    if select.limit == Some(0)
+        && select.predicate.is_none()
+        && select.aggregates.is_empty()
+        && select.group_by.is_empty()
+        && select.having.is_none()
+    {
+        return Ok(QueryResult::new_with_columns(
+            Vec::new(),
+            projection.into_iter().map(|(_, column)| column).collect(),
+        ));
+    }
     let table = String::from(select.from.table.as_str());
-    let stream = reconciler.scan_rows(transaction, &table, Some((&table_rows, &table_fields)));
+    let stream = reconciler.scan_rows(
+        transaction,
+        &table,
+        Some((&catalog.tables, &catalog.fields)),
+    );
     pin_mut!(stream);
     let mut rows = Vec::new();
 
@@ -1955,7 +2051,13 @@ where
     {
         return Err(EngineError::Unsupported("IN subquery shape"));
     }
-    let result = Box::pin(select_rows(transaction, reconciler, select.clone())).await?;
+    let result = Box::pin(select_rows(
+        transaction,
+        reconciler,
+        select.clone(),
+        &mut None,
+    ))
+    .await?;
     result
         .rows
         .into_iter()

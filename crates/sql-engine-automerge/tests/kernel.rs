@@ -44,7 +44,7 @@ fn database_path() -> PathBuf {
 }
 
 #[test]
-fn candidate_columns_rejects_readable_rows_without_transaction_catalog_layout() {
+fn table_state_observation_rejects_readable_rows_without_transaction_catalog_layout() {
     block_on(async {
         let kernel = InMemoryKernel::new();
         let codec = AutomergeRowCodec::new();
@@ -64,6 +64,12 @@ fn candidate_columns_rejects_readable_rows_without_transaction_catalog_layout() 
             .ensure_table(&mut transaction, "orphan")
             .await
             .expect("row storage without catalog");
+        assert!(matches!(
+            codec.observe_table_state(&transaction, "orphan").await,
+            Err(engine::EngineError::Unsupported(
+                "Candidate rows require a transaction catalog layout"
+            ))
+        ));
         let id = row_uuid(91);
         let row = Row::new(vec![
             Value::Uuid(id),
@@ -83,7 +89,7 @@ fn candidate_columns_rejects_readable_rows_without_transaction_catalog_layout() 
         );
         assert!(
             matches!(
-                codec.candidate_columns(&transaction, "orphan").await,
+                codec.observe_table_state(&transaction, "orphan").await,
                 Err(engine::EngineError::Unsupported(
                     "Candidate rows require a transaction catalog layout"
                 ))
@@ -909,6 +915,23 @@ fn same_name_unique_index_uses_one_complete_winning_definition() {
             right.index_lookup("people_by_name", &lookup).await.unwrap(),
             Some(row)
         );
+        for database in [&left, &right] {
+            assert_eq!(
+                database
+                    .index_lookup("people_by_name", &Row::from(["Ada"]))
+                    .await
+                    .expect("losing index column must not retain lookup entries"),
+                None
+            );
+            assert!(matches!(
+                database
+                    .index_lookup("people_by_name", &Row::new(vec![]))
+                    .await,
+                Err(engine::EngineError::InvalidQuery(
+                    "Index key has the wrong column count"
+                ))
+            ));
+        }
         let ids = schema_row_ids(&left).await;
         let index_ids: Vec<_> = ids
             .iter()
@@ -2863,6 +2886,15 @@ fn reordered_compatible_schemas_preserve_row_conflicts_and_resolution() {
         sync(&left, &right).await.unwrap();
         sync(&right, &left).await.unwrap();
 
+        for engine in [&left, &right] {
+            assert!(
+                engine
+                    .row_conflict_values("people", &Row::new(vec![uuid_value(1)]))
+                    .await
+                    .expect("unconflicted row values with reordered schemas")
+                    .is_empty()
+            );
+        }
         update(&left, "name", Value::from("Grace")).await;
         update(&right, "name", Value::from("Margaret")).await;
         sync(&left, &right).await.unwrap();
@@ -2875,6 +2907,7 @@ fn reordered_compatible_schemas_preserve_row_conflicts_and_resolution() {
                 .unwrap();
             assert_eq!(conflicts.len(), 1);
             assert_eq!(conflicts[0].0, "name");
+            assert_eq!(conflicts[0].1.len(), 2);
             assert!(conflicts[0].1.contains(&Value::from("Grace")));
             assert!(conflicts[0].1.contains(&Value::from("Margaret")));
         }

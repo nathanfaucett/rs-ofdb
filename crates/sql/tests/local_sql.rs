@@ -24,6 +24,47 @@ test_case!(
 );
 
 #[test]
+fn indexed_native_crud_on_bounded_stack() {
+    std::thread::Builder::new()
+        .name("indexed-native-crud".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            futures::executor::block_on(async {
+                use ofdb_sql::{Database, Row, SqlTranslator};
+
+                let root = tempfile::tempdir().expect("isolated native store");
+                let path = root.path().join("indexed.redb");
+                let database = Database::open(&path).expect("open native store");
+                let client = database.client();
+                for statement in [
+                    "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT UNIQUE)",
+                    "INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')",
+                    "CREATE INDEX people_name ON people (name)",
+                    "UPDATE people SET name = 'Lin' WHERE name = 'Ada'",
+                ] {
+                    client.translate_and_execute(statement, &SqlTranslator).await.expect("indexed DDL and write");
+                }
+                let mut transaction = client.transaction().await.expect("begin indexed transaction");
+                transaction.translate_and_execute("DELETE FROM people WHERE name = 'Lin'", &SqlTranslator).await.expect("delete in transaction");
+                transaction.rollback().await.expect("rollback indexed deletion");
+                drop(client);
+                drop(database);
+
+                let reopened = Database::open(&path).expect("reopen native store");
+                let client = reopened.client();
+                let rows = client.translate_and_execute("SELECT name FROM people WHERE name = 'Lin'", &SqlTranslator).await.expect("read retained index");
+                assert_eq!(rows[0].rows, vec![Row::from(["Lin"])]);
+                client.translate_and_execute("DELETE FROM people WHERE name = 'Lin'", &SqlTranslator).await.expect("committed indexed deletion");
+                let rows = client.translate_and_execute("SELECT name FROM people", &SqlTranslator).await.expect("read after deletion");
+                assert!(rows[0].rows.is_empty());
+            });
+        })
+        .expect("spawn bounded-stack worker")
+        .join()
+        .expect("indexed CRUD must not overflow its stack");
+}
+
+#[test]
 fn explicit_transactions_span_api_calls() {
     futures::executor::block_on(async {
         use ofdb_sql::{Database, SqlTranslator};

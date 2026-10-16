@@ -1,4 +1,5 @@
 use alloc::{
+    collections::BTreeMap,
     format,
     string::{String, ToString},
     vec::Vec,
@@ -331,10 +332,16 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
         }
     }
     for (id, index, deleted) in &mut states {
-        if *deleted || lookup_index_id(transaction, codec, &index.name).await? != *id {
+        if *deleted {
             continue;
         }
-        let invalid = match index_schema(transaction, codec, &index.name).await {
+        let (winner, value) = active_index(transaction, codec, &index.name)
+            .await?
+            .ok_or(EngineError::InvalidQuery("Index not found"))?;
+        if winner != *id {
+            continue;
+        }
+        let invalid = match index_schema_for(transaction, codec, &index.name, winner, value).await {
             Ok(_) => false,
             Err(EngineError::InvalidQuery("Index column not found")) => true,
             Err(error) => return Err(error),
@@ -589,17 +596,6 @@ pub(crate) async fn active_user_row<T: KernelTransaction, R: RowCodec<T>>(
     }
 }
 
-pub(crate) async fn lookup_index_id<T: KernelTransaction, R: RowCodec<T>>(
-    transaction: &T,
-    codec: &R,
-    name: &str,
-) -> EngineResult<Uuid> {
-    active_index(transaction, codec, name)
-        .await?
-        .map(|(id, _)| id)
-        .ok_or(EngineError::InvalidQuery("Index not found"))
-}
-
 async fn active_index<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
@@ -653,6 +649,182 @@ pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     read_columns(transaction, codec, table, table_id, |_| {}).await
 }
 
+pub(crate) async fn observe_schema<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    names: &[&str],
+    index_names: Option<&[&str]>,
+) -> EngineResult<crate::engine::SchemaObservation> {
+    let mut states = Vec::new();
+    for storage in [
+        ENGINE_TABLES_STORAGE,
+        ENGINE_TABLE_FIELDS_STORAGE,
+        ENGINE_INDICES_STORAGE,
+        ENGINE_INDEX_FIELDS_STORAGE,
+    ] {
+        let rows = codec.scan_row_states(transaction, storage);
+        pin_mut!(rows);
+        while let Some(row) = rows.next().await {
+            let (id, value, deleted) = row?;
+            states.push((storage, id, value, deleted));
+        }
+    }
+    let catalog = CatalogSnapshot {
+        tables: states
+            .iter()
+            .filter(|(storage, _, _, deleted)| *storage == ENGINE_TABLES_STORAGE && !deleted)
+            .map(|(_, id, row, _)| (*id, row.clone()))
+            .collect(),
+        fields: states
+            .iter()
+            .filter(|(storage, _, _, deleted)| *storage == ENGINE_TABLE_FIELDS_STORAGE && !deleted)
+            .map(|(_, _, row, _)| row.clone())
+            .collect(),
+    };
+    let tables = names
+        .iter()
+        .map(|name| catalog.table_schema(name))
+        .collect::<EngineResult<Vec<_>>>()?;
+    let mut discovered = Vec::new();
+    if index_names.is_none() {
+        let mut winners = BTreeMap::new();
+        for (storage, id, row, deleted) in &states {
+            if *storage != ENGINE_INDICES_STORAGE || *deleted {
+                continue;
+            }
+            let index = IndexRow::try_from(row)?;
+            let winner = winners
+                .entry(index.name.clone())
+                .or_insert((*id, index.clone()));
+            if *id > winner.0 {
+                *winner = (*id, index);
+            }
+        }
+        for (name, (_, winner)) in winners {
+            if names.contains(&winner.table.as_str()) {
+                discovered.push(name);
+            }
+        }
+    }
+    let requested = discovered.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut indices = Vec::new();
+    for name in index_names.unwrap_or(&requested) {
+        let mut selected = None;
+        for (storage, id, row, deleted) in &states {
+            if *storage != ENGINE_INDICES_STORAGE || *deleted {
+                continue;
+            }
+            let index = IndexRow::try_from(row)?;
+            if index.name == *name
+                && selected
+                    .as_ref()
+                    .is_none_or(|(selected_id, _)| id > selected_id)
+            {
+                selected = Some((*id, index));
+            }
+        }
+        let (id, index) = selected.ok_or(EngineError::InvalidQuery("Index not found"))?;
+        if codec
+            .table_definition_was_dropped(transaction, &index.table_id)
+            .await?
+            || catalog.table_id(&index.table).is_err()
+        {
+            return Err(EngineError::InvalidQuery("Index not found"));
+        }
+        let table = catalog.table_schema(&index.table)?;
+        let mut fields = Vec::new();
+        for (storage, _, row, deleted) in &states {
+            if *storage != ENGINE_INDEX_FIELDS_STORAGE || *deleted {
+                continue;
+            }
+            let field = IndexFieldRow::try_from(row)?;
+            if field.index_id == id {
+                fields.push(field);
+            }
+        }
+        fields.sort_by_key(|field| field.position);
+        let mut column_indices = Vec::new();
+        for field in fields {
+            let mut active = false;
+            for (storage, field_id, row, deleted) in &states {
+                if *storage != ENGINE_TABLE_FIELDS_STORAGE
+                    || *field_id != field.column_id
+                    || *deleted
+                {
+                    continue;
+                }
+                let column = TableFieldRow::try_from(row)?;
+                if column.table == index.table && column.name == field.column {
+                    active = true;
+                    break;
+                }
+            }
+            if !active {
+                return Err(EngineError::InvalidQuery(
+                    "Index column identity is inactive",
+                ));
+            }
+            column_indices.push(
+                table
+                    .columns
+                    .iter()
+                    .position(|column| column.name == field.column)
+                    .map(|position| position as ColumnSchemaIndex)
+                    .ok_or(EngineError::InvalidQuery("Index column not found"))?,
+            );
+        }
+        indices.push(IndexSchema {
+            name: name.to_string(),
+            table_name: index.table,
+            column_indices,
+            unique: index.unique,
+        });
+    }
+    Ok((
+        tables,
+        indices,
+        states
+            .into_iter()
+            .map(|(storage, id, row, _)| (storage, id, row))
+            .collect(),
+    ))
+}
+
+pub(crate) struct CatalogSnapshot {
+    pub tables: Vec<(Uuid, Row)>,
+    pub fields: Vec<Row>,
+}
+
+impl CatalogSnapshot {
+    fn table_id(&self, name: &str) -> EngineResult<Uuid> {
+        let mut selected = None;
+        for (id, row) in &self.tables {
+            if TableRow::try_from(row)?.name == name
+                && selected.is_none_or(|selected_id| *id > selected_id)
+            {
+                selected = Some(*id);
+            }
+        }
+        selected.ok_or(EngineError::InvalidQuery("Table not found"))
+    }
+
+    pub fn table_schema(&self, name: &str) -> EngineResult<TableSchema> {
+        let table_id = self.table_id(name)?;
+        let fields = self
+            .fields
+            .iter()
+            .map(TableFieldRow::try_from)
+            .collect::<EngineResult<Vec<_>>>()?;
+        Ok(TableSchema {
+            name: name.to_string(),
+            columns: columns_from_fields(name, table_id, fields)
+                .into_iter()
+                .map(|(_, column)| column)
+                .collect(),
+        })
+    }
+}
+
 async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
@@ -662,14 +834,25 @@ async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);
-    let mut result = Vec::new();
+    let mut fields = Vec::new();
     while let Some(row) = rows.next().await {
         let (_, value, deleted) = row?;
         if deleted {
             continue;
         }
         observe(&value);
-        let field = TableFieldRow::try_from(&value)?;
+        fields.push(TableFieldRow::try_from(&value)?);
+    }
+    Ok(columns_from_fields(table, table_id, fields))
+}
+
+fn columns_from_fields(
+    table: &str,
+    table_id: Uuid,
+    fields: Vec<TableFieldRow>,
+) -> Vec<(String, ColumnSchema)> {
+    let mut result = Vec::new();
+    for field in fields {
         if field.table_id != table_id || field.table != table {
             continue;
         }
@@ -682,10 +865,10 @@ async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(
         result.push((field.position, field.name, column));
     }
     result.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    Ok(result
+    result
         .into_iter()
         .map(|(_, name, schema)| (name, schema))
-        .collect())
+        .collect()
 }
 
 pub(crate) async fn column_id<T: KernelTransaction, R: RowCodec<T>>(
@@ -784,10 +967,21 @@ pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
-) -> EngineResult<Option<IndexSchema>> {
+) -> EngineResult<Option<(Uuid, IndexSchema)>> {
     let Some((id, value)) = active_index(transaction, codec, name).await? else {
         return Ok(None);
     };
+    let schema = index_schema_for(transaction, codec, name, id, value).await?;
+    Ok(Some((id, schema)))
+}
+
+async fn index_schema_for<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    name: &str,
+    id: Uuid,
+    value: Row,
+) -> EngineResult<IndexSchema> {
     let index = IndexRow::try_from(&value)?;
     let table = index.table;
     let unique = index.unique;
@@ -830,12 +1024,12 @@ pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
                 .ok_or(EngineError::InvalidQuery("Index column not found"))
         })
         .collect::<EngineResult<Vec<_>>>()?;
-    Ok(Some(IndexSchema {
+    Ok(IndexSchema {
         name: name.into(),
         table_name: table,
         column_indices,
         unique,
-    }))
+    })
 }
 
 pub(crate) async fn active_table_names<T: KernelTransaction, R: RowCodec<T>>(
@@ -846,16 +1040,13 @@ pub(crate) async fn active_table_names<T: KernelTransaction, R: RowCodec<T>>(
     pin_mut!(rows);
     let mut result = Vec::new();
     while let Some(row) = rows.next().await {
-        let (_, value, _) = row?;
-        result.push(TableRow::try_from(&value)?.name);
+        let (_, value, deleted) = row?;
+        let name = TableRow::try_from(&value)?.name;
+        if !deleted {
+            result.push(name);
+        }
     }
     result.sort();
     result.dedup();
-    let mut active = Vec::new();
-    for name in result {
-        if lookup_table_id(transaction, codec, &name).await.is_ok() {
-            active.push(name);
-        }
-    }
-    Ok(active)
+    Ok(result)
 }

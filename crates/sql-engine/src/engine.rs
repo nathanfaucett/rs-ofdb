@@ -21,6 +21,7 @@ use crate::{
     executor::{
         execute_in_transaction, execute_statement, resolve_row as resolve_conflicted_row,
         row_conflict_values as conflicted_row_values, row_conflicts as conflicted_row_columns,
+        row_conflicts_batch as conflicted_rows_columns,
     },
     index::lookup as index_lookup,
     kernel::{Kernel, KernelTransaction},
@@ -57,6 +58,12 @@ impl EngineError {
 pub type EngineResult<T> = Result<T, EngineError>;
 
 pub type TimestampProvider = fn() -> uuid::Timestamp;
+
+pub type SchemaObservation = (
+    Vec<TableSchema>,
+    Vec<IndexSchema>,
+    Vec<(&'static str, uuid::Uuid, Row)>,
+);
 
 #[cfg(feature = "std")]
 fn default_timestamp_provider() -> uuid::Timestamp {
@@ -237,11 +244,31 @@ where
         })
     }
 
+    /// Observes schemas and raw catalog states in one fresh read transaction.
+    /// Tables retain input order and duplicates. `None` discovers live winning index
+    /// definitions belonging to the requested tables; `Some` inspects only the named
+    /// indices, in input order, and rejects missing indices.
+    /// Raw states include tombstones so callers can validate catalog history membership.
+    pub async fn observe_schema(
+        &self,
+        tables: &[&str],
+        indices: Option<&[&str]>,
+    ) -> EngineResult<SchemaObservation> {
+        let transaction = self.kernel.transaction().await?;
+        let result =
+            crate::schema::observe_schema(&transaction, self.reconciler.as_ref(), tables, indices)
+                .await;
+        transaction.rollback().await?;
+        result
+    }
+
     pub async fn index_schema(&self, name: &str) -> EngineResult<IndexSchema> {
         let transaction = self.kernel.transaction().await?;
         let schema = index_schema(&transaction, self.reconciler.as_ref(), name).await?;
         transaction.rollback().await?;
-        schema.ok_or(EngineError::InvalidQuery("Index not found"))
+        schema
+            .map(|(_, schema)| schema)
+            .ok_or(EngineError::InvalidQuery("Index not found"))
     }
 
     pub async fn index_lookup(&self, name: &str, values: &Row) -> EngineResult<Option<Row>> {
@@ -334,6 +361,21 @@ where
         let transaction = self.kernel.transaction().await?;
         let result =
             conflicted_row_columns(&transaction, self.reconciler.as_ref(), table_name, key).await?;
+        transaction.rollback().await?;
+        Ok(result)
+    }
+
+    /// Inspects keys in input order using one fresh snapshot and one catalog load.
+    /// Empty input is a no-op; the first error aborts inspection without partial results.
+    pub async fn row_conflicts_batch(
+        &self,
+        table_name: &str,
+        keys: &[Row],
+    ) -> EngineResult<Vec<Vec<String>>> {
+        let transaction = self.kernel.transaction().await?;
+        let result =
+            conflicted_rows_columns(&transaction, self.reconciler.as_ref(), table_name, keys)
+                .await?;
         transaction.rollback().await?;
         Ok(result)
     }

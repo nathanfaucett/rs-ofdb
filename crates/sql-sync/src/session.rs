@@ -24,6 +24,12 @@ use crate::{
     SyncStateUnit, SyncTransport,
 };
 
+// Construct outside the caller's poll frame without erasing conditional auto-Send.
+#[inline(never)]
+fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 /// Maximum serialized sync message size (1 MiB). Transports must also bound reads
 /// before buffering frames; the session checks received frames only afterward.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -159,7 +165,8 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    synchronize_scoped(engine, transport, config, role, stage_factory, check, None).await
+    sync_stage(|| synchronize_scoped(engine, transport, config, role, stage_factory, check, None))
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -217,17 +224,19 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    synchronize_tables_validators_checked(
-        engine,
-        transport,
-        config,
-        role,
-        stage_factory,
-        tables,
-        validate,
-        None,
-        check,
-    )
+    sync_stage(|| {
+        synchronize_tables_validators_checked(
+            engine,
+            transport,
+            config,
+            role,
+            stage_factory,
+            tables,
+            validate,
+            None,
+            check,
+        )
+    })
     .await
 }
 
@@ -264,17 +273,19 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    synchronize_tables_validators_checked(
-        engine,
-        transport,
-        config,
-        role,
-        stage_factory,
-        tables,
-        validate,
-        Some(&validate_candidate),
-        check,
-    )
+    sync_stage(|| {
+        synchronize_tables_validators_checked(
+            engine,
+            transport,
+            config,
+            role,
+            stage_factory,
+            tables,
+            validate,
+            Some(&validate_candidate),
+            check,
+        )
+    })
     .await
 }
 
@@ -304,7 +315,7 @@ where
     if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
-    let mut scope = TableScope::new(engine, tables, &validate).await?;
+    let mut scope = sync_stage(|| TableScope::new(engine, tables, &validate)).await?;
     scope.validate_candidate = validate_candidate;
     scope.direction = config.direction;
     let frame = postcard::to_allocvec(&(&scope.names, scope.direction))
@@ -341,15 +352,17 @@ where
             "incompatible scoped sync directions",
         )));
     }
-    synchronize_scoped(
-        engine,
-        transport,
-        config,
-        role,
-        stage_factory,
-        check,
-        Some(scope),
-    )
+    sync_stage(|| {
+        synchronize_scoped(
+            engine,
+            transport,
+            config,
+            role,
+            stage_factory,
+            check,
+            Some(scope),
+        )
+    })
     .await
 }
 
@@ -398,14 +411,17 @@ where
         Some(
             with_engine_abort(
                 transport,
-                export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref()).await,
+                sync_stage(|| {
+                    export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref())
+                })
+                .await,
             )
             .await?,
         )
     } else {
         None
     };
-    exchange_hello(engine, transport, role, scope.as_ref()).await?;
+    exchange_hello(transport, role).await?;
 
     let remote_manifest = exchange_manifest(engine, transport, role, scope.as_ref()).await?;
     let local_units = match preflight_units {
@@ -413,7 +429,10 @@ where
         None => {
             with_engine_abort(
                 transport,
-                export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref()).await,
+                sync_stage(|| {
+                    export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref())
+                })
+                .await,
             )
             .await?
         }
@@ -708,8 +727,6 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    let mut used_bytes = 0;
-    let mut units = Vec::new();
     let mut tables = [
         ENGINE_TABLES_STORAGE,
         ENGINE_TABLE_FIELDS_STORAGE,
@@ -719,18 +736,21 @@ where
     .into_iter()
     .map(String::from)
     .collect::<Vec<_>>();
-    tables.extend(engine.table_names().await?);
+    if let Some(scope) = scope {
+        tables.extend(scope.names.iter().cloned());
+    } else {
+        tables.extend(sync_stage(|| engine.table_names()).await?);
+    }
     tables.sort_unstable();
     tables.dedup();
-    for table in tables {
-        let table_for_rows = table.clone();
-        let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
-        let candidate_tables = scope.and_then(TableScope::candidate_tables);
-        let (table_units, next_used_bytes, view) = engine
-            .read_transaction(|codec, transaction| {
-                Box::pin(async move {
-                    let mut used_bytes = used_bytes;
-                    let mut units = Vec::new();
+    let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
+    let candidate_tables = scope.and_then(TableScope::candidate_tables);
+    let (mut units, view) = sync_stage(|| {
+        engine.read_transaction(|codec, transaction| {
+            sync_stage(|| async move {
+                let mut used_bytes = 0;
+                let mut units = Vec::new();
+                for table_for_rows in tables {
                     let rows = codec.row_ids(transaction, &table_for_rows);
                     pin_mut!(rows);
                     while let Some(row) = rows.next().await {
@@ -775,29 +795,28 @@ where
                             ));
                         }
                     }
-                    let view = crate::candidate::read_candidate_view(
-                        codec,
-                        transaction,
-                        units.iter().map(|unit| unit.key.clone()).collect(),
-                        crate::SyncValidationDirection::Outgoing,
-                        candidate_tables,
-                    )
-                    .await?;
-                    Ok((units, used_bytes, view))
-                })
+                }
+                let view = crate::candidate::read_candidate_view(
+                    codec,
+                    transaction,
+                    units.iter().map(|unit| unit.key.clone()).collect(),
+                    crate::SyncValidationDirection::Outgoing,
+                    candidate_tables,
+                )
+                .await?;
+                Ok((units, view))
             })
-            .await?;
-        if let Some(scope) = scope {
-            scope.validate_candidates(&view)?;
-        }
-        units.extend(table_units);
-        used_bytes = next_used_bytes;
+        })
+    })
+    .await?;
+    if let Some(scope) = scope {
+        scope.validate_candidates(&view)?;
     }
     units.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     if let Some(scope) = scope {
         let mut scope = scope.clone();
         for unit in &units {
-            scope.validate(engine, unit).await?;
+            sync_stage(|| scope.validate(engine, unit)).await?;
         }
     }
     Ok(units)
@@ -1158,6 +1177,10 @@ where
             }
         }
     }
+    let mut field_status: BTreeMap<Uuid, BTreeMap<String, bool>> = BTreeMap::new();
+    let mut table_columns: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut index_columns: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
+    let mut lookup_bytes = 0usize;
     for table in catalog_tables {
         let rows = codec.scan_row_states(transaction, table);
         pin_mut!(rows);
@@ -1201,6 +1224,62 @@ where
                     id, table
                 )));
             }
+            match table {
+                ENGINE_TABLE_FIELDS_STORAGE => {
+                    let table_id = values[0]
+                        .to_uuid()
+                        .expect("catalog field table identity was validated");
+                    let name = values[1]
+                        .as_text()
+                        .expect("catalog field table name was validated");
+                    let column = values[2]
+                        .as_text()
+                        .expect("catalog field column was validated");
+                    let next_bytes = lookup_bytes
+                        .saturating_add(name.len().saturating_mul(2))
+                        .saturating_add(column.len())
+                        .saturating_add(1024);
+                    if next_bytes > MAX_CATALOG_LOOKUP_BYTES {
+                        return Err(EngineError::custom(format!(
+                            "Catalog field lookup exceeds the {MAX_CATALOG_LOOKUP_BYTES}-byte validation limit"
+                        )));
+                    }
+                    lookup_bytes = next_bytes;
+                    let has_uuid_primary_key = field_status
+                        .entry(table_id)
+                        .or_default()
+                        .entry(name.to_string())
+                        .or_default();
+                    *has_uuid_primary_key |= values[3].to_type() == Some(value::ValueType::Uuid)
+                        && values[6].to_bool() == Some(true);
+                    table_columns
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(column.to_string());
+                }
+                ENGINE_INDEX_FIELDS_STORAGE => {
+                    let index_id = values[0]
+                        .to_uuid()
+                        .expect("catalog index field identity was validated");
+                    let column = values[2]
+                        .as_text()
+                        .expect("catalog index field column was validated");
+                    let next_bytes = lookup_bytes
+                        .saturating_add(column.len())
+                        .saturating_add(256);
+                    if next_bytes > MAX_CATALOG_LOOKUP_BYTES {
+                        return Err(EngineError::custom(format!(
+                            "Catalog field lookup exceeds the {MAX_CATALOG_LOOKUP_BYTES}-byte validation limit"
+                        )));
+                    }
+                    lookup_bytes = next_bytes;
+                    index_columns
+                        .entry(index_id)
+                        .or_default()
+                        .push(column.to_string());
+                }
+                _ => {}
+            }
         }
     }
     let mut table_names = BTreeSet::new();
@@ -1226,14 +1305,15 @@ where
         }
         table_lookup_bytes = next_bytes;
         table_names.insert(name.to_string());
-        let (has_fields, has_uuid_primary_key) =
-            table_field_status(codec, transaction, table_id, name).await?;
-        if !has_fields {
+        let has_uuid_primary_key = field_status
+            .get(&table_id)
+            .and_then(|names| names.get(name));
+        let Some(has_uuid_primary_key) = has_uuid_primary_key else {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: table {} has no fields",
                 name
             )));
-        }
+        };
         if !has_uuid_primary_key {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: table {} has no UUID primary key",
@@ -1280,31 +1360,20 @@ where
                 id, name
             )));
         }
-        let index_id = id;
-        let fields = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
-        pin_mut!(fields);
-        let mut has_fields = false;
-        while let Some(field) = fields.next().await {
-            let (_, field, deleted) = field?;
-            if deleted || field.values.first().and_then(value::Value::to_uuid) != Some(index_id) {
-                continue;
-            }
-            has_fields = true;
-            let column = field.values[2]
-                .as_text()
-                .expect("catalog index field column was validated");
-            if !table_has_column(codec, transaction, name, column).await? {
+        let Some(columns) = index_columns.get(&id) else {
+            return Err(EngineError::custom(format!(
+                "Incomplete catalog: index {} has no fields",
+                id
+            )));
+        };
+        let available_columns = table_columns.get(name);
+        for column in columns {
+            if !available_columns.is_some_and(|columns| columns.contains(column)) {
                 return Err(EngineError::custom(format!(
                     "Incomplete catalog: index {} references missing column {}",
                     id, column
                 )));
             }
-        }
-        if !has_fields {
-            return Err(EngineError::custom(format!(
-                "Incomplete catalog: index {} has no fields",
-                id
-            )));
         }
     }
     Ok(())
@@ -1321,59 +1390,6 @@ where
     R: SyncRowCodec<T>,
 {
     Ok(codec.get_row(transaction, table, target).await?.is_some())
-}
-
-async fn table_field_status<T, R>(
-    codec: &R,
-    transaction: &T,
-    table_id: Uuid,
-    table_name: &str,
-) -> Result<(bool, bool), EngineError>
-where
-    T: KernelTransaction,
-    R: SyncRowCodec<T>,
-{
-    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
-    pin_mut!(fields);
-    let mut has_fields = false;
-    let mut has_uuid_primary_key = false;
-    while let Some(field) = fields.next().await {
-        let (_, value, deleted) = field?;
-        if deleted
-            || value.values.first().and_then(value::Value::to_uuid) != Some(table_id)
-            || value.values.get(1).and_then(value::Value::as_text) != Some(table_name)
-        {
-            continue;
-        }
-        has_fields = true;
-        has_uuid_primary_key |= value.values[3].to_type() == Some(value::ValueType::Uuid)
-            && value.values[6].to_bool() == Some(true);
-    }
-    Ok((has_fields, has_uuid_primary_key))
-}
-
-async fn table_has_column<T, R>(
-    codec: &R,
-    transaction: &T,
-    table_name: &str,
-    column: &str,
-) -> Result<bool, EngineError>
-where
-    T: KernelTransaction,
-    R: SyncRowCodec<T>,
-{
-    let fields = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
-    pin_mut!(fields);
-    while let Some(field) = fields.next().await {
-        let (_, value, deleted) = field?;
-        if !deleted
-            && value.values.get(1).and_then(value::Value::as_text) == Some(table_name)
-            && value.values.get(2).and_then(value::Value::as_text) == Some(column)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn touched_tables<'a>(
@@ -2660,26 +2676,14 @@ where
     Err(error.into())
 }
 
-async fn exchange_hello<K, R, T>(
-    engine: &Engine<K, R>,
-    transport: &mut T,
-    role: SyncRole,
-    scope: Option<&TableScope<'_>>,
-) -> Result<(), SyncError<T::Error>>
+async fn exchange_hello<T>(transport: &mut T, role: SyncRole) -> Result<(), SyncError<T::Error>>
 where
-    K: Kernel,
-    R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let manifest = with_engine_abort(
-        transport,
-        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64, scope).await,
-    )
-    .await?;
     let hello = SyncMessage::Hello(SyncHello {
         protocol_version: PROTOCOL_VERSION,
-        manifest,
+        manifest: SyncManifest::default(),
     });
     match role {
         SyncRole::Initiator => {

@@ -7,9 +7,7 @@ use value::{Row, Value};
 use crate::{
     EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
     executor::{materialize_defaults, row_id},
-    schema::{
-        ENGINE_INDICES_STORAGE, index_schema, index_storage, lookup_index_id, table_schema_for,
-    },
+    schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage, table_schema_for},
 };
 
 async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
@@ -32,13 +30,10 @@ async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     names.dedup();
     let mut result = Vec::new();
     for name in names {
-        if let Some(schema) = index_schema(transaction, codec, &name).await?
+        if let Some((id, schema)) = index_schema(transaction, codec, &name).await?
             && schema.table_name == table
         {
-            result.push((
-                index_storage(&lookup_index_id(transaction, codec, &name).await?),
-                schema,
-            ));
+            result.push((index_storage(&id), schema));
         }
     }
     Ok(result)
@@ -78,7 +73,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     values: &Row,
 ) -> EngineResult<Option<Row>> {
-    let schema = index_schema(transaction, codec, name)
+    let (id, schema) = index_schema(transaction, codec, name)
         .await?
         .ok_or(EngineError::InvalidQuery("Index not found"))?;
     if values.values.len() != schema.column_indices.len() {
@@ -86,7 +81,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
             "Index key has the wrong column count",
         ));
     }
-    let storage = index_storage(&lookup_index_id(transaction, codec, name).await?);
+    let storage = index_storage(&id);
     let entries = transaction.scan_entries_owned(&storage);
     pin_mut!(entries);
     let mut winner = None;
@@ -190,15 +185,18 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
         rows
     };
     for (_, row) in rows {
-        update_row(
-            transaction,
-            codec,
-            table,
-            None,
-            Some(&materialize_defaults(&schema, row)),
-            enforce_unique,
-        )
-        .await?;
+        for (name, index) in &indexes {
+            insert_index_row(
+                transaction,
+                codec,
+                &schema,
+                name,
+                index,
+                &row,
+                enforce_unique,
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -227,27 +225,44 @@ pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
                 .await?;
         }
         if let Some(row) = new {
-            let row = materialize_defaults(&schema, row.clone());
-            let key = record_key(&index, row_id(&schema, &row)?, &row)?;
-            if enforce_unique
-                && index.unique
-                && !key.values.iter().any(|value| matches!(value, Value::Null))
-                && (unique_key_exists(transaction, &name, &key).await?
-                    || deleted_unique_claim_exists(
-                        transaction,
-                        codec,
-                        table,
-                        &schema,
-                        &index,
-                        &key,
-                    )
-                    .await?)
-            {
-                return Err(EngineError::InvalidQuery("Unique index violation"));
-            }
-            transaction.put_entry(&name, key, Row::new(vec![])).await?;
+            insert_index_row(
+                transaction,
+                codec,
+                &schema,
+                &name,
+                &index,
+                row,
+                enforce_unique,
+            )
+            .await?;
         }
     }
+    Ok(())
+}
+
+async fn insert_index_row<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &mut T,
+    codec: &R,
+    schema: &schema::TableSchema,
+    storage: &str,
+    index: &IndexSchema,
+    row: &Row,
+    enforce_unique: bool,
+) -> EngineResult<()> {
+    let row = materialize_defaults(schema, row.clone());
+    let key = record_key(index, row_id(schema, &row)?, &row)?;
+    if enforce_unique
+        && index.unique
+        && !key.values.iter().any(|value| matches!(value, Value::Null))
+        && (unique_key_exists(transaction, storage, &key).await?
+            || deleted_unique_claim_exists(transaction, codec, &schema.name, schema, index, &key)
+                .await?)
+    {
+        return Err(EngineError::InvalidQuery("Unique index violation"));
+    }
+    transaction
+        .put_entry(storage, key, Row::new(vec![]))
+        .await?;
     Ok(())
 }
 

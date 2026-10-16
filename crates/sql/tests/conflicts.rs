@@ -115,6 +115,127 @@ fn memory_conflict_operations_and_transaction_reads_work_without_runtime() {
     });
 }
 
+async fn check_row_conflicts_batch(left: &Database, right: &Database) {
+    diverge(left, right).await;
+    let client = left.client();
+    let absent = Row::new(vec![Value::Uuid(
+        Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abe").expect("absent UUID"),
+    )]);
+    let keys = [absent.clone(), key(), key()];
+    let names: Vec<String> = [
+        "admin_allowed",
+        "selected_id",
+        "revoked_at",
+        "owner_subject",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let before = left
+        .export_sync_state()
+        .await
+        .expect("history before inspection");
+    assert_eq!(
+        client
+            .row_conflicts_batch("security", &keys)
+            .await
+            .expect("ordered batch"),
+        vec![Vec::<String>::new(), names.clone(), names]
+    );
+    assert_eq!(
+        left.export_sync_state().await.expect("unchanged history"),
+        before
+    );
+    assert!(
+        client
+            .row_conflicts_batch("absent", &[])
+            .await
+            .expect("empty batch is a no-op")
+            .is_empty()
+    );
+    for (table, keys, single_key) in [
+        (
+            "absent",
+            vec![Row::new(vec![Value::Bool(true)])],
+            Row::new(vec![Value::Bool(true)]),
+        ),
+        (
+            "security",
+            vec![key(), Row::new(vec![Value::Bool(true)])],
+            Row::new(vec![Value::Bool(true)]),
+        ),
+        (
+            "security",
+            vec![Row::new(vec![Value::Bool(true)]), Row::new(vec![])],
+            Row::new(vec![Value::Bool(true)]),
+        ),
+    ] {
+        let single = client
+            .row_conflicts(table, &single_key)
+            .await
+            .expect_err("single-row rejection");
+        let batch = client
+            .row_conflicts_batch(table, &keys)
+            .await
+            .expect_err("same first rejection");
+        assert_eq!(batch.kind, single.kind);
+        assert_eq!(batch.to_string(), single.to_string());
+    }
+    client
+        .resolve_row(
+            "security",
+            &key(),
+            vec![("admin_allowed".into(), Value::Bool(false))],
+        )
+        .await
+        .expect("resolve between batches");
+    assert_eq!(
+        client
+            .row_conflicts_batch("security", &[key(), absent])
+            .await
+            .expect("fresh snapshot"),
+        vec![
+            vec![
+                String::from("selected_id"),
+                String::from("revoked_at"),
+                String::from("owner_subject")
+            ],
+            vec![]
+        ]
+    );
+    client
+        .execute_sql("DROP TABLE security", None)
+        .await
+        .expect("drop between batches");
+    let single = client
+        .row_conflicts("security", &key())
+        .await
+        .expect_err("current catalog");
+    let batch = client
+        .row_conflicts_batch("security", &[key()])
+        .await
+        .expect_err("no retained catalog");
+    assert_eq!(batch.kind, single.kind);
+    assert_eq!(batch.to_string(), single.to_string());
+}
+
+#[cfg(feature = "in-memory")]
+#[test]
+fn row_conflicts_batch_memory_preserves_order_validation_and_freshness() {
+    futures::executor::block_on(async {
+        check_row_conflicts_batch(&Database::in_memory(), &Database::in_memory()).await;
+    });
+}
+
+#[cfg(feature = "redb")]
+#[tokio::test]
+async fn row_conflicts_batch_native_preserves_order_validation_and_freshness() {
+    let directory = tempfile::tempdir().expect("databases");
+    let left = Database::open(directory.path().join("left.redb")).expect("left");
+    let right = Database::open(directory.path().join("right.redb")).expect("right");
+    check_row_conflicts_batch(&left, &right).await;
+}
+
 #[cfg(feature = "redb")]
 #[tokio::test]
 async fn unchanged_updates_commit_without_new_history_and_remain_syncable() {

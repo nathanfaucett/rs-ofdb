@@ -1,5 +1,9 @@
 # Scoped SQL candidate validation — owner follow-up 13
 
+## Current transaction observation
+
+`SyncRowCodec::observe_table_state(transaction, table)` now supplies the actual decoder column order, all row states including tombstones, and named losing conflict values together. It replaces the separate `candidate_columns`/row scan/per-row conflict reconstruction path described in the historical notes below. Automerge resolves the current table layout once and reconstructs each document once for that observation. Missing authoritative layouts and unsupported codecs deny, including for empty tables. The view builder still normalizes by column name into scope order and checks complete layouts, widths and conflict labels. Historical payload inspection, selected-table breadth and current authorization checks are unchanged; observations never survive their transaction.
+
 ## Concrete consumer need
 
 Read-only review of original `of/docs/public-persistence.md` bootstrap handoff (125–155), original offline-first-nodes spec and latest ticket03 marker3 comments identified the scalar-observation limitation: `(table, column, value)` cannot correlate an actual complete candidate and current related local rows. This owner change supplies observations at existing scoped sync transactions. Purpose-bound bootstrap admission, trust/readiness, original actor/action/target/provenance and current outbound transport authorization remain in of. No ledger/auth fields, domain policy, generic domain trait, transport framework or consumer edit is included.

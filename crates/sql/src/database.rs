@@ -1,4 +1,4 @@
-#[cfg(feature = "redb")]
+#[cfg(any(feature = "redb", feature = "sync"))]
 use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
@@ -18,6 +18,12 @@ use sync::{
     synchronize as synchronize_engine, synchronize_with_stage_factory as synchronize_staged_engine,
 };
 use value::{FromRow, Row, Value};
+
+#[cfg(feature = "sync")]
+#[inline(never)]
+fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
 
 #[cfg(feature = "sync")]
 type CandidateValidator<'a> =
@@ -309,6 +315,14 @@ impl Database {
         key: &Row,
     ) -> SqlResult<Vec<String>> {
         database_call!(self, |engine| engine.row_conflicts(table, key).await)
+    }
+
+    pub(crate) async fn query_row_conflicts_batch(
+        &self,
+        table: &str,
+        keys: &[Row],
+    ) -> SqlResult<Vec<Vec<String>>> {
+        database_call!(self, |engine| engine.row_conflicts_batch(table, keys).await)
     }
 
     pub(crate) async fn query_row_conflict_values(
@@ -906,38 +920,46 @@ impl Database {
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(engine) => engine
-                .session(async {
+                .session(sync_stage(|| async {
                     let engine = engine
                         .read()
                         .await
                         .map_err(|error| SyncError::PreApply(error.to_string()))?;
                     if let Some(candidate) = validate_candidate {
-                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                            &*engine, transport, config, role, factory, tables, validate,
-                            candidate, check,
-                        )
+                        sync_stage(|| {
+                            sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                                &*engine, transport, config, role, factory, tables, validate,
+                                candidate, check,
+                            )
+                        })
                         .await
                     } else {
-                        sync::synchronize_tables_with_stage_factory_validated_checked(
-                            &*engine, transport, config, role, factory, tables, validate, check,
-                        )
+                        sync_stage(|| {
+                            sync::synchronize_tables_with_stage_factory_validated_checked(
+                                &*engine, transport, config, role, factory, tables, validate, check,
+                            )
+                        })
                         .await
                     }
-                })
+                }))
                 .await
                 .map_err(|error| SyncError::PreApply(error.to_string()))?,
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 if let Some(candidate) = validate_candidate {
-                    sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                        engine, transport, config, role, factory, tables, validate, candidate,
-                        check,
-                    )
+                    sync_stage(|| {
+                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                            engine, transport, config, role, factory, tables, validate, candidate,
+                            check,
+                        )
+                    })
                     .await
                 } else {
-                    sync::synchronize_tables_with_stage_factory_validated_checked(
-                        engine, transport, config, role, factory, tables, validate, check,
-                    )
+                    sync_stage(|| {
+                        sync::synchronize_tables_with_stage_factory_validated_checked(
+                            engine, transport, config, role, factory, tables, validate, check,
+                        )
+                    })
                     .await
                 }
             }
