@@ -3,7 +3,7 @@ use std::{marker::PhantomData, ops::RangeBounds, sync::Arc};
 use async_lock::Mutex;
 use async_stream::stream;
 use futures::Stream;
-use redb::{Database, ReadableDatabase};
+use redb::{Database, ReadableDatabase, ReadableTableMetadata};
 
 use btree::{BTree, BTreeError, BTreeRead, BTreeResult};
 
@@ -77,6 +77,15 @@ where
                 yield Ok((key, value));
             }
         })
+    }
+
+    async fn is_empty(&self) -> BTreeResult<bool> {
+        let db = self.db.begin_read().map_err(BTreeError::custom)?;
+        let table = db
+            .open_table(table_definition::<K, V>(&self.name))
+            .map_err(BTreeError::custom)?;
+
+        Ok(table.is_empty().map_err(BTreeError::custom)?)
     }
 }
 

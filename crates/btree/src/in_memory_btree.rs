@@ -58,6 +58,10 @@ where
             }
         })
     }
+
+    async fn is_empty(&self) -> BTreeResult<bool> {
+        Ok(self.inner.read().await.is_empty())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +89,30 @@ impl<K, V> Default for InMemoryTransactionPatch<K, V> {
         Self {
             inner: BTreeMap::new(),
         }
+    }
+}
+
+#[cfg(feature = "sharded")]
+#[derive(Debug, Default, Clone)]
+pub struct InMemoryBTreeShardFactory<K, V> {
+    _marker: core::marker::PhantomData<(K, V)>,
+}
+
+#[cfg(feature = "sharded")]
+impl<K, V, Key> crate::sharded_btree::BTreeShardFactory<K, V, Key>
+    for InMemoryBTreeShardFactory<K, V>
+where
+    K: BTreeKey + Clone + Send + Sync,
+    V: BTreeValue + Clone + Send + Sync,
+    Key: Clone + Eq + core::hash::Hash + Send + Sync,
+{
+    type BTree = InMemoryBTree<K, V>;
+
+    async fn create(&self, _token: &Key) -> BTreeResult<Self::BTree> {
+        Ok(InMemoryBTree::new())
+    }
+    async fn delete(&self, _token: &Key) -> BTreeResult<()> {
+        Ok(())
     }
 }
 

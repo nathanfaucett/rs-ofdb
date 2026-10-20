@@ -141,14 +141,14 @@ impl DocumentChangeKey {
         }
     }
 
-    pub fn range_for(id: &DocumentId) -> impl RangeBounds<Self> {
+    pub fn range_for(id: &DocumentId) -> impl RangeBounds<Self> + Clone {
         let start = Bound::Included(Self::min_for_id(id.clone()));
         let end = Bound::Included(Self::max_for_id(id.clone()));
 
         (start, end)
     }
 
-    pub fn map_document_id_range<R>(range: R) -> impl RangeBounds<Self>
+    pub fn map_document_id_range<R>(range: R) -> impl RangeBounds<Self> + Clone
     where
         R: RangeBounds<DocumentId>,
     {

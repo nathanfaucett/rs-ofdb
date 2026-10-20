@@ -13,12 +13,13 @@ path = "src/lib.rs"
 name = "btree"
 
 [features]
-default = ["std"]
+default = ["std", "sharded", "in-memory"]
 std = [
   "futures/std",
   "async-lock?/std",
   "thiserror/std"
 ]
+sharded = ["dep:dashmap"]
 in-memory = ["dep:async-stream", "dep:async-lock"]
 
 [dependencies]
@@ -27,6 +28,7 @@ async-stream = { version = "0.3", default-features = false, features = [
 ], optional = true }
 futures = { version = "0.3", default-features = false, features = [] }
 thiserror = { version = "2.0", default-features = false, features = [] }
+dashmap = { version = "6.2", optional = true, default-features = false, features = [] }
 
 [dev-dependencies]
 futures = { version = "0.3", default-features = false, features = ["executor"] }

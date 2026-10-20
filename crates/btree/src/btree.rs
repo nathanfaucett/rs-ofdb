@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 
-use futures::Stream;
+use futures::{Stream, StreamExt, pin_mut};
 
 use core::ops::RangeBounds;
 
@@ -58,7 +58,14 @@ where
     fn get(&self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + Send;
     fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
     where
-        R: RangeBounds<K> + Send;
+        R: RangeBounds<K> + Clone + Send;
+    fn is_empty(&self) -> impl Future<Output = BTreeResult<bool>> + Send {
+        async move {
+            let s = self.range(..);
+            pin_mut!(s);
+            Ok(s.next().await.is_none())
+        }
+    }
 }
 
 pub trait BTreeTransaction<K, V>: BTreeRead<K, V> + Send + Sync
@@ -78,7 +85,7 @@ where
     fn remove(&mut self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + Send;
     fn remove_range<R>(&mut self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
     where
-        R: RangeBounds<K> + Send;
+        R: RangeBounds<K> + Clone + Send;
 
     fn commit(self) -> impl Future<Output = BTreeResult<()>> + Send;
     fn rollback(self) -> impl Future<Output = BTreeResult<()>> + Send;

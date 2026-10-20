@@ -57,7 +57,7 @@ where
 
     fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(DocumentId, AutoCommit)>>
     where
-        R: RangeBounds<DocumentId>,
+        R: RangeBounds<DocumentId> + Clone,
     {
         stream!({
             let inner_range = DocumentChangeKey::map_document_id_range(range);

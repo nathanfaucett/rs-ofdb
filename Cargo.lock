@@ -2598,6 +2598,7 @@ version = "0.1.0"
 dependencies = [
  "async-lock",
  "async-stream",
+ "dashmap",
  "futures",
  "thiserror 2.0.18",
 ]
