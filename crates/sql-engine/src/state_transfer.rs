@@ -166,12 +166,14 @@ where
                     self.reconciler
                         .ensure_table(&mut transaction, &table)
                         .await?;
-                    crate::index::rebuild_table(
-                        &mut transaction,
-                        self.reconciler.as_ref(),
-                        &table,
-                        false,
-                    )
+                    crate::executor::execution_stage(|| {
+                        crate::index::rebuild_table(
+                            &mut transaction,
+                            self.reconciler.as_ref(),
+                            &table,
+                            false,
+                        )
+                    })
                     .await?;
                 }
             }

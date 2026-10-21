@@ -13,12 +13,14 @@ name = "sync"
 path = "src/lib.rs"
 
 [features]
+continuous = ["dep:sync-runtime"]
 native-stage = ["dep:tempfile"]
 iroh = ["dep:iroh"]
 
 [dependencies]
 # internal dependencies
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = [] }
+sync-runtime = { version = "0.1", path = "../sync-runtime", package = "ofdb-sync-runtime", default-features = false, features = [], optional = true }
 
 # external dependencies
 futures = { version = "0.3", default-features = false, features = [] }

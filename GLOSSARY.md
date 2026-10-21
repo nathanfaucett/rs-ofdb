@@ -28,9 +28,13 @@ Clients support `Clone`. Embedded clones share storage; remote clones share the 
 
 A Database Host owns the embedded database used to answer remote query requests. Sync setup belongs to the host or embedded caller, not to remote clients.
 
+### Committed Change Subscription
+
+A Committed Change Subscription connects database-owned committed changes, including incoming replication, to a sync-owned continuous reconciliation lifecycle. It coalesces wakeups rather than retaining a durable change log; sync owns initial reconciliation, race-free rescheduling and retry, while callers supply authorized transport and the lifetime of the runner.
+
 ### Sync Session
 
-A Sync Session explicitly exchanges replicated state between stores of the same kind. Transport, peer selection, authorization, and scheduling belong to the caller. SQL and KV retain their separate sync protocols; the facades do not start background replication automatically.
+A Sync Session exchanges replicated state between stores of the same kind using caller-supplied transport, peer selection and authorization. SQL and KV retain separate protocols; their continuous runner owns change-driven scheduling and retry when explicitly started, without automatically spawning background tasks.
 
 ### CLI
 

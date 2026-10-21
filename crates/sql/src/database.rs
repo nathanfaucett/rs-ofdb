@@ -1,4 +1,4 @@
-#[cfg(any(feature = "redb", feature = "sync"))]
+#[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
@@ -25,6 +25,13 @@ fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::P
     Box::pin(make())
 }
 
+// Keep concrete engine conflict futures out of the caller's poll frame during construction.
+#[cfg(any(feature = "redb", feature = "in-memory"))]
+#[inline(never)]
+fn conflict_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 #[cfg(feature = "sync")]
 type CandidateValidator<'a> =
     dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
@@ -40,6 +47,8 @@ use engine_redb::RedbKernel;
 #[derive(Clone)]
 pub struct Database {
     backend: DatabaseBackend,
+    #[cfg(feature = "sync")]
+    changes: Option<sync::ChangeSubscription>,
 }
 
 #[derive(Clone)]
@@ -66,16 +75,14 @@ impl EmbeddedTransaction {
     pub(crate) async fn row_conflicts(&self, table: &str, key: &Row) -> SqlResult<Vec<String>> {
         match self {
             #[cfg(feature = "redb")]
-            Self::File(transaction) => transaction
-                .read()
-                .await
-                .map_err(native_error)?
-                .row_conflicts(table, key)
-                .await
-                .map_err(crate::error::from_engine),
+            Self::File(transaction) => {
+                let transaction = transaction.read().await.map_err(native_error)?;
+                conflict_stage(|| transaction.row_conflicts(table, key))
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
-            Self::InMemory(transaction) => transaction
-                .row_conflicts(table, key)
+            Self::InMemory(transaction) => conflict_stage(|| transaction.row_conflicts(table, key))
                 .await
                 .map_err(crate::error::from_engine),
         }
@@ -88,18 +95,18 @@ impl EmbeddedTransaction {
     ) -> SqlResult<Vec<(String, Vec<Value>)>> {
         match self {
             #[cfg(feature = "redb")]
-            Self::File(transaction) => transaction
-                .read()
-                .await
-                .map_err(native_error)?
-                .row_conflict_values(table, key)
-                .await
-                .map_err(crate::error::from_engine),
+            Self::File(transaction) => {
+                let transaction = transaction.read().await.map_err(native_error)?;
+                conflict_stage(|| transaction.row_conflict_values(table, key))
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
-            Self::InMemory(transaction) => transaction
-                .row_conflict_values(table, key)
-                .await
-                .map_err(crate::error::from_engine),
+            Self::InMemory(transaction) => {
+                conflict_stage(|| transaction.row_conflict_values(table, key))
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
         }
     }
 
@@ -255,6 +262,20 @@ impl Database {
         }
     }
 
+    /// Creates the sync-owned lifecycle for committed changes, including remote apply.
+    /// `ChangeSubscription::run` owns initial sync, coalescing, races and retry backoff.
+    /// Merge with a KV subscription to reconcile both stores in one callback.
+    /// Dropping the runner cancels its in-flight work. Returns Unsupported for memory.
+    #[cfg(feature = "sync")]
+    pub fn sync_changes(&self) -> std::io::Result<sync::ChangeSubscription> {
+        self.changes.clone().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "continuous sync requires a redb database",
+            )
+        })
+    }
+
     pub fn client(&self) -> crate::Client {
         crate::Client::embedded(self.clone())
     }
@@ -263,12 +284,17 @@ impl Database {
     pub fn open(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
         let path = path.as_ref();
         let database = engine_redb::open_unretired(path, true).map_err(native_error)?;
+        let database = engine_redb::RedbDatabase::new(std::sync::Arc::new(database));
+        #[cfg(feature = "sync")]
+        let changes = database.subscribe_changes();
         Ok(Self {
+            #[cfg(feature = "sync")]
+            changes: Some(changes.into()),
             backend: DatabaseBackend::File(
                 engine_redb::NativeResource::new(
                     path,
                     Engine::new(
-                        RedbKernel::new(std::sync::Arc::new(database)),
+                        RedbKernel::from_database(database),
                         AutomergeRowCodec::new(),
                     ),
                 )
@@ -280,6 +306,8 @@ impl Database {
     #[cfg(feature = "in-memory")]
     pub fn in_memory() -> Self {
         Self {
+            #[cfg(feature = "sync")]
+            changes: None,
             backend: DatabaseBackend::InMemory(Engine::new(
                 InMemoryKernel::new(),
                 AutomergeRowCodec::new(),
@@ -314,7 +342,10 @@ impl Database {
         table: &str,
         key: &Row,
     ) -> SqlResult<Vec<String>> {
-        database_call!(self, |engine| engine.row_conflicts(table, key).await)
+        database_call!(self, |engine| conflict_stage(
+            || engine.row_conflicts(table, key)
+        )
+        .await)
     }
 
     pub(crate) async fn query_row_conflicts_batch(
@@ -322,7 +353,10 @@ impl Database {
         table: &str,
         keys: &[Row],
     ) -> SqlResult<Vec<Vec<String>>> {
-        database_call!(self, |engine| engine.row_conflicts_batch(table, keys).await)
+        database_call!(self, |engine| conflict_stage(
+            || engine.row_conflicts_batch(table, keys)
+        )
+        .await)
     }
 
     pub(crate) async fn query_row_conflict_values(
@@ -330,7 +364,10 @@ impl Database {
         table: &str,
         key: &Row,
     ) -> SqlResult<Vec<(String, Vec<Value>)>> {
-        database_call!(self, |engine| engine.row_conflict_values(table, key).await)
+        database_call!(self, |engine| conflict_stage(
+            || engine.row_conflict_values(table, key)
+        )
+        .await)
     }
 
     pub(crate) async fn query_resolve_row(
@@ -339,7 +376,10 @@ impl Database {
         key: &Row,
         values: Vec<(String, Value)>,
     ) -> SqlResult<()> {
-        database_call!(self, |engine| engine.resolve_row(table, key, values).await)
+        database_call!(self, |engine| conflict_stage(
+            || engine.resolve_row(table, key, values)
+        )
+        .await)
     }
 
     pub(crate) async fn query_execute_untimed(
@@ -988,6 +1028,25 @@ mod tests {
     use super::*;
     use futures::executor::block_on;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn conflict_query_futures_keep_engine_state_indirect() {
+        let directory = tempfile::tempdir().expect("database directory");
+        let database =
+            Database::open(directory.path().join("conflicts.redb")).expect("conflict database");
+        let key = Row::new(Vec::new());
+        let keys = [key.clone()];
+        let sizes = [
+            core::mem::size_of_val(&database.query_row_conflicts("security", &key)),
+            core::mem::size_of_val(&database.query_row_conflicts_batch("security", &keys)),
+            core::mem::size_of_val(&database.query_row_conflict_values("security", &key)),
+            core::mem::size_of_val(&database.query_resolve_row("security", &key, Vec::new())),
+        ];
+        assert!(
+            sizes.iter().all(|size| *size < 4096),
+            "conflict dispatch must not embed engine futures: {sizes:?}"
+        );
+    }
 
     #[cfg(feature = "in-memory")]
     #[test]

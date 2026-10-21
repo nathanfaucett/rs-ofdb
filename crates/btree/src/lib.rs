@@ -4,6 +4,12 @@
 extern crate alloc;
 
 mod btree;
+#[cfg(feature = "changes")]
+mod changes;
+#[cfg(all(test, feature = "changes"))]
+mod changes_tests;
+#[cfg(feature = "changes")]
+pub use changes::{ChangeSignal, ChangeSubscription};
 #[cfg(feature = "in-memory")]
 mod in_memory_btree;
 #[cfg(feature = "sharded")]

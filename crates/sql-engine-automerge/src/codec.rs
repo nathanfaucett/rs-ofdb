@@ -1336,7 +1336,10 @@ where
         let deleted = Self::metadata_deleted(transaction, table, &row).await?;
         let mut incoming = AutoCommit::load(state).map_err(EngineError::custom)?;
         let id = Self::document_id(&row);
-        let existing = Self::document(transaction, table, &id).await?;
+        let mut existing = Self::document(transaction, table, &id).await?;
+        let previous_heads = existing
+            .as_mut()
+            .map(|document| hash_heads(document.get_heads()));
         let mut document = existing.clone().unwrap_or_else(AutoCommit::new);
         if existing.is_some() {
             document.merge(&mut incoming).map_err(EngineError::custom)?;
@@ -1349,6 +1352,10 @@ where
         }
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
         let value = Self::decode_row(&document, &columns)?;
+        let heads = hash_heads(document.get_heads());
+        if previous_heads == Some(heads) {
+            return Ok((!deleted && !stale_definition).then_some(value));
+        }
         let stale = {
             let store = AutomergeChangeStore::new(BytesTable::new(&*transaction, table));
             let entries = store.range(DocumentChangeKey::range_for(&id));
@@ -1365,8 +1372,7 @@ where
         for key in stale {
             transaction.remove_bytes(table, &key).await?;
         }
-        let key =
-            DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads())).encode_ordered();
+        let key = DocumentChangeKey::new_snapshot(id, heads).encode_ordered();
         transaction.put_bytes(table, key, document.save()).await?;
         Ok((!deleted && !stale_definition).then_some(value))
     }

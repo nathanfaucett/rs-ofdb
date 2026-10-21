@@ -19,15 +19,16 @@ pub use query::{
 pub use sql_server::{EngineExecutor, Server};
 #[cfg(feature = "sql")]
 pub use sql_translator::SqlTranslator;
-#[cfg(feature = "native-stage")]
-pub use sync::{FileSyncStage, FileSyncStageFactory};
 #[cfg(feature = "sync")]
 pub use sync::{
-    SessionConfig, SyncCandidateView, SyncDirection, SyncError, SyncHello, SyncKey, SyncMessage,
-    SyncResult, SyncRole, SyncRowView, SyncStage, SyncStageFactory, SyncStateUnit, SyncTableView,
-    SyncTransport, SyncValidationDirection, apply_sync_state_batch_for, apply_sync_state_for,
-    export_sync_state_for, synchronize, synchronize_with_stage_factory,
+    ChangeSubscription, SessionConfig, SyncCandidateView, SyncDirection, SyncError, SyncHello,
+    SyncKey, SyncMessage, SyncResult, SyncRole, SyncRowView, SyncStage, SyncStageFactory,
+    SyncStateUnit, SyncTableView, SyncTransport, SyncValidationDirection,
+    apply_sync_state_batch_for, apply_sync_state_for, export_sync_state_for, synchronize,
+    synchronize_with_stage_factory,
 };
+#[cfg(feature = "native-stage")]
+pub use sync::{FileSyncStage, FileSyncStageFactory};
 pub use uuid::Uuid;
 pub use value::{
     FromRow, FromRowError, FromValue, JsonNumber, JsonValue, Row, Value, ValueType, decode, value,

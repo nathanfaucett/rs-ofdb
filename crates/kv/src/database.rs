@@ -22,6 +22,8 @@ pub(super) enum Storage {
 
 pub struct Database {
     pub(super) storage: Storage,
+    #[cfg(feature = "sync")]
+    changes: Option<kv_sync::ChangeSubscription>,
 }
 
 impl Database {
@@ -54,9 +56,25 @@ impl Database {
         crate::Client::embedded(self.clone_shared())
     }
 
+    /// Creates the sync-owned lifecycle for committed changes, including remote apply.
+    /// `ChangeSubscription::run` owns initial sync, coalescing, races and retry backoff.
+    /// Merge with a SQL subscription to reconcile both stores in one callback.
+    /// Dropping the runner cancels its in-flight work. Returns Unsupported for memory.
+    #[cfg(feature = "sync")]
+    pub fn sync_changes(&self) -> std::io::Result<kv_sync::ChangeSubscription> {
+        self.changes.clone().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "continuous sync requires a redb database",
+            )
+        })
+    }
+
     pub(crate) fn clone_shared(&self) -> Self {
         Self {
             storage: self.storage.clone(),
+            #[cfg(feature = "sync")]
+            changes: self.changes.clone(),
         }
     }
 
@@ -64,6 +82,8 @@ impl Database {
     pub fn in_memory() -> Self {
         Self {
             storage: Storage::Memory(KvStore::new(InMemoryBTree::new(), uuid_timestamp)),
+            #[cfg(feature = "sync")]
+            changes: None,
         }
     }
 
@@ -106,7 +126,11 @@ impl Database {
             .commit()
             .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
         let tree = btree_redb::RedbByteBTree::new(Arc::new(db), table);
+        #[cfg(feature = "sync")]
+        let changes = tree.subscribe_changes();
         Ok(Self {
+            #[cfg(feature = "sync")]
+            changes: Some(changes.into()),
             storage: Storage::Redb(
                 btree_redb::NativeResource::new(path, KvStore::new(tree, uuid_timestamp))
                     .map_err(|error| Error::from(btree::BTreeError::custom(error)))?,

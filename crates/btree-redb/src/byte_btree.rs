@@ -14,6 +14,11 @@ use crate::{Bytes, RedbBTree, RedbBTreeTransaction};
 pub struct RedbByteBTree(RedbBTree<Bytes, Vec<u8>>);
 
 impl RedbByteBTree {
+    /// Subscribes to successfully committed storage changes.
+    pub fn subscribe_changes(&self) -> btree::ChangeSubscription {
+        self.0.subscribe_changes()
+    }
+
     pub fn new(db: Arc<Database>, name: impl Into<String>) -> Self {
         Self(RedbBTree::new(db, name))
     }

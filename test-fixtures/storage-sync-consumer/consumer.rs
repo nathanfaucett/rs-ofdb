@@ -39,6 +39,45 @@ mod tests {
         )
     }
     #[tokio::test]
+    async fn sql_and_kv_share_one_public_continuous_runner() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dir = tempfile::tempdir().expect("directory");
+        let sql = ofdb_sql::Database::open(dir.path().join("continuous-sql.redb")).expect("SQL");
+        let kv = ofdb_kv::Database::open(dir.path().join("continuous-kv.redb")).expect("KV");
+        let changes: ofdb_sql::ChangeSubscription = sql
+            .sync_changes()
+            .expect("SQL lifecycle")
+            .merge(kv.sync_changes().expect("KV lifecycle"));
+        let changes: ofdb_kv::ChangeSubscription = changes;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let runner = tokio::spawn(changes.run(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<(), ()>(()) }
+        }));
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        sql.client()
+            .execute_sql("CREATE TABLE items (id UUID PRIMARY KEY)", None)
+            .await
+            .expect("SQL commit");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        kv.client()
+            .set("key", ofdb_kv::Value::Integer(1), None)
+            .await
+            .expect("KV commit");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        runner.abort();
+        assert!(runner.await.expect_err("stopped").is_cancelled());
+    }
+
+    #[tokio::test]
     async fn persisted_sql_success_is_not_rolled_back_by_subsequent_kv_denial() {
         let dir = tempfile::tempdir().expect("directory");
         let sql_source = ofdb_sql::Database::in_memory();

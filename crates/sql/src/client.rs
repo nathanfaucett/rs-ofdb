@@ -84,48 +84,58 @@ enum TransactionBackend {
 impl Transaction {
     /// Inspects conflicts in this embedded transaction's snapshot, including local writes.
     /// Aborted transactions fail; remote conflict operations are unsupported.
-    pub async fn row_conflicts(&self, table: &str, key: &Row) -> Result<Vec<String>, QueryError> {
-        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
-        let _ = (table, key);
-        Self::run(self.request_deadline, async {
-            match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
-                TransactionBackend::Embedded(transaction) => {
-                    transaction.row_conflicts(table, key).await
+    #[inline(never)]
+    pub fn row_conflicts<'a>(
+        &'a self,
+        table: &'a str,
+        key: &'a Row,
+    ) -> impl Future<Output = Result<Vec<String>, QueryError>> + Send + 'a {
+        Box::pin(async move {
+            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            let _ = (table, key);
+            Self::run(self.request_deadline, async {
+                match &self.backend {
+                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    TransactionBackend::Embedded(transaction) => {
+                        transaction.row_conflicts(table, key).await
+                    }
+                    #[cfg(feature = "remote")]
+                    TransactionBackend::Remote(_) => Err(QueryError::new(
+                        QueryErrorKind::Unsupported,
+                        "remote conflict inspection is unsupported",
+                    )),
                 }
-                #[cfg(feature = "remote")]
-                TransactionBackend::Remote(_) => Err(QueryError::new(
-                    QueryErrorKind::Unsupported,
-                    "remote conflict inspection is unsupported",
-                )),
-            }
-        })
-        .await
+            })
+            .await
+        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
     }
 
     /// Returns concurrent values from this embedded transaction's snapshot.
     /// Aborted transactions fail; remote conflict operations are unsupported.
-    pub async fn row_conflict_values(
-        &self,
-        table: &str,
-        key: &Row,
-    ) -> Result<Vec<(String, Vec<Value>)>, QueryError> {
-        #[cfg(not(any(feature = "redb", feature = "in-memory")))]
-        let _ = (table, key);
-        Self::run(self.request_deadline, async {
-            match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
-                TransactionBackend::Embedded(transaction) => {
-                    transaction.row_conflict_values(table, key).await
+    #[inline(never)]
+    pub fn row_conflict_values<'a>(
+        &'a self,
+        table: &'a str,
+        key: &'a Row,
+    ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + Send + 'a {
+        Box::pin(async move {
+            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            let _ = (table, key);
+            Self::run(self.request_deadline, async {
+                match &self.backend {
+                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    TransactionBackend::Embedded(transaction) => {
+                        transaction.row_conflict_values(table, key).await
+                    }
+                    #[cfg(feature = "remote")]
+                    TransactionBackend::Remote(_) => Err(QueryError::new(
+                        QueryErrorKind::Unsupported,
+                        "remote conflict inspection is unsupported",
+                    )),
                 }
-                #[cfg(feature = "remote")]
-                TransactionBackend::Remote(_) => Err(QueryError::new(
-                    QueryErrorKind::Unsupported,
-                    "remote conflict inspection is unsupported",
-                )),
-            }
-        })
-        .await
+            })
+            .await
+        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
     }
 
     async fn run<F, T>(deadline: Option<Duration>, operation: F) -> Result<T, QueryError>

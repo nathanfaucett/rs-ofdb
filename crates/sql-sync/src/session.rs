@@ -391,12 +391,14 @@ where
     }
     let authority = scope.clone();
     let mut check = || {
-        let pending = check();
+        let pending = sync_stage(&mut check);
         let authority = authority.as_ref();
-        Box::pin(async move {
+        sync_stage(|| async move {
             pending.await?;
             if let Some(scope) = authority {
-                scope.unchanged(engine).await.map_err(|e| e.to_string())?;
+                sync_stage(|| scope.unchanged(engine))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             Ok(())
         }) as CheckFuture<'_>
@@ -423,7 +425,8 @@ where
     };
     exchange_hello(transport, role).await?;
 
-    let remote_manifest = exchange_manifest(engine, transport, role, scope.as_ref()).await?;
+    let remote_manifest =
+        sync_stage(|| exchange_manifest(engine, transport, role, scope.as_ref())).await?;
     let local_units = match preflight_units {
         Some(units) => units,
         None => {
@@ -446,7 +449,8 @@ where
     } else {
         with_engine_abort(
             transport,
-            sync_manifest_limited(engine, config.max_session_bytes, scope.as_ref()).await,
+            sync_stage(|| sync_manifest_limited(engine, config.max_session_bytes, scope.as_ref()))
+                .await,
         )
         .await?
         .entries
@@ -456,7 +460,7 @@ where
     };
     let local_inventories = with_engine_abort(
         transport,
-        inventories_for(engine, &inventory_keys, config.max_session_bytes).await,
+        sync_stage(|| inventories_for(engine, &inventory_keys, config.max_session_bytes)).await,
     )
     .await?;
 
@@ -488,14 +492,16 @@ where
     } else {
         with_engine_abort(
             transport,
-            build_outbound(
-                engine,
-                local_units,
-                &remote_manifest,
-                remote_inventories,
-                config.max_session_bytes,
-                scope.as_ref(),
-            )
+            sync_stage(|| {
+                build_outbound(
+                    engine,
+                    local_units,
+                    &remote_manifest,
+                    remote_inventories,
+                    config.max_session_bytes,
+                    scope.as_ref(),
+                )
+            })
             .await,
         )
         .await?
@@ -504,28 +510,32 @@ where
     let (sent, mut received) = match role {
         SyncRole::Initiator => {
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
-            let received = receive_outbound(
-                engine,
-                transport,
-                &remote_manifest,
-                config.max_session_bytes,
-                stage_factory,
-                &mut check,
-                scope.as_mut(),
-            )
+            let received = sync_stage(|| {
+                receive_outbound(
+                    engine,
+                    transport,
+                    &remote_manifest,
+                    config.max_session_bytes,
+                    stage_factory,
+                    &mut check,
+                    scope.as_mut(),
+                )
+            })
             .await?;
             (sent, received)
         }
         SyncRole::Responder => {
-            let received = receive_outbound(
-                engine,
-                transport,
-                &remote_manifest,
-                config.max_session_bytes,
-                stage_factory,
-                &mut check,
-                scope.as_mut(),
-            )
+            let received = sync_stage(|| {
+                receive_outbound(
+                    engine,
+                    transport,
+                    &remote_manifest,
+                    config.max_session_bytes,
+                    stage_factory,
+                    &mut check,
+                    scope.as_mut(),
+                )
+            })
             .await?;
             let sent = send_outbound(transport, &outbound, config.max_units_per_frame).await?;
             (sent, received)
@@ -548,12 +558,14 @@ where
     } else {
         with_engine_abort(
             transport,
-            recovery_snapshots(
-                engine,
-                remote_requests,
-                config.max_session_bytes,
-                scope.as_ref(),
-            )
+            sync_stage(|| {
+                recovery_snapshots(
+                    engine,
+                    remote_requests,
+                    config.max_session_bytes,
+                    scope.as_ref(),
+                )
+            })
             .await,
         )
         .await?
@@ -561,32 +573,36 @@ where
     let (sent_recovery, (received_recovery, retried_changes)) = match role {
         SyncRole::Initiator => {
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
-            let received = receive_recovery(
-                engine,
-                transport,
-                &mut received,
-                &local_requests,
-                &remote_manifest,
-                config.max_session_bytes,
-                stage_factory,
-                &mut check,
-                scope.as_mut(),
-            )
+            let received = sync_stage(|| {
+                receive_recovery(
+                    engine,
+                    transport,
+                    &mut received,
+                    &local_requests,
+                    &remote_manifest,
+                    config.max_session_bytes,
+                    stage_factory,
+                    &mut check,
+                    scope.as_mut(),
+                )
+            })
             .await?;
             (sent, received)
         }
         SyncRole::Responder => {
-            let received = receive_recovery(
-                engine,
-                transport,
-                &mut received,
-                &local_requests,
-                &remote_manifest,
-                config.max_session_bytes,
-                stage_factory,
-                &mut check,
-                scope.as_mut(),
-            )
+            let received = sync_stage(|| {
+                receive_recovery(
+                    engine,
+                    transport,
+                    &mut received,
+                    &local_requests,
+                    &remote_manifest,
+                    config.max_session_bytes,
+                    stage_factory,
+                    &mut check,
+                    scope.as_mut(),
+                )
+            })
             .await?;
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
             (sent, received)
@@ -2069,9 +2085,9 @@ where
     ];
     let manifest = manifest.clone();
     check_apply(check).await?;
-    engine
-        .mutate_tables(&tables, move |codec, transaction| {
-            Box::pin(async move {
+    sync_stage(|| {
+        engine.mutate_tables(&tables, move |codec, transaction| {
+            sync_stage(|| async move {
                 let mut mutations = MutationSummary::default();
                 for (stage_index, mut stage) in stages.into_iter().enumerate() {
                     while let Some(record) = stage
@@ -2114,12 +2130,14 @@ where
                         }
                     }
                 }
-                validate_catalog(codec, transaction, &[], &[], Some(&manifest)).await?;
+                sync_stage(|| validate_catalog(codec, transaction, &[], &[], Some(&manifest)))
+                    .await?;
                 Ok(((), mutations))
             })
         })
-        .await
-        .map_err(ApplyError::from)
+    })
+    .await
+    .map_err(ApplyError::from)
 }
 
 struct StagedDataApply {
@@ -2607,7 +2625,8 @@ where
                     .map_err(|error| SyncError::Staging(error.to_string()))?;
                 if (catalog_snapshots > 0 || catalog_changes > 0)
                     && let Err(error) =
-                        apply_catalog_stages(engine, catalog_stages, manifest, check).await
+                        sync_stage(|| apply_catalog_stages(engine, catalog_stages, manifest, check))
+                            .await
                 {
                     return abort(transport, error, String::from("catalog batch")).await;
                 }

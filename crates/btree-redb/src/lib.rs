@@ -1,6 +1,7 @@
 mod btree;
 mod byte_btree;
 mod bytes;
+mod changes;
 mod database;
 mod key;
 mod redb;

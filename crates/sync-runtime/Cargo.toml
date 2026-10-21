@@ -1,0 +1,21 @@
+[package]
+name = "ofdb-sync-runtime"
+description = "Continuous synchronization lifecycle shared by ofdb SQL and KV"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Backend notifications
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["changes"] }
+
+# Runtime
+tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
+
+[dev-dependencies]
+# Test runtime
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1.0", default-features = false, features = ["macros", "rt", "sync", "test-util", "time"] }

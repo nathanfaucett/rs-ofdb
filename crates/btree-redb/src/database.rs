@@ -1,19 +1,21 @@
 use std::sync::Arc;
 
-use async_lock::{Mutex, MutexGuardArc};
-use redb::{Database, WriteTransaction};
+use async_lock::Mutex;
+use redb::Database;
 
-use btree::BTreeResult;
+use btree::{BTreeError, BTreeResult, ChangeSignal, ChangeSubscription};
 
 use crate::{
     RedbBTreeScopedTransaction,
     redb::{RedbKey, RedbValue, table_definition},
+    transaction::NativeWriteTransaction,
 };
 
 #[derive(Clone)]
 pub struct RedbDatabase {
     inner: Arc<Database>,
     admission: Arc<Mutex<()>>,
+    changes: ChangeSignal,
 }
 
 impl RedbDatabase {
@@ -21,24 +23,29 @@ impl RedbDatabase {
         Self {
             inner,
             admission: Arc::new(Mutex::new(())),
+            changes: ChangeSignal::default(),
         }
+    }
+
+    /// Subscribes to successfully committed storage changes.
+    pub fn subscribe_changes(&self) -> ChangeSubscription {
+        self.changes.subscribe()
     }
 
     pub async fn transaction(&self) -> BTreeResult<RedbDatabaseTransaction> {
         let admission = self.admission.lock_arc().await;
         Ok(RedbDatabaseTransaction {
-            _admission: admission,
-            inner: self
-                .inner
-                .begin_write()
-                .map_err(btree::BTreeError::custom)?,
+            inner: NativeWriteTransaction::new(
+                self.inner.begin_write().map_err(BTreeError::custom)?,
+                admission,
+                self.changes.clone(),
+            ),
         })
     }
 }
 
 pub struct RedbDatabaseTransaction {
-    inner: WriteTransaction,
-    _admission: MutexGuardArc<()>,
+    inner: NativeWriteTransaction,
 }
 
 impl RedbDatabaseTransaction {
@@ -46,32 +53,25 @@ impl RedbDatabaseTransaction {
         RedbBTreeScopedTransaction::new(&self.inner, name)
     }
 
-    pub fn create_table<K, V>(&self, name: &str) -> BTreeResult<()>
-    where
-        K: RedbKey,
-        V: RedbValue,
-    {
-        self.inner
-            .open_table(table_definition::<K, V>(name))
-            .map_err(btree::BTreeError::custom)?;
+    pub fn create_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<()> {
+        self.inner.open_table::<K, V>(name)?;
         Ok(())
     }
 
-    pub fn drop_table<K, V>(&self, name: &str) -> BTreeResult<bool>
-    where
-        K: RedbKey,
-        V: RedbValue,
-    {
-        self.inner
+    pub fn drop_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<bool> {
+        let existed = self
+            .inner
+            .inner
             .delete_table(table_definition::<K, V>(name))
-            .map_err(btree::BTreeError::custom)
+            .map_err(BTreeError::custom)?;
+        self.inner.record_table(name, existed, false);
+        Ok(existed)
     }
 
     pub fn commit(self) -> BTreeResult<()> {
-        self.inner.commit().map_err(btree::BTreeError::custom)
+        self.inner.commit()
     }
-
     pub fn rollback(self) -> BTreeResult<()> {
-        self.inner.abort().map_err(btree::BTreeError::custom)
+        self.inner.rollback()
     }
 }

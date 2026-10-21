@@ -15,6 +15,93 @@ fn key() -> Row {
     Row::new(vec![Value::Uuid(Uuid::parse_str(ID).expect("row UUID"))])
 }
 
+fn check_conflicts_on_two_mib_worker(left: Database, right: Database) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(2 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("two MiB worker runtime");
+    // Sync fixture construction is separate from the two MiB conflict API worker under test.
+    let (runtime, left, transaction) = std::thread::Builder::new()
+        .name("conflict-fixture".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            runtime.block_on(diverge(&left, &right));
+            let transaction = runtime
+                .block_on(left.client().transaction())
+                .expect("conflict snapshot");
+            (runtime, left, transaction)
+        })
+        .expect("fixture thread")
+        .join()
+        .expect("fixture prepared");
+    runtime.block_on(async move {
+        tokio::spawn(async move {
+            let client = left.client();
+            let row = key();
+            let names = transaction.row_conflicts("security", &row);
+            let concurrent = transaction.row_conflict_values("security", &row);
+            assert!(core::mem::size_of_val(&names) < 4096);
+            assert!(core::mem::size_of_val(&concurrent) < 4096);
+            let snapshot_names = names.await.expect("snapshot names on worker");
+            let snapshot_values = concurrent.await.expect("snapshot values on worker");
+            transaction.rollback().await.expect("snapshot rollback");
+            let values = client
+                .row_conflict_values("security", &row)
+                .await
+                .expect("concurrent values on worker");
+            assert_eq!(values.len(), 4);
+            assert!(values[0].1.contains(&Value::Bool(false)));
+            assert!(values[0].1.contains(&Value::Bool(true)));
+            let columns = client
+                .row_conflicts("security", &row)
+                .await
+                .expect("conflicted columns on worker");
+            assert_eq!(columns.len(), 4);
+            assert_eq!(snapshot_names, columns);
+            assert_eq!(snapshot_values, values);
+            assert_eq!(
+                client
+                    .row_conflicts_batch("security", &[row.clone(), row.clone()])
+                    .await
+                    .expect("batch conflicts on worker"),
+                vec![columns.clone(), columns]
+            );
+            client
+                .resolve_row(
+                    "security",
+                    &row,
+                    vec![("admin_allowed".into(), Value::Bool(false))],
+                )
+                .await
+                .expect("partial resolution on worker");
+            let remaining = client
+                .row_conflict_values("security", &row)
+                .await
+                .expect("remaining concurrent values on worker");
+            assert_eq!(remaining, values[1..]);
+        })
+        .await
+        .expect("conflict worker completed");
+    });
+}
+
+#[cfg(feature = "redb")]
+#[test]
+fn native_conflicts_on_two_mib_worker() {
+    let directory = tempfile::tempdir().expect("databases");
+    let left = Database::open(directory.path().join("left.redb")).expect("left");
+    let right = Database::open(directory.path().join("right.redb")).expect("right");
+    check_conflicts_on_two_mib_worker(left, right);
+}
+
+#[cfg(feature = "in-memory")]
+#[test]
+fn memory_conflicts_on_two_mib_worker() {
+    check_conflicts_on_two_mib_worker(Database::in_memory(), Database::in_memory());
+}
+
 struct Channel {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     receiver: mpsc::UnboundedReceiver<Vec<u8>>,

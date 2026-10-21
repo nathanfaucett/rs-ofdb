@@ -15,7 +15,7 @@ use value::{Row, Value};
 
 // Construct large execution futures outside dispatcher poll frames, not just on the heap.
 #[inline(never)]
-fn execution_stage<'a, T: 'a, F>(
+pub(crate) fn execution_stage<'a, T: 'a, F>(
     make: impl FnOnce() -> F,
 ) -> Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>
 where

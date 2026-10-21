@@ -2601,6 +2601,7 @@ dependencies = [
  "dashmap",
  "futures",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -2747,6 +2748,7 @@ dependencies = [
  "ofdb-btree-automerge",
  "ofdb-btree-redb",
  "ofdb-kv-store",
+ "ofdb-sync-runtime",
  "ofdb-value",
  "postcard",
  "redb",
@@ -2959,6 +2961,7 @@ dependencies = [
  "ofdb-sql-engine-redb",
  "ofdb-sql-schema",
  "ofdb-sql-translator",
+ "ofdb-sync-runtime",
  "ofdb-value",
  "postcard",
  "serde",
@@ -3001,6 +3004,15 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "ofdb-sync-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-btree",
+ "tokio",
 ]
 
 [[package]]

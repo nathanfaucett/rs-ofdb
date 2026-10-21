@@ -102,9 +102,14 @@ where
             ))
         });
 
+    let previous_heads = current_doc.get_heads();
     update_fn(&mut current_doc)?;
+    let heads = current_doc.get_heads();
+    if heads == previous_heads {
+        return Ok(());
+    }
 
-    let key = DocumentChangeKey::new_incremental(doc_id, hash_heads(current_doc.get_heads()));
+    let key = DocumentChangeKey::new_incremental(doc_id, hash_heads(heads));
     let delta = current_doc.save_incremental();
 
     tx.insert(key, delta).await?;

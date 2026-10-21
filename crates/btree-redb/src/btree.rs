@@ -5,7 +5,7 @@ use async_stream::stream;
 use futures::Stream;
 use redb::{Database, ReadableDatabase, ReadableTableMetadata};
 
-use btree::{BTree, BTreeError, BTreeRead, BTreeResult};
+use btree::{BTree, BTreeError, BTreeRead, BTreeResult, ChangeSignal, ChangeSubscription};
 
 use crate::{
     RedbBTreeTransaction,
@@ -17,15 +17,22 @@ use crate::{
 pub struct RedbBTree<K, V> {
     db: Arc<Database>,
     admission: Arc<Mutex<()>>,
+    changes: ChangeSignal,
     name: String,
     _marker: PhantomData<(K, V)>,
 }
 
 impl<K, V> RedbBTree<K, V> {
+    /// Subscribes to successfully committed storage changes.
+    pub fn subscribe_changes(&self) -> ChangeSubscription {
+        self.changes.subscribe()
+    }
+
     pub fn new(db: Arc<Database>, name: impl Into<String>) -> Self {
         Self {
             db,
             admission: Arc::new(Mutex::new(())),
+            changes: ChangeSignal::default(),
             name: name.into(),
             _marker: PhantomData,
         }
@@ -100,10 +107,9 @@ where
         let admission = self.admission.lock_arc().await;
         let tx = self.db.begin_write().map_err(BTreeError::custom)?;
 
-        Ok(RedbBTreeTransaction::new(
-            crate::transaction::NativeWriteTransaction::new(tx, admission),
-            &self.name,
-        ))
+        let tx =
+            crate::transaction::NativeWriteTransaction::new(tx, admission, self.changes.clone());
+        Ok(RedbBTreeTransaction::new(tx, &self.name))
     }
 }
 

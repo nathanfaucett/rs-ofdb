@@ -104,7 +104,8 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     table: &str,
     enforce_unique: bool,
 ) -> EngineResult<()> {
-    let indexes = indexes_for_table(transaction, codec, table).await?;
+    let indexes =
+        crate::executor::execution_stage(|| indexes_for_table(transaction, codec, table)).await?;
     for (name, _) in &indexes {
         transaction.ensure_table(name).await?;
         let stale = {
@@ -120,7 +121,10 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
             transaction.remove_entry(name, &key).await?;
         }
     }
-    let schema = table_schema_for(transaction, codec, table, table.into()).await?;
+    let schema = crate::executor::execution_stage(|| {
+        table_schema_for(transaction, codec, table, table.into())
+    })
+    .await?;
     let mut states = {
         let stream = codec.scan_row_states(transaction, table);
         pin_mut!(stream);

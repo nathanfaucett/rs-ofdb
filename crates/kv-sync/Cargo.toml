@@ -8,12 +8,16 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+continuous = ["dep:sync-runtime"]
+
 [dependencies]
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["in-memory", "std"] }
 btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
 
 kv = { version = "0.1", path = "../kv-store", package = "ofdb-kv-store", default-features = false, features = [] }
+sync-runtime = { version = "0.1", path = "../sync-runtime", package = "ofdb-sync-runtime", default-features = false, features = [], optional = true }
 
 # External dependencies
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }

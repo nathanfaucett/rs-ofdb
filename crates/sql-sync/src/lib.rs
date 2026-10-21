@@ -21,6 +21,9 @@ mod staging;
 mod state;
 mod transport;
 
+#[cfg(feature = "continuous")]
+pub use sync_runtime::ChangeSubscription;
+
 pub use candidate::{SyncCandidateView, SyncRowView, SyncTableView, SyncValidationDirection};
 pub use codec::{InspectedHistory, SyncRowCodec};
 pub use direction::SyncDirection;

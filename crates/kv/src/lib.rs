@@ -15,7 +15,10 @@ pub use client::Client;
 pub use database::Database;
 pub use error::{Error, ErrorKind};
 #[cfg(feature = "sync")]
-pub use kv_sync::{Config as SyncConfig, Error as SyncError, KvSnapshot, SyncRole, SyncTransport};
+pub use kv_sync::{
+    ChangeSubscription, Config as SyncConfig, Error as SyncError, KvSnapshot, SyncRole,
+    SyncTransport,
+};
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 pub use transaction::Transaction;
 

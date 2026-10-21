@@ -201,7 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 4. Replicating Between Nodes (Sync Sessions)
 
-Replication is explicit and caller-scheduled. `Database::synchronize` accepts any transport implementing `SyncTransport`:
+Replication setup is explicit. With `sync`, `Database::sync_changes()` returns the sync-owned continuous lifecycle: `ChangeSubscription::run` performs the initial pass, coalesces committed changes, retries failed work with bounded exponential backoff, and cancels on future drop. SQL and KV subscriptions can be merged into one runner. Callers supply authorized transports and the runner's lifetime, not an idle polling loop. In-memory subscriptions currently return `Unsupported`.
+
+For one-shot sessions, `Database::synchronize` accepts any transport implementing `SyncTransport`:
 
 ```rust,no_run
 use ofdb_sql::{Database, SessionConfig, SyncRole};
