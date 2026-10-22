@@ -119,3 +119,42 @@ fn every_directional_frame_failure_retries() {
         }
     });
 }
+
+#[test]
+fn replicated_table_index_storage_collisions_are_rejected_without_data_loss() {
+    run(async {
+        let cluster = automerge_in_memory_cluster(2);
+        cluster
+            .exec(0, "CREATE TABLE occupied (id UUID PRIMARY KEY, name TEXT)")
+            .await;
+        cluster.exec(0, "INSERT INTO occupied VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'keep')").await;
+        cluster.exec(1, CREATE_USERS).await;
+        cluster
+            .exec(1, "CREATE UNIQUE INDEX occupied ON users (name)")
+            .await;
+        cluster.exec(1, INSERT_ADA).await;
+        let error = cluster
+            .sync(0, 1, &SessionConfig::default())
+            .await
+            .expect_err("replication must reject a shared table/index storage name");
+        assert!(
+            error.to_string().contains("reserved"),
+            "namespace collision must be rejected before reading or clearing overlapping storage: {error}"
+        );
+        assert_eq!(
+            cluster.exec(0, "SELECT name FROM occupied").await,
+            vec![ofdb_sql::Row::from(["keep"])]
+        );
+        assert_eq!(
+            cluster.exec(1, "SELECT name FROM users").await,
+            vec![ofdb_sql::Row::from(["Ada"])]
+        );
+        assert!(
+            cluster
+                .try_exec(1, INSERT_LIN.replace("Lin", "Ada").as_str())
+                .await
+                .is_err(),
+            "rejected sync preserves the unique index"
+        );
+    });
+}

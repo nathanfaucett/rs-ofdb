@@ -7,7 +7,7 @@ use value::{Row, Value};
 use crate::{
     EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
     executor::{materialize_defaults, row_id},
-    schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage, table_schema_for},
+    schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage_named, table_schema_for},
 };
 
 async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
@@ -30,10 +30,10 @@ async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     names.dedup();
     let mut result = Vec::new();
     for name in names {
-        if let Some((id, schema)) = index_schema(transaction, codec, &name).await?
+        if let Some((_, schema)) = index_schema(transaction, codec, &name).await?
             && schema.table_name == table
         {
-            result.push((index_storage(&id), schema));
+            result.push((index_storage_named(schema.name.clone()), schema));
         }
     }
     Ok(result)
@@ -73,7 +73,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     values: &Row,
 ) -> EngineResult<Option<Row>> {
-    let (id, schema) = index_schema(transaction, codec, name)
+    let (_, schema) = index_schema(transaction, codec, name)
         .await?
         .ok_or(EngineError::InvalidQuery("Index not found"))?;
     if values.values.len() != schema.column_indices.len() {
@@ -81,7 +81,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
             "Index key has the wrong column count",
         ));
     }
-    let storage = index_storage(&id);
+    let storage = index_storage_named(schema.name.clone());
     let entries = transaction.scan_entries_owned(&storage);
     pin_mut!(entries);
     let mut winner = None;

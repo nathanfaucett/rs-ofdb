@@ -12,10 +12,10 @@ use value::{Row, Value, ValueType};
 
 use crate::{EngineError, EngineResult, KernelTransaction, RowCodec};
 
-pub const ENGINE_TABLES_STORAGE: &str = "__engine_tables";
-pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "__engine_table_fields";
-pub const ENGINE_INDICES_STORAGE: &str = "__engine_indices";
-pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "__engine_index_fields";
+pub const ENGINE_TABLES_STORAGE: &str = "tables";
+pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "table_fields";
+pub const ENGINE_INDICES_STORAGE: &str = "indices";
+pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "index_fields";
 pub const ENGINE_TABLES_STORAGE_NAMED: &str = "tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE_NAMED: &str = "table_fields";
 pub const ENGINE_INDICES_STORAGE_NAMED: &str = "indices";
@@ -228,6 +228,28 @@ impl CatalogTable {
         }
     }
 
+    pub(crate) fn schema(self) -> TableSchema {
+        TableSchema {
+            name: self.storage().to_string(),
+            columns: self
+                .columns()
+                .iter()
+                .map(|name| ColumnSchema {
+                    name: (*name).to_string(),
+                    r#type: match *name {
+                        "table_id" | "index_id" | "column_id" => ValueType::Uuid,
+                        "position" => ValueType::Integer,
+                        "primary_key" | "unique" => ValueType::Bool,
+                        "type" => ValueType::Type,
+                        _ => ValueType::Text,
+                    },
+                    default: Value::Null,
+                    primary_key: false,
+                })
+                .collect(),
+        }
+    }
+
     pub const fn storage(self) -> &'static str {
         match self {
             Self::Tables => ENGINE_TABLES_STORAGE,
@@ -253,6 +275,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
     transaction: &mut T,
     codec: &R,
 ) -> EngineResult<()> {
+    validate_storage_namespace(transaction, codec).await?;
     let states = {
         let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
         pin_mut!(rows);
@@ -324,14 +347,14 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
     let mut states = states;
     for (id, index, deleted) in &mut states {
         if *deleted {
-            delete_index_dependents(transaction, codec, id, false).await?;
+            delete_index_dependents(transaction, codec, id, &index.name, false).await?;
             continue;
         }
         if codec
             .table_definition_was_dropped(transaction, &index.table_id)
             .await?
         {
-            delete_index_dependents(transaction, codec, id, true).await?;
+            delete_index_dependents(transaction, codec, id, &index.name, true).await?;
             *deleted = true;
         }
     }
@@ -375,9 +398,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
                 .delete_row(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field)
                 .await?;
         }
-        let storage = index_storage(id);
-        transaction.ensure_table(&storage).await?;
-        transaction.drop_table(&storage).await?;
+        drop_inactive_index_storage(transaction, codec, &index.name).await?;
         *deleted = true;
     }
     let mut winners: Vec<(String, Uuid)> = Vec::new();
@@ -397,7 +418,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
             .expect("index name has a winning row")
             .1;
         if id != winner {
-            delete_index_dependents(transaction, codec, &id, !deleted).await?;
+            delete_index_dependents(transaction, codec, &id, &index.name, !deleted).await?;
         }
     }
     Ok(())
@@ -458,6 +479,7 @@ async fn delete_index_dependents<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     index_id: &Uuid,
+    name: &str,
     delete_definition: bool,
 ) -> EngineResult<()> {
     if delete_definition {
@@ -483,9 +505,48 @@ async fn delete_index_dependents<T: KernelTransaction, R: RowCodec<T>>(
             .delete_row(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field)
             .await?;
     }
-    let storage = index_storage(index_id);
-    transaction.ensure_table(&storage).await?;
-    transaction.drop_table(&storage).await?;
+    drop_inactive_index_storage(transaction, codec, name).await
+}
+
+pub(crate) async fn drop_inactive_index_storage<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &mut T,
+    codec: &R,
+    name: &str,
+) -> EngineResult<()> {
+    if active_index(transaction, codec, name).await?.is_none() {
+        let storage = index_storage_named(name.to_string());
+        transaction.ensure_table(&storage).await?;
+        transaction.drop_table(&storage).await?;
+    }
+    Ok(())
+}
+
+async fn validate_storage_namespace<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+) -> EngineResult<()> {
+    let mut tables = Vec::new();
+    let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
+    pin_mut!(rows);
+    while let Some(row) = rows.next().await {
+        let (_, value, _) = row?;
+        let name = TableRow::try_from(&value)?.name;
+        if catalog_table_for_storage(&name).is_some() {
+            return Err(EngineError::InvalidQuery(
+                "Catalog table names are reserved",
+            ));
+        }
+        tables.push(name);
+    }
+    let rows = codec.scan_row_states(transaction, ENGINE_INDICES_STORAGE);
+    pin_mut!(rows);
+    while let Some(row) = rows.next().await {
+        let (_, value, _) = row?;
+        let name = IndexRow::try_from(&value)?.name;
+        if catalog_table_for_storage(&name).is_some() || tables.contains(&name) {
+            return Err(EngineError::InvalidQuery("Index storage name is reserved"));
+        }
+    }
     Ok(())
 }
 
@@ -644,7 +705,9 @@ pub(crate) async fn lookup_table_name<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     name: &str,
 ) -> EngineResult<String> {
-    lookup_table_id(transaction, codec, name).await?;
+    if catalog_table_for_storage(name).is_none() {
+        lookup_table_id(transaction, codec, name).await?;
+    }
     Ok(name.to_string())
 }
 
@@ -817,6 +880,9 @@ impl CatalogSnapshot {
     }
 
     pub fn table_schema(&self, name: &str) -> EngineResult<TableSchema> {
+        if let Some(table) = catalog_table_for_storage(name) {
+            return Ok(table.schema());
+        }
         let table_id = self.table_id(name)?;
         let fields = self
             .fields
@@ -939,6 +1005,9 @@ pub(crate) async fn table_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     table: &str,
     name: String,
 ) -> EngineResult<TableSchema> {
+    if let Some(table) = catalog_table_for_storage(table) {
+        return Ok(table.schema());
+    }
     Ok(TableSchema {
         name,
         columns: columns(transaction, codec, table)

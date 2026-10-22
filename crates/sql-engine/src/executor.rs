@@ -37,7 +37,7 @@ use crate::{
     schema::{
         CatalogSnapshot, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
         ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id,
-        columns as schema_columns, ensure as ensure_schema, index_storage,
+        columns as schema_columns, ensure as ensure_schema, index_storage_named,
         largest_schema_name_claim, lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
         table_schema as schema_table_schema, table_schema_with_fields,
     },
@@ -209,6 +209,18 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
+    let name = match &ddl {
+        DataDefinition::CreateTable { schema, .. }
+        | DataDefinition::CreateTableWithIndexes { schema, .. } => &schema.name,
+        DataDefinition::DropTable { table_name, .. }
+        | DataDefinition::AlterTable { table_name, .. } => table_name,
+        _ => unreachable!(),
+    };
+    if catalog_table_for_storage(name).is_some() {
+        return Err(EngineError::InvalidQuery(
+            "Catalog table names are reserved",
+        ));
+    }
     match ddl {
         DataDefinition::CreateTable {
             schema,
@@ -258,8 +270,10 @@ where
                 Err(error) => return Err(error),
             };
             let id = lookup_table_id(transaction, codec, &table).await?;
-            drop_table_contents(transaction, codec, timestamp_provider, changes, &table, id)
-                .await?;
+            execution_stage(|| {
+                drop_table_contents(transaction, codec, timestamp_provider, changes, &table, id)
+            })
+            .await?;
             Ok(QueryResult::default())
         }
         DataDefinition::AlterTable {
@@ -335,14 +349,16 @@ where
             index_name,
             if_exists,
         } => {
-            drop_index(
-                transaction,
-                codec,
-                timestamp_provider,
-                changes,
-                &index_name,
-                if_exists,
-            )
+            execution_stage(|| {
+                drop_index(
+                    transaction,
+                    codec,
+                    timestamp_provider,
+                    changes,
+                    &index_name,
+                    if_exists,
+                )
+            })
             .await?;
             Ok(QueryResult::default())
         }
@@ -504,12 +520,12 @@ where
         while let Some(row) = rows.next().await {
             let (id, value, deleted) = row?;
             if value.values.get(1).and_then(Value::as_text) == Some(table) {
-                indexes.push((id, deleted));
+                indexes.push((id, crate::schema::IndexRow::try_from(&value)?.name, deleted));
             }
         }
         indexes
     };
-    for (index_id, index_deleted) in indexes {
+    for (index_id, index_name, index_deleted) in indexes {
         let fields = {
             let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
             pin_mut!(rows);
@@ -546,9 +562,7 @@ where
             )
             .await?;
         }
-        let storage = index_storage(&index_id);
-        transaction.ensure_table(&storage).await?;
-        transaction.drop_table(&storage).await?;
+        crate::schema::drop_inactive_index_storage(transaction, codec, &index_name).await?;
     }
 
     let fields = {
@@ -645,7 +659,7 @@ where
         )
         .await?;
     }
-    let storage = index_storage(&id);
+    let storage = index_storage_named(String::from(name));
     catalog_delete(
         transaction,
         codec,
@@ -670,6 +684,16 @@ where
     R: RowCodec<T>,
 {
     let table_schema = table_schema(transaction, codec, &schema.table_name).await?;
+    if execution_stage(|| {
+        largest_schema_name_claim(transaction, codec, ENGINE_TABLES_STORAGE, &schema.name)
+    })
+    .await?
+    .is_some()
+    {
+        return Err(EngineError::InvalidQuery(
+            "Index name is reserved by a table",
+        ));
+    }
     if schema.name.is_empty() || schema.column_indices.is_empty() {
         return Err(EngineError::InvalidQuery(
             "Index requires a name and column",
@@ -712,7 +736,7 @@ where
         ));
     }
     let table_id = lookup_table_id(transaction, codec, &table).await?;
-    let storage = index_storage(&id);
+    let storage = index_storage_named(schema.name.clone());
     codec.ensure_table(transaction, &storage).await?;
     catalog_put(
         transaction,
@@ -773,6 +797,16 @@ where
         ));
     }
     let table = table_schema.name.clone();
+    if execution_stage(|| {
+        largest_schema_name_claim(transaction, codec, ENGINE_INDICES_STORAGE, &table)
+    })
+    .await?
+    .is_some()
+    {
+        return Err(EngineError::InvalidQuery(
+            "Table name is reserved by an index",
+        ));
+    }
     let id = next_uuid(timestamp_provider)?;
     let observed_drops = codec.table_drop_events(transaction, &table).await?;
     if largest_schema_name_claim(transaction, codec, ENGINE_TABLES_STORAGE, &table)
@@ -1563,7 +1597,9 @@ where
     }
     let distinct = select.distinct;
 
-    let schema = if let Some(catalog) = catalog.as_ref() {
+    let schema = if let Some(table) = catalog_table_for_storage(&select.from.table) {
+        table.schema()
+    } else if let Some(catalog) = catalog.as_ref() {
         catalog.table_schema(&select.from.table)?
     } else {
         let (table_id, tables) =
@@ -1573,9 +1609,6 @@ where
         *catalog = Some(CatalogSnapshot { tables, fields });
         schema
     };
-    let catalog = catalog
-        .as_ref()
-        .expect("SELECT loaded its catalog snapshot");
     let mut projection = projection(&schema, &select.from.table, &select.projection)?;
     for (position, concat) in select.text_concats.iter().enumerate() {
         let Some(concat) = concat else { continue };
@@ -1613,7 +1646,9 @@ where
     let stream = reconciler.scan_rows(
         transaction,
         &table,
-        Some((&catalog.tables, &catalog.fields)),
+        catalog
+            .as_ref()
+            .map(|catalog| (catalog.tables.as_slice(), catalog.fields.as_slice())),
     );
     pin_mut!(stream);
     let mut rows = Vec::new();

@@ -61,9 +61,9 @@ impl SyncTransport for Channel {
                         SyncMessage::State(vec![SyncStateUnit::new(
                             SyncKey::Row {
                                 table: if self.attack == 18 {
-                                    "__engine_tables"
+                                    "tables"
                                 } else if self.attack == 24 {
-                                    "__engine_index_fields"
+                                    "index_fields"
                                 } else {
                                     "people"
                                 }
@@ -121,7 +121,7 @@ impl SyncTransport for Channel {
                             || (7..=9).contains(&self.attack)
                             || self.attack == 11)
                             && table == "people")
-                            || (self.attack == 2 && table == "__engine_index_fields")
+                            || (self.attack == 2 && table == "index_fields")
                         {
                             let mut document =
                                 AutoCommit::load(&unit.state).expect("fixture state");

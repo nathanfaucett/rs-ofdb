@@ -189,7 +189,7 @@ async fn records_catalog_id(database: &Database) -> Uuid {
     let ids = units
         .iter()
         .filter_map(|unit| match &unit.key {
-            SyncKey::Row { table, row } if table == "__engine_tables" => Some(*row),
+            SyncKey::Row { table, row } if table == "tables" => Some(*row),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1682,7 +1682,7 @@ async fn scope_is_explicit_and_remote_schema_cannot_widen_it() {
         vec![],
         vec!["public_rows", "public_rows"],
         vec!["missing"],
-        vec!["__engine_tables"],
+        vec!["tables"],
     ] {
         let (l, r) = exchange(&left, &right, &scope, &["public_rows"]).await;
         assert!(l.is_err());

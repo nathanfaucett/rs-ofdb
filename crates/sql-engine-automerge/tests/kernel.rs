@@ -277,7 +277,7 @@ fn manifest_digest_is_independent_of_automerge_snapshot_encoding() {
         let schema_states: Vec<_> = source_state
             .iter()
             .filter(|unit| {
-                matches!(&unit.key, SyncKey::Row { table, .. } if table.starts_with("__engine_"))
+                matches!(&unit.key, SyncKey::Row { table, .. } if engine::catalog_table_for_storage(table).is_some())
             })
             .cloned()
             .collect();
@@ -1180,7 +1180,8 @@ fn independently_created_same_name_tables_share_rows_after_sync() {
         }
 
         for (left, right) in left_states.iter().zip(&right_states) {
-            if matches!(&left.key, SyncKey::Row { table, .. } if table.starts_with("__engine_")) {
+            if matches!(&left.key, SyncKey::Row { table, .. } if engine::catalog_table_for_storage(table).is_some())
+            {
                 let mut left_doc = automerge::AutoCommit::load(&left.state).expect("load left");
                 let mut right_doc = automerge::AutoCommit::load(&right.state).expect("load right");
                 assert_eq!(

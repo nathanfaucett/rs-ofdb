@@ -433,10 +433,7 @@ fn internal_catalog_tables_are_not_user_ddl_targets() {
         let client = database.client();
         assert!(
             client
-                .translate_and_execute(
-                    "CREATE TABLE __engine_tables (id UUID PRIMARY KEY)",
-                    &SqlTranslator,
-                )
+                .translate_and_execute("CREATE TABLE tables (id UUID PRIMARY KEY)", &SqlTranslator,)
                 .await
                 .is_err()
         );
@@ -444,12 +441,145 @@ fn internal_catalog_tables_are_not_user_ddl_targets() {
             .translate_and_execute("CREATE TABLE users (id UUID PRIMARY KEY)", &SqlTranslator)
             .await
             .expect("create a user table");
-        assert!(client
-            .translate_and_execute(
-                "CREATE INDEX __engine_tables ON users (id)",
-                &SqlTranslator,
-            )
+        assert!(
+            client
+                .translate_and_execute("CREATE INDEX tables ON users (id)", &SqlTranslator,)
+                .await
+                .is_err()
+        );
+    });
+}
+
+#[test]
+fn human_readable_catalogs_are_queryable() {
+    ofdb_test::run(async {
+        use ofdb_sql::{Database, Row, SqlTranslator};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        client.translate_and_execute(
+            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT); CREATE INDEX people_name ON people (name)",
+            &SqlTranslator,
+        ).await.expect("create named schema");
+        for (query, expected) in [
+            ("SELECT name FROM tables", vec![Row::from(["people"])]),
+            (
+                "SELECT name FROM table_fields ORDER BY position",
+                vec![Row::from(["id"]), Row::from(["name"])],
+            ),
+            ("SELECT name FROM indices", vec![Row::from(["people_name"])]),
+            ("SELECT column FROM index_fields", vec![Row::from(["name"])]),
+        ] {
+            let result = client
+                .translate_and_execute(query, &SqlTranslator)
+                .await
+                .expect("query human-readable catalog");
+            assert_eq!(result[0].rows, expected, "{query}");
+        }
+    });
+}
+
+#[test]
+fn table_and_index_names_share_a_protected_storage_namespace() {
+    ofdb_test::run(async {
+        use ofdb_sql::{Database, Row, SqlTranslator};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        client.translate_and_execute(
+            "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT); CREATE TABLE occupied (id UUID PRIMARY KEY); CREATE UNIQUE INDEX people_name ON people (name)",
+            &SqlTranslator,
+        ).await.expect("create tables and index");
+        for statement in [
+            "CREATE INDEX occupied ON people (name)",
+            "CREATE INDEX IF NOT EXISTS occupied ON people (name)",
+            "CREATE TABLE people_name (id UUID PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS people_name (id UUID PRIMARY KEY)",
+        ] {
+            assert!(
+                client
+                    .translate_and_execute(statement, &SqlTranslator)
+                    .await
+                    .is_err(),
+                "{statement} must reject shared storage"
+            );
+        }
+        for name in ["tables", "table_fields", "indices", "index_fields"] {
+            for statement in [
+                format!("CREATE TABLE {name} (id UUID PRIMARY KEY)"),
+                format!("CREATE INDEX {name} ON people (name)"),
+            ] {
+                assert!(
+                    client
+                        .translate_and_execute(&statement, &SqlTranslator)
+                        .await
+                        .is_err(),
+                    "{statement} must reserve catalogs"
+                );
+            }
+        }
+        client.translate_and_execute(
+            "INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')",
+            &SqlTranslator,
+        ).await.expect("index survives rejected DDL");
+        let rows = client
+            .translate_and_execute("SELECT name FROM people", &SqlTranslator)
             .await
-            .is_err());
+            .expect("rows survive rejected DDL");
+        assert_eq!(rows[0].rows, vec![Row::from(["Ada"])]);
+    });
+}
+
+#[test]
+fn dropping_an_old_index_owner_preserves_a_recreated_named_index() {
+    ofdb_test::run(async {
+        use ofdb_sql::{Database, Row, SqlTranslator};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        for statement in [
+            "CREATE TABLE old_owner (id UUID PRIMARY KEY, name TEXT)",
+            "CREATE TABLE new_owner (id UUID PRIMARY KEY, name TEXT)",
+            "CREATE INDEX shared_name ON old_owner (name)",
+            "DROP INDEX shared_name",
+            "CREATE UNIQUE INDEX shared_name ON new_owner (name)",
+            "INSERT INTO new_owner VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')",
+            "DROP TABLE old_owner",
+        ] {
+            client
+                .translate_and_execute(statement, &SqlTranslator)
+                .await
+                .expect("recreate index on another table and drop old owner");
+        }
+        assert!(client.translate_and_execute(
+            "INSERT INTO new_owner VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Ada')",
+            &SqlTranslator,
+        ).await.is_err(), "old definition cleanup must not clear the active unique index");
+        let rows = client
+            .translate_and_execute("SELECT name FROM new_owner", &SqlTranslator)
+            .await
+            .expect("retained rows");
+        assert_eq!(rows[0].rows, vec![Row::from(["Ada"])]);
+        client
+            .translate_and_execute("DROP INDEX shared_name", &SqlTranslator)
+            .await
+            .expect("drop current index");
+        assert!(
+            client
+                .translate_and_execute(
+                    "CREATE TABLE shared_name (id UUID PRIMARY KEY)",
+                    &SqlTranslator
+                )
+                .await
+                .is_err(),
+            "historical index claims cannot become user row storage"
+        );
+        assert!(
+            client
+                .translate_and_execute("CREATE INDEX old_owner ON new_owner (name)", &SqlTranslator)
+                .await
+                .is_err(),
+            "historical table claims cannot become index storage"
+        );
     });
 }
