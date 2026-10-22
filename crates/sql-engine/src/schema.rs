@@ -16,6 +16,10 @@ pub const ENGINE_TABLES_STORAGE: &str = "__engine_tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "__engine_table_fields";
 pub const ENGINE_INDICES_STORAGE: &str = "__engine_indices";
 pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "__engine_index_fields";
+pub const ENGINE_TABLES_STORAGE_NAMED: &str = "tables";
+pub const ENGINE_TABLE_FIELDS_STORAGE_NAMED: &str = "table_fields";
+pub const ENGINE_INDICES_STORAGE_NAMED: &str = "indices";
+pub const ENGINE_INDEX_FIELDS_STORAGE_NAMED: &str = "index_fields";
 
 /// Validates RFC UUIDv5/v7 user identities; catalog generations remain UUIDv7.
 pub fn validate_row_id(table: &str, id: &Uuid) -> EngineResult<()> {
@@ -528,6 +532,10 @@ pub(crate) fn index_storage(id: &Uuid) -> String {
     for byte in id.as_bytes() {
         name.push_str(&format!("{byte:02x}"));
     }
+    name
+}
+
+pub(crate) fn index_storage_named(name: String) -> String {
     name
 }
 
