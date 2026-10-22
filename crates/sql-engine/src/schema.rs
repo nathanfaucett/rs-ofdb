@@ -1,6 +1,5 @@
 use alloc::{
     collections::BTreeMap,
-    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -16,10 +15,6 @@ pub const ENGINE_TABLES_STORAGE: &str = "tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "table_fields";
 pub const ENGINE_INDICES_STORAGE: &str = "indices";
 pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "index_fields";
-pub const ENGINE_TABLES_STORAGE_NAMED: &str = "tables";
-pub const ENGINE_TABLE_FIELDS_STORAGE_NAMED: &str = "table_fields";
-pub const ENGINE_INDICES_STORAGE_NAMED: &str = "indices";
-pub const ENGINE_INDEX_FIELDS_STORAGE_NAMED: &str = "index_fields";
 
 /// Validates RFC UUIDv5/v7 user identities; catalog generations remain UUIDv7.
 pub fn validate_row_id(table: &str, id: &Uuid) -> EngineResult<()> {
@@ -514,9 +509,9 @@ pub(crate) async fn drop_inactive_index_storage<T: KernelTransaction, R: RowCode
     name: &str,
 ) -> EngineResult<()> {
     if active_index(transaction, codec, name).await?.is_none() {
-        let storage = index_storage_named(name.to_string());
-        transaction.ensure_table(&storage).await?;
-        transaction.drop_table(&storage).await?;
+        let storage = index_storage(name);
+        transaction.ensure_table(storage).await?;
+        transaction.drop_table(storage).await?;
     }
     Ok(())
 }
@@ -588,15 +583,7 @@ pub(crate) async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) fn index_storage(id: &Uuid) -> String {
-    let mut name = String::from("__engine_index_");
-    for byte in id.as_bytes() {
-        name.push_str(&format!("{byte:02x}"));
-    }
-    name
-}
-
-pub(crate) fn index_storage_named(name: String) -> String {
+pub(crate) fn index_storage(name: &str) -> &str {
     name
 }
 

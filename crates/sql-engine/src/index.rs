@@ -1,4 +1,8 @@
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 use futures::{StreamExt, pin_mut};
 use schema::IndexSchema;
@@ -7,7 +11,7 @@ use value::{Row, Value};
 use crate::{
     EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
     executor::{materialize_defaults, row_id},
-    schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage_named, table_schema_for},
+    schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage, table_schema_for},
 };
 
 async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
@@ -33,7 +37,7 @@ async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
         if let Some((_, schema)) = index_schema(transaction, codec, &name).await?
             && schema.table_name == table
         {
-            result.push((index_storage_named(schema.name.clone()), schema));
+            result.push((index_storage(&schema.name).to_string(), schema));
         }
     }
     Ok(result)
@@ -81,8 +85,8 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
             "Index key has the wrong column count",
         ));
     }
-    let storage = index_storage_named(schema.name.clone());
-    let entries = transaction.scan_entries_owned(&storage);
+    let storage = index_storage(&schema.name);
+    let entries = transaction.scan_entries_owned(storage);
     pin_mut!(entries);
     let mut winner = None;
     while let Some(entry) = entries.next().await {

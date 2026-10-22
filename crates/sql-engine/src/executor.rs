@@ -37,7 +37,7 @@ use crate::{
     schema::{
         CatalogSnapshot, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
         ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id,
-        columns as schema_columns, ensure as ensure_schema, index_storage_named,
+        columns as schema_columns, ensure as ensure_schema, index_storage,
         largest_schema_name_claim, lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
         table_schema as schema_table_schema, table_schema_with_fields,
     },
@@ -659,7 +659,7 @@ where
         )
         .await?;
     }
-    let storage = index_storage_named(String::from(name));
+    let storage = index_storage(name);
     catalog_delete(
         transaction,
         codec,
@@ -669,7 +669,7 @@ where
         &id,
     )
     .await?;
-    transaction.drop_table(&storage).await
+    transaction.drop_table(storage).await
 }
 
 async fn create_index<T, R>(
@@ -699,9 +699,7 @@ where
             "Index requires a name and column",
         ));
     }
-    if catalog_table_for_storage(&schema.name).is_some()
-        || schema.name.starts_with("__engine_index_")
-    {
+    if catalog_table_for_storage(&schema.name).is_some() {
         return Err(EngineError::InvalidQuery(
             "Catalog table names are reserved",
         ));
@@ -736,8 +734,8 @@ where
         ));
     }
     let table_id = lookup_table_id(transaction, codec, &table).await?;
-    let storage = index_storage_named(schema.name.clone());
-    codec.ensure_table(transaction, &storage).await?;
+    let storage = index_storage(&schema.name);
+    codec.ensure_table(transaction, storage).await?;
     catalog_put(
         transaction,
         codec,
@@ -789,9 +787,7 @@ where
     table_schema
         .validate_uuid_primary_key()
         .map_err(EngineError::InvalidQuery)?;
-    if catalog_table_for_storage(&table_schema.name).is_some()
-        || table_schema.name.starts_with("__engine_index_")
-    {
+    if catalog_table_for_storage(&table_schema.name).is_some() {
         return Err(EngineError::InvalidQuery(
             "Catalog table names are reserved",
         ));

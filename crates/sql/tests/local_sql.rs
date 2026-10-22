@@ -583,3 +583,87 @@ fn dropping_an_old_index_owner_preserves_a_recreated_named_index() {
         );
     });
 }
+
+#[test]
+fn former_engine_catalog_names_are_available_for_user_tables() {
+    ofdb_test::run(async {
+        use ofdb_sql::{Database, Row, SqlTranslator};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        for name in [
+            "__engine_index_user",
+            "__engine_tables",
+            "__engine_table_fields",
+            "__engine_indices",
+            "__engine_index_fields",
+        ] {
+            for statement in [
+                format!("CREATE TABLE {name} (id UUID PRIMARY KEY, name TEXT)"),
+                format!(
+                    "INSERT INTO {name} VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')"
+                ),
+            ] {
+                client
+                    .translate_and_execute(&statement, &SqlTranslator)
+                    .await
+                    .expect("former engine names are ordinary user tables");
+            }
+            let rows = client
+                .translate_and_execute(&format!("SELECT name FROM {name}"), &SqlTranslator)
+                .await
+                .expect("read user table");
+            assert_eq!(rows[0].rows, vec![Row::from(["Ada"])]);
+            client
+                .translate_and_execute(&format!("DROP TABLE {name}"), &SqlTranslator)
+                .await
+                .expect("drop user table");
+        }
+    });
+}
+
+#[test]
+fn former_engine_catalog_names_are_available_for_user_indices() {
+    ofdb_test::run(async {
+        use ofdb_sql::{Database, Row, SqlTranslator};
+
+        for name in [
+            "__engine_index_user",
+            "__engine_tables",
+            "__engine_table_fields",
+            "__engine_indices",
+            "__engine_index_fields",
+        ] {
+            let database = Database::in_memory();
+            let client = database.client();
+            client
+                .translate_and_execute(
+                    "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT)",
+                    &SqlTranslator,
+                )
+                .await
+                .expect("create index owner");
+            client
+                .translate_and_execute(
+                    &format!("CREATE UNIQUE INDEX {name} ON people (name)"),
+                    &SqlTranslator,
+                )
+                .await
+                .expect("former engine names are ordinary user indices");
+            client.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada')", &SqlTranslator).await.expect("insert indexed row");
+            assert!(client.translate_and_execute("INSERT INTO people VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Ada')", &SqlTranslator).await.is_err(), "named unique index must reject duplicate values");
+            let rows = client
+                .translate_and_execute(
+                    &format!("SELECT name FROM indices WHERE name = '{name}'"),
+                    &SqlTranslator,
+                )
+                .await
+                .expect("query named index definition");
+            assert_eq!(rows[0].rows, vec![Row::from([name])]);
+            client
+                .translate_and_execute(&format!("DROP INDEX {name}"), &SqlTranslator)
+                .await
+                .expect("drop named index");
+        }
+    });
+}
