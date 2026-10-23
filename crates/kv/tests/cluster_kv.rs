@@ -372,10 +372,19 @@ async fn divergent_same_generation_history_converges() {
         left_tx.get("fork", 0).await.expect("left value"),
         right_tx.get("fork", 0).await.expect("right value")
     );
-    assert_eq!(
-        left_tx.export_snapshots().await.expect("left history"),
-        right_tx.export_snapshots().await.expect("right history")
-    );
+    let mut left_history = left_tx
+        .history("fork")
+        .await
+        .expect("left history")
+        .expect("left generation");
+    let mut right_history = right_tx
+        .history("fork")
+        .await
+        .expect("right history")
+        .expect("right generation");
+    left_history.changes.sort_by_key(|change| change.hash);
+    right_history.changes.sort_by_key(|change| change.hash);
+    assert_eq!(left_history, right_history);
     left_tx.rollback().await.expect("finish left read");
     right_tx.rollback().await.expect("finish right read");
     synchronize_pair(&right, &left).await;
@@ -416,9 +425,18 @@ async fn invalid_snapshot_batch_is_rejected_without_partial_import() {
     let (out_sender, _out_receiver) = mpsc::unbounded_channel();
     peer_sender
         .send(
-            encode_frame(&Message::Hello { version: 2 }, Config::default()).expect("encode hello"),
+            encode_frame(&Message::Hello { version: 3 }, Config::default()).expect("encode hello"),
         )
         .expect("queue hello");
+    for message in [
+        Message::Selection(None),
+        Message::Inventory(vec![]),
+        Message::End,
+    ] {
+        peer_sender
+            .send(encode_frame(&message, Config::default()).expect("encode handshake"))
+            .expect("queue handshake");
+    }
     peer_sender
         .send(
             encode_frame(&Message::Snapshots(vec![valid, invalid]), Config::default())

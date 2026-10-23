@@ -11,7 +11,7 @@ use uuid::Uuid;
 use value::Value;
 
 use crate::{
-    decode_document_id, encode_document_id,
+    ChangeApply, ChangeSummary, KvHistory, NativeChange, decode_document_id, encode_document_id,
     value_document::{new_document, read_document, write_live, write_tombstone},
 };
 
@@ -228,6 +228,105 @@ where
         Ok(())
     }
 
+    /// Inspect only the latest generation of this logical key, without saving a snapshot.
+    pub async fn history(&self, key: &str) -> BTreeResult<Option<KvHistory>> {
+        self.latest(key)
+            .await?
+            .map(|(id, document)| history_parts(id, document))
+            .transpose()
+    }
+
+    pub async fn histories(&self) -> BTreeResult<Vec<KvHistory>> {
+        let documents = self.inner.range(..);
+        pin_mut!(documents);
+        let mut latest = BTreeMap::new();
+        while let Some(item) = documents.next().await {
+            let (id, document) = item?;
+            let (key, _) = decode_document_id(&id)?;
+            latest.insert(key, (id, document));
+        }
+        latest
+            .into_values()
+            .map(|(id, document)| history_parts(id, document))
+            .collect()
+    }
+
+    /// Export native changes even when their only physical representation is a snapshot.
+    pub async fn export_changes(
+        &self,
+        id: &[u8],
+        known: &[[u8; 32]],
+    ) -> BTreeResult<Vec<NativeChange>> {
+        decode_document_id(id)?;
+        let Some(mut document) = self.inner.get(&id.to_vec()).await? else {
+            return Ok(Vec::new());
+        };
+        read_document(&document)?;
+        Ok(document
+            .get_changes(&[])
+            .into_iter()
+            .filter(|change| !known.contains(&change.hash().0))
+            .map(|change| NativeChange {
+                hash: change.hash().0,
+                deps: change.deps().iter().map(|hash| hash.0).collect(),
+                payload: change.raw_bytes().to_vec(),
+            })
+            .collect())
+    }
+
+    /// Validate the entire candidate before writing. A gap leaves this transaction untouched.
+    /// Other operation errors still require caller rollback of the enclosing batch.
+    pub async fn import_changes(
+        &mut self,
+        id: &[u8],
+        changes: &[NativeChange],
+    ) -> BTreeResult<ChangeApply> {
+        let (key, generation) = decode_document_id(id)?;
+        let parsed = changes
+            .iter()
+            .map(|claimed| {
+                let change = automerge::Change::from_bytes(claimed.payload.clone())
+                    .map_err(BTreeError::custom)?;
+                if change.hash().0 != claimed.hash
+                    || change.deps().iter().map(|hash| hash.0).collect::<Vec<_>>() != claimed.deps
+                {
+                    return Err(BTreeError::InvalidDocument);
+                }
+                Ok(change)
+            })
+            .collect::<BTreeResult<Vec<_>>>()?;
+        let mut document = match self.latest(&key).await? {
+            Some((current_id, document)) => {
+                let (_, current_generation) = decode_document_id(&current_id)?;
+                if generation < current_generation {
+                    return Ok(ChangeApply::Applied);
+                }
+                if generation == current_generation {
+                    document
+                } else {
+                    AutoCommit::new()
+                }
+            }
+            None => AutoCommit::new(),
+        };
+        let mut available = document
+            .get_changes(&[])
+            .into_iter()
+            .map(|change| change.hash())
+            .collect::<std::collections::BTreeSet<_>>();
+        for change in &parsed {
+            if change.deps().iter().any(|dep| !available.contains(dep)) {
+                return Ok(ChangeApply::MissingDependencies);
+            }
+            available.insert(change.hash());
+        }
+        document.apply_changes(parsed).map_err(BTreeError::custom)?;
+        read_document(&document)?;
+        self.import_snapshot(snapshot_parts(id.to_vec(), document))
+            .await?;
+        Ok(ChangeApply::Applied)
+    }
+
     pub async fn export_snapshots(&self) -> BTreeResult<Vec<(DocumentChangeKey, Vec<u8>)>> {
         let documents = self.inner.range(..);
         pin_mut!(documents);
@@ -332,6 +431,26 @@ where
         }
         Ok(())
     }
+}
+
+fn history_parts(id: Vec<u8>, mut document: AutoCommit) -> BTreeResult<KvHistory> {
+    read_document(&document)?;
+    Ok(KvHistory {
+        id,
+        heads: document
+            .get_heads()
+            .into_iter()
+            .map(|hash| hash.0)
+            .collect(),
+        changes: document
+            .get_changes(&[])
+            .into_iter()
+            .map(|change| ChangeSummary {
+                hash: change.hash().0,
+                deps: change.deps().iter().map(|hash| hash.0).collect(),
+            })
+            .collect(),
+    })
 }
 
 fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, Vec<u8>) {

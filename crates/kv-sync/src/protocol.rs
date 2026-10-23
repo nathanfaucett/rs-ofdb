@@ -8,7 +8,26 @@ pub struct KvSnapshot {
     pub key: DocumentChangeKey,
     pub payload: Vec<u8>,
 }
-const VERSION: u8 = 2;
+pub(crate) const VERSION: u8 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvInventory {
+    pub id: Vec<u8>,
+    pub hashes: Vec<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvChange {
+    pub hash: [u8; 32],
+    pub deps: Vec<[u8; 32]>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvChanges {
+    pub id: Vec<u8>,
+    pub changes: Vec<KvChange>,
+}
 
 pub trait SyncTransport {
     type Error;
@@ -53,9 +72,17 @@ pub enum Error<E> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
-    Hello { version: u8 },
+    Hello {
+        version: u8,
+    },
 
+    /// None is broad comparison; Some selects the union of both peers' logical keys.
+    Selection(Option<Vec<String>>),
+    Inventory(Vec<KvInventory>),
+    Changes(Vec<KvChanges>),
     Snapshots(Vec<KvSnapshot>),
+    Applied,
+    Recover,
     End,
     Finished,
     Abort,
@@ -84,6 +111,25 @@ pub fn decode_frame<E>(bytes: &[u8], config: Config) -> Result<Message, Error<E>
         for snapshot in snapshots {
             kv::decode_document_id(&snapshot.key.id).map_err(|_| Error::InvalidFrame)?;
         }
+    }
+    match &message {
+        Message::Inventory(items) => {
+            if items.len() > config.max_snapshots_per_batch {
+                return Err(Error::FrameTooLarge);
+            }
+            for item in items {
+                kv::decode_document_id(&item.id).map_err(|_| Error::InvalidFrame)?;
+            }
+        }
+        Message::Changes(items) => {
+            if items.len() > config.max_snapshots_per_batch {
+                return Err(Error::FrameTooLarge);
+            }
+            for item in items {
+                kv::decode_document_id(&item.id).map_err(|_| Error::InvalidFrame)?;
+            }
+        }
+        _ => {}
     }
     if let Message::Hello { version } = message {
         if version != VERSION {

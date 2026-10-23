@@ -1,17 +1,28 @@
 # ofdb-kv-sync
 
-`ofdb-kv-sync` explicitly exchanges self-contained winning KV snapshots over a caller-owned transport. Its public `KvSnapshot` type owns the wire/serde representation; `ofdb-kv-store` owns document validation and generation conflict resolution and exposes snapshot parts (`DocumentChangeKey` plus Automerge bytes) without depending on `ofdb-kv-sync`. It does not open sockets or provide authentication or encryption. With the optional `continuous` feature, `ChangeSubscription::run` owns continuous synchronization scheduling and retry around a caller-supplied authorized session callback; it spawns no tasks.
+`ofdb-kv-sync` reconciles KV stores over a caller-owned reliable, ordered transport. It opens no sockets and supplies no authentication or encryption. KV wire **v3** exchanges logical-key selections, native Automerge history inventories, missing changes, and snapshots for new generations or dependency recovery. Older wire versions are rejected; there is no compatibility path. The store owns document validation and generation/tombstone reconciliation; this crate owns framing and exchange.
+
+`synchronize_checked` performs broad discovery in both directions, but transfers only missing history for matching generations. `synchronize_selected_checked` accepts `&[KvInvalidation]`: compare the **union of both peers' logical keys**, re-reading each latest generation regardless of the invalidated generation. Either peer's `All` forces broad discovery. Capture selected work **before** opening export snapshots and acknowledge it **only after success**. New peers, reconnects, unknown writes and notification gaps must select `All`. Inventories and native exports include snapshot-contained and bundled history; physical incremental-key labels are never treated as Automerge hashes.
 
 ```rust,ignore
-let (left_transport, right_transport) = connected_transports();
-let (left, right) = futures::join!(
-    ofdb_kv_sync::synchronize(&left_store, &mut left_transport, ofdb_kv_sync::SyncRole::Initiator, Default::default()),
-    ofdb_kv_sync::synchronize(&right_store, &mut right_transport, ofdb_kv_sync::SyncRole::Responder, Default::default()),
-);
-left?;
-right?;
+let work = changes.select();
+let invalidations = work.as_ref()
+    .map(|work| store.committed_invalidations("kv", work))
+    .unwrap_or_default();
+ofdb_kv_sync::synchronize_selected_checked(
+    &store, &invalidations, &mut transport,
+    ofdb_kv_sync::SyncRole::Initiator, Default::default(),
+    || core::future::ready(Ok(())),
+).await?;
+if let Some(work) = work {
+    assert!(changes.acknowledge(work));
+}
 ```
 
-The transport must deliver frames reliably and in order for each direction. The session ends with a `Finished` control-frame exchange, which also rejects trailing duplicate end/control frames. The caller owns connection security. One-shot callers decide when to retry; the continuous runner owns retry/backoff when used. A failed received batch is rolled back; batches committed earlier in the session remain committed, so retry the entire session. Snapshot imports are idempotent. Concurrent writes are not included consistently across peers; run another session to exchange them.
+Keep an independent subscription for every peer. `All` overrides partial key selections. Do not use merged subscriptions for selective logical mapping. The facade offers success-only selection/acknowledgement directly. With optional `continuous`, `ChangeSubscription::run` remains a broad-session scheduler with retry/backoff and explicit caller-owned lifetime; it spawns no task.
 
-V1 exports every winning snapshot into memory at session start and transfers complete snapshot batches on every session. Memory and network cost therefore scale with the entire store, including tombstones and expired winners. Configure frame/count limits for the expected store size. A session is not globally atomic. The optional continuous runner performs an initial session and reconciles on committed changes, coalescing changes during each pass and retaining failed work for retry; transport delivery still determines convergence.
+**Remote delivery is caller-driven.** Local subscriptions observe incoming replication once applied locally, but cannot observe commits made only at a remote peer. Arrange an authorized remote wakeup/receive path or explicitly invoke reconciliation, even if local selected work is empty. Reconnect with a fresh subscription for broad comparison. Local wakeups alone do not provide bidirectional realtime delivery. Generic KV memory subscriptions remain unsupported; use caller-driven broad sessions.
+
+Caller authorization/cancellation is checked before **each complete incoming batch**, including recovery. Every native change's claimed hash and dependency list is validated against its payload. A missing dependency rolls back the entire batch and requests snapshots; recovered state must contain the promised changes or a newer generation. Snapshots merge concurrent same-generation history rather than replacing it. Malformed batches roll back atomically. Earlier committed batches remain on session failure; the session is not globally atomic or a globally frozen snapshot. Discard transport after failure and retry. Known history produces no writes, so replay and fan-out settle without echo.
+
+Frame/count limits apply to inventory and data frames. A single document's inventory or complete delta must fit one frame; oversized frames fail explicitly (increase the configured byte budget). Discovery retains the selected inventory in memory; broad fallback scales with the whole store, while ordinary selective passes inspect only selected keys. No durable peer frontier or history cursor is persisted. Concurrent commits after selection remain pending for another pass. Expiry remains read-time visibility, not a timed change event.
