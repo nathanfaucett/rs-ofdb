@@ -4,11 +4,11 @@ This map provides a high-level overview of the implementation plan for the Flexi
 
 ## Overview
 
-[View the full specification](./issue.md)
+[View the full specification](./spec.md)
 
 ## Implementation Roadmap
 
-The work is broken than into the following tickets:
+The work is broken down into the following tickets:
 
 1. **[01: Schema Expansion](./issues/01-schema-expansion.md)** - Adds the foundation for flexible validation.
 2. **[02: Engine Implementation](./issues/02-engine-implementation.md)** - Implements the core logic of automatic unique index creation for non-UUID primary keys.
