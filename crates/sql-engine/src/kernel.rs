@@ -43,5 +43,11 @@ pub trait KernelTransaction: Send + Sync {
 pub trait Kernel: Send + Sync {
     type Transaction: KernelTransaction;
 
+    /// Unsupported backends require caller-driven broad reconciliation.
+    #[cfg(feature = "std")]
+    fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {
+        None
+    }
+
     fn transaction(&self) -> impl Future<Output = EngineResult<Self::Transaction>> + Send;
 }

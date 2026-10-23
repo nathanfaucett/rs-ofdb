@@ -237,6 +237,11 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + Send + Sync,
 {
+    #[cfg(feature = "std")]
+    pub fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {
+        self.kernel.subscribe_changes()
+    }
+
     pub async fn transaction(&self) -> EngineResult<EngineTransaction<K, R>> {
         Ok(EngineTransaction {
             engine: self.clone(),

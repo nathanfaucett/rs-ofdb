@@ -23,6 +23,16 @@ impl From<btree::ChangeSubscription> for ChangeSubscription {
 }
 
 impl ChangeSubscription {
+    /// Select before opening a reconciliation snapshot; drop the token on failure.
+    pub fn select(&self) -> Option<btree::ChangeWork> {
+        self.changes.select()
+    }
+
+    /// Complete exactly the selected watermark, never commits arriving during the pass.
+    pub fn acknowledge(&mut self, work: btree::ChangeWork) -> bool {
+        self.changes.acknowledge(work)
+    }
+
     /// Combine stores into one lifecycle. Changes to either schedule one shared pass.
     /// The subscription closes only after all combined backends close.
     pub fn merge(self, other: Self) -> Self {
@@ -52,6 +62,7 @@ impl ChangeSubscription {
         let mut retry = Duration::from_millis(100);
         loop {
             self.changes.consume();
+            let selected = self.select();
             let failed = tokio::select! {
                 biased;
                 () = self.changes.closed() => return,
@@ -65,8 +76,11 @@ impl ChangeSubscription {
                 }
                 retry = (retry * 2).min(Duration::from_secs(30));
             } else {
+                if let Some(work) = selected {
+                    self.acknowledge(work);
+                }
                 retry = Duration::from_millis(100);
-                if self.changed().await.is_err() {
+                if self.select().is_none() && self.changed().await.is_err() {
                     return;
                 }
             }

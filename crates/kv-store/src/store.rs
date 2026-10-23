@@ -17,6 +17,13 @@ use crate::{
 
 pub type TimestampProvider = fn() -> uuid::Timestamp;
 
+/// A generation change also invalidates latest-generation selection for its key.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KvInvalidation {
+    All,
+    Generation { key: String, generation: Uuid },
+}
+
 #[derive(Clone)]
 pub struct KvStore<B>
 where
@@ -35,6 +42,31 @@ where
             inner,
             timestamp_provider,
         }
+    }
+
+    /// Interpret work from this backend's subscription using its physical table name.
+    /// Unknown tables/keys and gaps require full comparison, never skipped work.
+    pub fn committed_invalidations(
+        &self,
+        storage_table: &str,
+        work: &btree::ChangeWork,
+    ) -> Vec<KvInvalidation> {
+        let mut result = std::collections::BTreeSet::new();
+        for invalidation in work.invalidations() {
+            let btree::StorageInvalidation::Key { table, key } = invalidation else {
+                return vec![KvInvalidation::All];
+            };
+            if table != storage_table {
+                return vec![KvInvalidation::All];
+            }
+            let decoded =
+                DocumentChangeKey::decode_ordered(key).and_then(|key| decode_document_id(key.id()));
+            let Ok((key, generation)) = decoded else {
+                return vec![KvInvalidation::All];
+            };
+            result.insert(KvInvalidation::Generation { key, generation });
+        }
+        result.into_iter().collect()
     }
 
     pub async fn transaction(&self) -> BTreeResult<KvTransaction<B::Transaction>> {

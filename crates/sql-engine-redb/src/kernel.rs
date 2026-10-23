@@ -31,6 +31,10 @@ pub struct RedbKernelTransaction {
 impl Kernel for RedbKernel {
     type Transaction = RedbKernelTransaction;
 
+    fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {
+        Some(self.database.subscribe_changes())
+    }
+
     async fn transaction(&self) -> EngineResult<Self::Transaction> {
         self.database
             .transaction()
