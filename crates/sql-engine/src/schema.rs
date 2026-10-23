@@ -416,6 +416,22 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
             delete_index_dependents(transaction, codec, &id, &index.name, !deleted).await?;
         }
     }
+    for table in active_table_names(transaction, codec).await? {
+        let schema = table_schema(transaction, codec, &table).await?;
+        schema
+            .validate_primary_key()
+            .map_err(EngineError::InvalidQuery)?;
+        if crate::executor::uuid_primary_key(&schema).is_none()
+            && !crate::index::indexes_for_table(transaction, codec, &table)
+                .await?
+                .iter()
+                .any(|(_, index)| crate::executor::is_primary_key_index(&schema, index))
+        {
+            return Err(EngineError::InvalidQuery(
+                "Table has no unique primary key index",
+            ));
+        }
+    }
     Ok(())
 }
 

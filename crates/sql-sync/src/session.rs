@@ -1261,13 +1261,19 @@ where
                         )));
                     }
                     lookup_bytes = next_bytes;
-                    let has_uuid_primary_key = field_status
+                    let has_primary_key = field_status
                         .entry(table_id)
                         .or_default()
                         .entry(name.to_string())
                         .or_default();
-                    *has_uuid_primary_key |= values[3].to_type() == Some(value::ValueType::Uuid)
-                        && values[6].to_bool() == Some(true);
+                    if values[6].to_bool() == Some(true) {
+                        if values[3].to_type() == Some(value::ValueType::Null) {
+                            return Err(EngineError::custom(format!(
+                                "Invalid catalog: table {name} has a null-type primary key"
+                            )));
+                        }
+                        *has_primary_key = true;
+                    }
                     table_columns
                         .entry(name.to_string())
                         .or_default()
@@ -1321,18 +1327,18 @@ where
         }
         table_lookup_bytes = next_bytes;
         table_names.insert(name.to_string());
-        let has_uuid_primary_key = field_status
+        let has_primary_key = field_status
             .get(&table_id)
             .and_then(|names| names.get(name));
-        let Some(has_uuid_primary_key) = has_uuid_primary_key else {
+        let Some(has_primary_key) = has_primary_key else {
             return Err(EngineError::custom(format!(
                 "Incomplete catalog: table {} has no fields",
                 name
             )));
         };
-        if !has_uuid_primary_key {
+        if !has_primary_key {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: table {} has no UUID primary key",
+                "Incomplete catalog: table {} has no primary key",
                 name
             )));
         }

@@ -132,6 +132,7 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + Send + Sync,
 {
+    /// Uses the same user primary-key tuple as [`Engine::row_conflicts`].
     pub async fn row_conflicts(&self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
         if self.failed {
             return Err(EngineError::InvalidQuery("Transaction is aborted"));
@@ -143,6 +144,7 @@ where
         conflicted_row_columns(transaction, self.engine.reconciler.as_ref(), table, key).await
     }
 
+    /// Uses user primary-key values in table-column order, as in [`Engine::row_conflicts`].
     pub async fn row_conflict_values(
         &self,
         table: &str,
@@ -357,6 +359,8 @@ where
         execute_statement(self, statements).await
     }
 
+    /// Keys contain user primary-key values in table-column order, independent of index order.
+    /// Missing keys return no conflicts; internal row identities are not accepted as natural keys.
     pub async fn row_conflicts(&self, table_name: &str, key: &Row) -> EngineResult<Vec<String>> {
         let transaction = self.kernel.transaction().await?;
         let result =
@@ -365,7 +369,7 @@ where
         Ok(result)
     }
 
-    /// Inspects keys in input order using one fresh snapshot and one catalog load.
+    /// Inspects keys in input order using one fresh snapshot.
     /// Empty input is a no-op; the first error aborts inspection without partial results.
     pub async fn row_conflicts_batch(
         &self,
@@ -380,6 +384,7 @@ where
         Ok(result)
     }
 
+    /// Uses user primary-key values in table-column order, as in [`Engine::row_conflicts`].
     pub async fn row_conflict_values(
         &self,
         table_name: &str,
@@ -392,6 +397,7 @@ where
         Ok(result)
     }
 
+    /// Resolves a row by its user primary-key values in table-column order.
     pub async fn resolve_row(
         &self,
         table_name: &str,

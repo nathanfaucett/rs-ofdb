@@ -437,3 +437,290 @@ fn integer_primary_key_enforces_constraints_and_maintains_lookup() {
         );
     });
 }
+
+#[test]
+fn replicated_primary_index_collision_rolls_back_the_entire_batch() {
+    block_on(async {
+        let left = Engine::with_timestamp_provider(
+            InMemoryKernel::new(),
+            AutomergeRowCodec::new(),
+            || uuid::Timestamp::from_unix(uuid::NoContext, 1_700_000_000, 0),
+        );
+        let right = Engine::with_timestamp_provider(
+            InMemoryKernel::new(),
+            AutomergeRowCodec::new(),
+            || uuid::Timestamp::from_unix(uuid::NoContext, 1_800_000_000, 0),
+        );
+        left.translate_and_execute(
+            "CREATE TABLE items (a UUID, b INTEGER, PRIMARY KEY (a, b)); INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000001' AS UUID), 1)", &SqlTranslator,
+        ).await.expect("composite source");
+        right
+            .translate_and_execute(
+                "CREATE TABLE other (id UUID PRIMARY KEY); CREATE INDEX pk_items ON other (id)",
+                &SqlTranslator,
+            )
+            .await
+            .expect("newer conflicting index");
+        let before = sync::export_sync_state_for(&right)
+            .await
+            .expect("before state");
+        let result = sync::apply_sync_state_batch_for(
+            &right,
+            sync::export_sync_state_for(&left)
+                .await
+                .expect("source state"),
+        )
+        .await;
+        assert!(result.is_err(), "must not commit an unenforced primary key");
+        assert_eq!(
+            sync::export_sync_state_for(&right)
+                .await
+                .expect("after state"),
+            before
+        );
+        assert!(right.table_schema("items").await.is_err());
+        assert_eq!(
+            right
+                .index_schema("pk_items")
+                .await
+                .expect("original index")
+                .table_name,
+            "other"
+        );
+        let before = sync::export_sync_state_for(&left)
+            .await
+            .expect("existing enforced table");
+        assert!(
+            sync::apply_sync_state_batch_for(
+                &left,
+                sync::export_sync_state_for(&right)
+                    .await
+                    .expect("conflicting newer index")
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sync::export_sync_state_for(&left)
+                .await
+                .expect("original table preserved"),
+            before
+        );
+        assert!(left.translate_and_execute("INSERT INTO items VALUES (CAST('00000000-0000-0000-0000-000000000001' AS UUID), 1)", &SqlTranslator).await.is_err());
+    });
+}
+
+#[test]
+fn only_the_last_matching_primary_key_index_is_protected() {
+    block_on(async {
+        let database = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        database.translate_and_execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY); CREATE UNIQUE INDEX extra_id ON items (id); DROP INDEX extra_id",
+            &SqlTranslator,
+        ).await.expect("redundant unique index can be dropped");
+        database.translate_and_execute(
+            "CREATE UNIQUE INDEX extra_id ON items (id); DROP INDEX pk_items; INSERT INTO items VALUES (1)", &SqlTranslator,
+        ).await.expect("replacement index can keep enforcing the primary key");
+        assert!(
+            database
+                .translate_and_execute("DROP INDEX extra_id", &SqlTranslator)
+                .await
+                .is_err()
+        );
+        assert!(
+            database
+                .translate_and_execute("INSERT INTO items VALUES (1)", &SqlTranslator)
+                .await
+                .is_err()
+        );
+        assert!(
+            database
+                .index_schema("extra_id")
+                .await
+                .expect("last index remains")
+                .unique
+        );
+    });
+}
+
+#[test]
+fn conflict_apis_resolve_user_primary_keys_including_transaction_reads() {
+    block_on(async {
+        for (ddl, inserted, key) in [
+            (
+                "id INTEGER PRIMARY KEY, value TEXT",
+                "42, 'initial'",
+                Row::new(vec![Value::Integer(42)]),
+            ),
+            (
+                "id TEXT CONSTRAINT item_key PRIMARY KEY, value TEXT",
+                "'key', 'initial'",
+                Row::new(vec![Value::from("key")]),
+            ),
+            (
+                "a INTEGER, b TEXT, value TEXT, CONSTRAINT item_key PRIMARY KEY (b, a)",
+                "42, 'key', 'initial'",
+                Row::new(vec![Value::Integer(42), Value::from("key")]),
+            ),
+            (
+                "a UUID, b INTEGER, value TEXT, CONSTRAINT item_key PRIMARY KEY (b, a)",
+                "CAST('00000000-0000-0000-0000-000000000001' AS UUID), 42, 'initial'",
+                Row::new(vec![
+                    Value::Uuid(uuid::Uuid::from_u128(1)),
+                    Value::Integer(42),
+                ]),
+            ),
+            (
+                "id UUID PRIMARY KEY, value TEXT",
+                "CAST('018f0f8e-7b6d-7c4a-8f12-000000000001' AS UUID), 'initial'",
+                Row::new(vec![Value::Uuid(
+                    uuid::Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-000000000001")
+                        .expect("UUID key"),
+                )]),
+            ),
+        ] {
+            let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+            let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+            left.translate_and_execute(
+                &format!("CREATE TABLE items ({ddl}); INSERT INTO items VALUES ({inserted})"),
+                &SqlTranslator,
+            )
+            .await
+            .expect("source row");
+            sync::apply_sync_state_batch_for(
+                &right,
+                sync::export_sync_state_for(&left)
+                    .await
+                    .expect("bootstrap state"),
+            )
+            .await
+            .expect("bootstrap");
+            left.translate_and_execute("UPDATE items SET value = 'left'", &SqlTranslator)
+                .await
+                .expect("left edit");
+            right
+                .translate_and_execute("UPDATE items SET value = 'right'", &SqlTranslator)
+                .await
+                .expect("right edit");
+            sync::apply_sync_state_batch_for(
+                &left,
+                sync::export_sync_state_for(&right)
+                    .await
+                    .expect("concurrent state"),
+            )
+            .await
+            .expect("merge");
+            assert_eq!(
+                left.row_conflicts("items", &key)
+                    .await
+                    .expect("user key conflicts"),
+                vec!["value"]
+            );
+            assert_eq!(
+                left.row_conflicts_batch("items", &[key.clone(), key.clone()])
+                    .await
+                    .expect("batch"),
+                vec![vec!["value"], vec!["value"]]
+            );
+            let values = left
+                .row_conflict_values("items", &key)
+                .await
+                .expect("conflict values");
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].0, "value");
+            assert_eq!(values[0].1.len(), 2);
+            assert!(values[0].1.contains(&Value::from("left")));
+            assert!(values[0].1.contains(&Value::from("right")));
+            let transaction = left.transaction().await.expect("read transaction");
+            assert_eq!(
+                transaction
+                    .row_conflicts("items", &key)
+                    .await
+                    .expect("transaction conflicts"),
+                vec!["value"]
+            );
+            assert_eq!(
+                transaction
+                    .row_conflict_values("items", &key)
+                    .await
+                    .expect("transaction values"),
+                values
+            );
+            transaction.rollback().await.expect("rollback");
+            let mut missing = key.clone();
+            let last = missing.values.last_mut().expect("nonempty primary key");
+            *last = match last {
+                Value::Integer(_) => Value::Integer(999),
+                Value::Text(_) => Value::from("missing"),
+                Value::Uuid(_) => Value::Uuid(uuid::Uuid::now_v7()),
+                _ => unreachable!("fixture primary key types"),
+            };
+            assert!(
+                left.row_conflicts("items", &missing)
+                    .await
+                    .expect("missing key")
+                    .is_empty()
+            );
+            assert_eq!(
+                left.row_conflicts_batch("items", &[missing.clone(), key.clone()])
+                    .await
+                    .expect("mixed batch"),
+                vec![Vec::<String>::new(), vec![String::from("value")]]
+            );
+            assert!(
+                left.row_conflict_values("items", &missing)
+                    .await
+                    .expect("missing values")
+                    .is_empty()
+            );
+            assert!(
+                left.resolve_row(
+                    "items",
+                    &missing,
+                    vec![("value".into(), Value::from("resolved"))]
+                )
+                .await
+                .is_err()
+            );
+            let mut wrong_type = key.clone();
+            wrong_type.values[0] = Value::Bool(true);
+            let null_key = Row::new(vec![Value::Null; key.values.len()]);
+            for invalid in [Row::new(vec![]), null_key, wrong_type] {
+                assert!(left.row_conflicts("items", &invalid).await.is_err());
+                assert!(
+                    left.row_conflicts_batch("items", core::slice::from_ref(&invalid))
+                        .await
+                        .is_err()
+                );
+                assert!(left.row_conflict_values("items", &invalid).await.is_err());
+                assert!(
+                    left.resolve_row(
+                        "items",
+                        &invalid,
+                        vec![("value".into(), Value::from("resolved"))]
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+            left.resolve_row(
+                "items",
+                &key,
+                vec![("value".into(), Value::from("resolved"))],
+            )
+            .await
+            .expect("resolve by user key");
+            assert!(
+                left.row_conflicts("items", &key)
+                    .await
+                    .expect("resolved")
+                    .is_empty()
+            );
+            let rows = left
+                .translate_and_execute("SELECT value FROM items", &SqlTranslator)
+                .await
+                .expect("resolved row");
+            assert_eq!(rows[0].rows, vec![Row::new(vec![Value::from("resolved")])]);
+        }
+    });
+}

@@ -1225,7 +1225,7 @@ fn invalid_complete_catalog_definition_is_rejected_atomically() {
         assert!(
             error
                 .to_string()
-                .contains("table people has no UUID primary key"),
+                .contains("table people has no primary key"),
             "{error}"
         );
         assert!(
@@ -1313,14 +1313,10 @@ fn catalog_validation_preserves_field_ownership_and_rejects_inactive_index_colum
             (1, Value::from("orphan"), "table people has no fields"),
             (
                 3,
-                Value::from(ValueType::Text),
-                "table people has no UUID primary key",
+                Value::from(ValueType::Null),
+                "table people has a null-type primary key",
             ),
-            (
-                6,
-                Value::Bool(false),
-                "table people has no UUID primary key",
-            ),
+            (6, Value::Bool(false), "table people has no primary key"),
         ] {
             let mut invalid = units.clone();
             let primary = invalid.iter_mut().find(|unit| {

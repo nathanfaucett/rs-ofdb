@@ -10,7 +10,7 @@ fn id(value: u64) -> Uuid {
 }
 
 #[test]
-fn row_conflicts_batch_preserves_current_malformed_catalog_and_key_error_order() {
+fn row_conflicts_batch_validates_catalog_before_schema_dependent_keys() {
     block_on(async {
         let kernel = InMemoryKernel::new();
         let database = Engine::new(kernel.clone(), AutomergeRowCodec::new());
@@ -31,11 +31,10 @@ fn row_conflicts_batch_preserves_current_malformed_catalog_and_key_error_order()
                 .expect("valid earlier snapshot"),
             vec![Vec::<String>::new(), vec![]]
         );
-        let invalid_message = database
-            .row_conflicts("items", &invalid)
-            .await
-            .expect_err("invalid single key")
-            .to_string();
+        assert!(matches!(
+            database.row_conflicts("items", &invalid).await,
+            Err(EngineError::InvalidQuery("Primary key must be a UUID"))
+        ));
         let codec = AutomergeRowCodec::new();
         let mut transaction = kernel.transaction().await.expect("malformed field fixture");
         codec
@@ -65,8 +64,8 @@ fn row_conflicts_batch_preserves_current_malformed_catalog_and_key_error_order()
         let batch = database
             .row_conflicts_batch("items", &[invalid.clone(), valid.clone(), other_invalid])
             .await
-            .expect_err("first invalid key precedes field validation and later keys");
-        assert_eq!(batch.to_string(), invalid_message);
+            .expect_err("schema validation precedes schema-dependent key validation");
+        assert_eq!(batch.to_string(), single.to_string());
 
         let mut transaction = kernel.transaction().await.expect("malformed table fixture");
         codec

@@ -660,7 +660,13 @@ where
         };
     };
     let table = table_schema(transaction, codec, &index.table_name).await?;
-    if uuid_primary_key(&table).is_none() && is_primary_key_index(&table, &index) {
+    if uuid_primary_key(&table).is_none()
+        && is_primary_key_index(&table, &index)
+        && !crate::index::indexes_for_table(transaction, codec, &table.name)
+            .await?
+            .iter()
+            .any(|(_, other)| other.name != index.name && is_primary_key_index(&table, other))
+    {
         return Err(EngineError::InvalidQuery(
             "Cannot drop the primary key index",
         ));
@@ -1441,17 +1447,19 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let Some(first) = keys.first() else {
+    if keys.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     let (table_id, table_rows) =
         lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
-    key_row_id(first)?;
     let (schema, table_fields) =
         table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
     let mut results = Vec::with_capacity(keys.len());
     for key in keys {
-        let row = key_row_id(key)?;
+        let Some(row) = key_row_id(transaction, reconciler, &schema, key).await? else {
+            results.push(Vec::new());
+            continue;
+        };
         let conflicts = reconciler
             .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
             .await?;
@@ -1484,8 +1492,10 @@ where
     R: RowCodec<T>,
 {
     let table = lookup_table_name(transaction, reconciler, table_name).await?;
-    let row = key_row_id(key)?;
     let schema = table_schema(transaction, reconciler, table_name).await?;
+    let Some(row) = key_row_id(transaction, reconciler, &schema, key).await? else {
+        return Ok(Vec::new());
+    };
     reconciler
         .conflict_values(transaction, &table, &row)
         .await?
@@ -1523,9 +1533,11 @@ where
     let (table_id, table_rows) =
         lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
     let table = String::from(table_name);
-    let row_id = key_row_id(key)?;
     let (schema, table_fields) =
         table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
+    let row_id = key_row_id(transaction, reconciler, &schema, key)
+        .await?
+        .ok_or(EngineError::InvalidQuery("Row not found"))?;
     let conflicts = reconciler
         .conflicted_columns(transaction, &table, &row_id, &table_rows, &table_fields)
         .await?;
@@ -2390,7 +2402,7 @@ fn materialize_insert(
     Ok(row)
 }
 
-fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) -> bool {
+pub(crate) fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) -> bool {
     let primary_columns: Vec<_> = schema
         .columns
         .iter()
@@ -2428,11 +2440,57 @@ pub(crate) fn validate_row(schema: &TableSchema, row: &Row) -> EngineResult<()> 
     Ok(())
 }
 
-fn key_row_id(key: &Row) -> EngineResult<Uuid> {
-    match key.values.as_slice() {
-        [Value::Uuid(id)] => Ok(*id),
-        _ => Err(EngineError::InvalidQuery("Primary key must be a UUID")),
+async fn key_row_id<T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    schema: &TableSchema,
+    key: &Row,
+) -> EngineResult<Option<Uuid>> {
+    if uuid_primary_key(schema).is_some() {
+        return match key.values.as_slice() {
+            [Value::Uuid(id)] => Ok(Some(*id)),
+            _ => Err(EngineError::InvalidQuery("Primary key must be a UUID")),
+        };
     }
+    let primary_columns: Vec<_> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.primary_key)
+        .collect();
+    if key.values.len() != primary_columns.len() {
+        return Err(EngineError::InvalidQuery(
+            "Primary key has the wrong column count",
+        ));
+    }
+    for ((_, column), value) in primary_columns.iter().zip(&key.values) {
+        if matches!(value, Value::Null) || value.r#type() != column.r#type {
+            return Err(EngineError::InvalidQuery("Primary key has the wrong type"));
+        }
+    }
+    let indexes = crate::index::indexes_for_table(transaction, codec, &schema.name).await?;
+    let (_, index) = indexes
+        .iter()
+        .find(|(_, index)| is_primary_key_index(schema, index))
+        .ok_or(EngineError::InvalidQuery(
+            "Table has no unique primary key index",
+        ))?;
+    let values = index
+        .column_indices
+        .iter()
+        .map(|column| {
+            let position = primary_columns
+                .iter()
+                .position(|(position, _)| *position == *column as usize)
+                .expect("primary key index contains only primary key columns");
+            key.values[position].clone()
+        })
+        .collect();
+    Ok(
+        crate::index::lookup(transaction, codec, &index.name, &Row::new(values))
+            .await?
+            .map(|(id, _)| id),
+    )
 }
 
 fn projection(

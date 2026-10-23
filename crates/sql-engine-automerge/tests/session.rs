@@ -831,3 +831,54 @@ fn batches_state_units_without_checkpoint_or_envelope_messages() {
         }));
     });
 }
+
+#[test]
+fn flexible_primary_keys_bootstrap_and_incremental_sync() {
+    block_on(async {
+        let left = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let right = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        left.translate_and_execute(
+            "CREATE TABLE numbers (id INTEGER PRIMARY KEY, value TEXT); \
+             CREATE TABLE names (id TEXT PRIMARY KEY, value TEXT); \
+             CREATE TABLE pairs (a INTEGER, b TEXT, value TEXT, PRIMARY KEY (a, b)); \
+             INSERT INTO numbers VALUES (1, 'before'); \
+             INSERT INTO names VALUES ('one', 'before'); \
+             INSERT INTO pairs VALUES (1, 'one', 'before')",
+            &SqlTranslator,
+        )
+        .await
+        .expect("flexible key source");
+        for value in ["before", "after"] {
+            if value == "after" {
+                left.translate_and_execute(
+                    "UPDATE numbers SET value = 'after'; UPDATE names SET value = 'after'; UPDATE pairs SET value = 'after'",
+                    &SqlTranslator,
+                ).await.expect("incremental edits");
+            }
+            let messages = sync(&left, &right, &SessionConfig::default()).await;
+            if value == "after" {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|message| matches!(message, SyncMessage::Changes { .. }))
+                );
+            }
+            for table in ["numbers", "names", "pairs"] {
+                let result = right
+                    .translate_and_execute(&format!("SELECT value FROM {table}"), &SqlTranslator)
+                    .await
+                    .expect("replicated flexible key row");
+                assert_eq!(result[0].rows, vec![Row::new(vec![Value::from(value)])]);
+            }
+        }
+        assert!(
+            right
+                .translate_and_execute(
+                    "INSERT INTO pairs VALUES (1, 'one', 'duplicate')",
+                    &SqlTranslator
+                )
+                .await
+                .is_err()
+        );
+    });
+}
