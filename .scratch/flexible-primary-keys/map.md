@@ -17,6 +17,8 @@ The work is broken down into the following tickets:
 ## Status
 
 - [x] Specification defined
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Implementation started
+- [x] Implementation complete
 - [ ] Verification complete
+
+Tickets 01–03 are complete. Ticket 03 verified that ticket 01 already removed the legacy validator and obsolete schema assertions; the existing schema tests pass with default features and without default features. Feature-wide verification remains pending; focused ticket checks do not complete that phase.
