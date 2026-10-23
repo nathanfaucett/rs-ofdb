@@ -158,3 +158,67 @@ fn replicated_table_index_storage_collisions_are_rejected_without_data_loss() {
         );
     });
 }
+
+#[test]
+fn rejected_catalog_writes_preserve_composite_unique_rows_across_sync() {
+    run(async {
+        let cluster = automerge_in_memory_cluster(2);
+        let config = SessionConfig::default();
+        cluster
+            .exec(
+                0,
+                "CREATE TABLE protected (id UUID PRIMARY KEY, tenant TEXT, code INTEGER)",
+            )
+            .await;
+        cluster
+            .exec(
+                0,
+                "CREATE UNIQUE INDEX protected_key ON protected (tenant, code)",
+            )
+            .await;
+        cluster.exec(0, "INSERT INTO protected VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada', 7)").await;
+        for node in [0, 1] {
+            if node == 1 {
+                cluster
+                    .sync(0, 1, &config)
+                    .await
+                    .expect("sync internal catalog writes");
+            }
+            for catalog in ["tables", "table_fields", "indices", "index_fields"] {
+                let error = cluster
+                    .try_exec(node, &format!("DELETE FROM {catalog}"))
+                    .await
+                    .expect_err("catalog deletion is forbidden");
+                assert!(matches!(
+                    error,
+                    ofdb_sql::EngineError::InvalidQuery("Catalog tables are read-only")
+                ));
+                assert!(
+                    !cluster
+                        .exec(node, &format!("SELECT * FROM {catalog}"))
+                        .await
+                        .is_empty()
+                );
+            }
+            assert_eq!(
+                cluster
+                    .exec(
+                        node,
+                        "SELECT tenant, code FROM protected WHERE tenant = 'Ada' AND code = 7"
+                    )
+                    .await,
+                vec![ofdb_sql::Row::new(vec![
+                    ofdb_sql::Value::from("Ada"),
+                    ofdb_sql::Value::Integer(7)
+                ])],
+            );
+            assert!(cluster.try_exec(node, "INSERT INTO protected VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Ada', 7)").await.is_err(), "composite uniqueness survives rejected mutations and sync");
+        }
+        cluster
+            .sync(1, 0, &config)
+            .await
+            .expect("repair after rejected writes");
+        cluster.assert_converged("SELECT * FROM protected").await;
+        cluster.assert_state_converged().await;
+    });
+}

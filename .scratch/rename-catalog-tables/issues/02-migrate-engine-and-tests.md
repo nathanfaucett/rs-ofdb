@@ -35,3 +35,25 @@ Passed focused commands from this worktree (use `cargo ... --manifest-path /home
 - Rustfmt on changed engine code and new test blocks; `git diff --check`.
 
 Default-stack runs overflowed in SQL tests, including existing explicit-transaction/table-recreation tests; focused passing runs use a 16 MiB test-thread stack. An initial combined validation invocation hit its 200-second limit during compilation; its remaining checks were subsequently run separately and passed. Full feature powerset and `just crap` are intentionally deferred to the coordinator as requested. Existing databases require fresh storage/manual migration per spec.
+
+### Verified review fixes (rename-catalog-tables-review)
+
+- Review base: integration `444abfc`; all changes made in the separate review worktree, never the integration worktree. Agreed seam remains public SQL, including the facade's typed statement execution for `Query::Insert` (SQL text translates to `InsertValues`).
+- Complexity: low, two shared execution checks; risk: high for metadata corruption, moderate for runtime projection errors; priority: prevent catalog tombstones and query-triggered panics. No new dependencies, abstractions, compatibility paths, or changes to internal DDL/sync writes.
+- Centralized user mutation rejection in `execute_query` for `Insert`, `InsertValues`, `Update`, and `Delete` targeting any of `tables`, `table_fields`, `indices`, or `index_fields`. `SELECT` and internal catalog maintenance remain permitted.
+- TDD red: `catalogs_reject_user_mutations` observed `DELETE FROM tables` succeed with an empty result instead of an error. Green: all four mutations on all four populated catalogs return the explicit read-only error; catalog contents remain unchanged, the composite-unique-indexed user row remains visible, and duplicates remain rejected.
+- Added a public SQL sync regression: rejected catalog deletions on the source and bootstrapped replica preserve catalog visibility, composite indexed lookup, duplicate rejection, and state convergence through reverse repair. This also exercises internal DDL and incoming sync catalog writes.
+- TDD red: after correcting the fixture to use the translator's required computed-column alias, `SELECT default || '!' AS decorated FROM table_fields` on an integer default panicked at the validated-source `unreachable!`. Green: runtime operands now produce `EngineError::InvalidQuery` (facade category `Rejected`) rather than panic. Original heterogeneous default projection, text-default concatenation, and null propagation remain correct.
+- Considered the existing `ValueType` variants: none represents heterogeneous scalar values; `Json`, `Blob`, or `Null` would also misdescribe defaults and reject valid text-default concatenation at schema validation. Retained the nominal catalog descriptor instead of adding a new type or coercing projected values; the runtime concat check no longer trusts it as proof of a text value.
+
+Validation from the review worktree (external invocations used its Cargo manifest):
+
+- `RUST_MIN_STACK=16777216 cargo test -p ofdb-sql --features sql,redb,in-memory,sync --test local_sql --test cluster_sync` — passed, 19 local + 11 cluster tests.
+- `cargo check -p ofdb-sql-engine --no-default-features` — passed.
+- `cargo clippy -p ofdb-sql-engine --no-default-features --no-deps -- -D warnings` — passed.
+- `RUST_MIN_STACK=16777216 cargo clippy -p ofdb-sql-engine -p ofdb-sql --features ofdb-sql/sql,ofdb-sql/redb,ofdb-sql/in-memory,ofdb-sql/sync --all-targets --no-deps -- -D warnings` — passed; intentionally scoped around known unrelated global B-tree lints.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- Final `RUST_MIN_STACK=16777216 cargo hack test --feature-powerset --all-targets` — blocked by the known unrelated `ofdb-btree` sharded-without-in-memory test compilation failures (missing gated imports/types and `ToString` in `sharded_btree.rs`). No B-tree edits.
+- Final `just crap` — timed out at 600 seconds while compiling instrumented workspace dependencies; the recipe uses `RUST_MIN_STACK=67108864`. No completed complexity score is claimed.
+
+- Before committing, ran `git merge rename-catalog-tables` in the review worktree: already up to date at `444abfc`. Rechecked formatting/diff whitespace and confirmed the integration worktree remained clean.

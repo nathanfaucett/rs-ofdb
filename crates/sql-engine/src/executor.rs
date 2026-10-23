@@ -132,6 +132,16 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
+    let target = match &query {
+        Query::Insert(insert) => Some(&insert.table),
+        Query::InsertValues(insert) => Some(&insert.table),
+        Query::Update(update) => Some(&update.from.table),
+        Query::Delete(delete) => Some(&delete.from.table),
+        Query::Select(_) => None,
+    };
+    if target.is_some_and(|table| catalog_table_for_storage(table).is_some()) {
+        return Err(EngineError::InvalidQuery("Catalog tables are read-only"));
+    }
     match query {
         Query::Insert(insert) => {
             execution_stage(|| {
@@ -1850,12 +1860,12 @@ where
         .skip(start)
         .take(end.saturating_sub(start))
         .map(|row| {
-            Row::new(
-                projection
-                    .iter()
-                    .enumerate()
-                    .map(|(position, (index, _))| {
-                        let value = row.values[*index].clone();
+            projection
+                .iter()
+                .enumerate()
+                .map(|(position, (index, _))| {
+                    let value = row.values[*index].clone();
+                    Ok(
                         match select.text_concats.get(position).and_then(Option::as_ref) {
                             Some(concat) => match value {
                                 Value::Text(mut text) => {
@@ -1863,15 +1873,20 @@ where
                                     Value::Text(text)
                                 }
                                 Value::Null => Value::Null,
-                                _ => unreachable!("text concatenation source was validated"),
+                                _ => {
+                                    return Err(EngineError::InvalidQuery(
+                                        "Text concatenation requires text operands",
+                                    ));
+                                }
                             },
                             None => value,
-                        }
-                    })
-                    .collect(),
-            )
+                        },
+                    )
+                })
+                .collect::<EngineResult<Vec<_>>>()
+                .map(Row::new)
         })
-        .collect();
+        .collect::<EngineResult<Vec<_>>>()?;
 
     Ok(QueryResult::new_with_columns(
         rows,

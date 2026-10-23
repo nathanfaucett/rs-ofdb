@@ -667,3 +667,130 @@ fn former_engine_catalog_names_are_available_for_user_indices() {
         }
     });
 }
+
+#[test]
+fn catalogs_reject_user_mutations() {
+    futures::executor::block_on(async {
+        use ofdb_sql::{Database, SqlTranslator};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        client.translate_and_execute(
+            "CREATE TABLE protected (id UUID PRIMARY KEY, tenant TEXT, code INTEGER); CREATE UNIQUE INDEX protected_key ON protected (tenant, code); INSERT INTO protected VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abc' AS UUID), 'Ada', 7)",
+            &SqlTranslator,
+        ).await.expect("create indexed row through internal catalog writes");
+        for (table, column) in [
+            ("tables", "name"),
+            ("table_fields", "name"),
+            ("indices", "name"),
+            ("index_fields", "column"),
+        ] {
+            let select = format!("SELECT * FROM {table}");
+            let before = client
+                .translate_and_execute(&select, &SqlTranslator)
+                .await
+                .expect("read catalog")[0]
+                .rows
+                .clone();
+            assert!(!before.is_empty(), "fixture populates {table}");
+            for statement in [
+                format!("DELETE FROM {table}"),
+                format!("UPDATE {table} SET {column} = 'corrupt'"),
+                format!("INSERT INTO {table} ({column}) VALUES ('corrupt')"),
+            ] {
+                let error = client
+                    .translate_and_execute(&statement, &SqlTranslator)
+                    .await
+                    .expect_err("catalog mutation must be rejected");
+                assert!(
+                    error.to_string().contains("Catalog tables are read-only"),
+                    "{statement}: {error}"
+                );
+            }
+            let error = client
+                .execute(vec![ofdb_sql::Statement::Query(ofdb_sql::Query::Insert(
+                    ofdb_sql::QueryInsert {
+                        table: table.into(),
+                        row: ofdb_sql::Row::from(["corrupt"]),
+                        returning: None,
+                    },
+                ))])
+                .await
+                .expect_err("typed Insert must also be rejected");
+            assert!(
+                error.to_string().contains("Catalog tables are read-only"),
+                "{error}"
+            );
+            let after = client
+                .translate_and_execute(&select, &SqlTranslator)
+                .await
+                .expect("catalog remains readable");
+            assert_eq!(after[0].rows, before, "{table} remains intact");
+        }
+        let rows = client
+            .translate_and_execute(
+                "SELECT tenant, code FROM protected WHERE tenant = 'Ada' AND code = 7",
+                &SqlTranslator,
+            )
+            .await
+            .expect("indexed row remains visible");
+        assert_eq!(
+            rows[0].rows,
+            vec![ofdb_sql::Row::new(vec![
+                ofdb_sql::Value::from("Ada"),
+                ofdb_sql::Value::Integer(7)
+            ])]
+        );
+        assert!(client.translate_and_execute("INSERT INTO protected VALUES (CAST('018f0f8e-7b6d-7c4a-8f12-123456789abd' AS UUID), 'Ada', 7)", &SqlTranslator).await.is_err(), "composite uniqueness remains enforced");
+    });
+}
+
+#[test]
+fn heterogeneous_catalog_defaults_project_and_concat_safely() {
+    futures::executor::block_on(async {
+        use ofdb_sql::{Database, ErrorKind, Row, SqlTranslator, Value};
+
+        let database = Database::in_memory();
+        let client = database.client();
+        client.translate_and_execute(
+            "CREATE TABLE defaults (id UUID PRIMARY KEY, amount INTEGER DEFAULT 7, label TEXT DEFAULT 'hello')",
+            &SqlTranslator,
+        ).await.expect("create heterogeneous defaults");
+        let rows = client
+            .translate_and_execute(
+                "SELECT default FROM table_fields WHERE table = 'defaults' ORDER BY position",
+                &SqlTranslator,
+            )
+            .await
+            .expect("project original default values");
+        assert_eq!(
+            rows[0].rows,
+            vec![
+                Row::new(vec![Value::Null]),
+                Row::new(vec![Value::Integer(7)]),
+                Row::from(["hello"])
+            ]
+        );
+        let error = client.translate_and_execute(
+            "SELECT default || '!' AS decorated FROM table_fields WHERE table = 'defaults' AND name = 'amount'",
+            &SqlTranslator,
+        ).await.expect_err("integer concat returns a query error, not a panic");
+        assert_eq!(error.kind, ErrorKind::Rejected);
+        assert!(
+            error
+                .to_string()
+                .contains("Text concatenation requires text operands"),
+            "{error}"
+        );
+        let rows = client.translate_and_execute(
+            "SELECT default || '!' AS decorated FROM table_fields WHERE table = 'defaults' AND name = 'label'",
+            &SqlTranslator,
+        ).await.expect("text default concatenates");
+        assert_eq!(rows[0].rows, vec![Row::from(["hello!"])]);
+        let rows = client.translate_and_execute(
+            "SELECT default || '!' AS decorated FROM table_fields WHERE table = 'defaults' AND name = 'id'",
+            &SqlTranslator,
+        ).await.expect("null default propagates");
+        assert_eq!(rows[0].rows, vec![Row::new(vec![Value::Null])]);
+    });
+}
