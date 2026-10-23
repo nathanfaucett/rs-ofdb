@@ -696,20 +696,15 @@ where
                             .saturating_add(48);
                         used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
                         let state_budget = max_bytes.saturating_sub(used_bytes);
-                        let state = codec
-                            .export_state(transaction, &table_for_rows, row, state_budget)
+                        if let Some(summary) = codec
+                            .history_summary(transaction, &table_for_rows, row, state_budget)
                             .await?
-                            .unwrap_or_default();
-                        let metadata = codec
-                            .export_metadata(transaction, &table_for_rows, row)
-                            .await?;
-                        if !state.is_empty() || !metadata.is_empty() {
+                        {
                             let key = SyncKey::Row {
                                 table: table_for_rows.clone(),
                                 row,
                             };
-                            let digest = codec.manifest_digest(&state, &metadata)?;
-                            entries.push((key, digest));
+                            entries.push((key, summary.digest));
                         } else {
                             used_bytes = used_bytes.saturating_sub(entry_bytes);
                         }

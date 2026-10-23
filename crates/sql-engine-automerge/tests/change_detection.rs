@@ -111,14 +111,88 @@ fn snapshot_merge_preserves_concurrent_columns_and_rewriting_preserves_history()
         );
         assert_eq!(changes.len(), 4, "layout, insert, and two concurrent edits");
         destination.read_transaction(move |codec, transaction| Box::pin(async move {
+            assert!(codec.export_change(transaction, "people", row_id(), &SyncChangeId(vec![0; 31]), usize::MAX).await.is_err());
+            assert!(codec.export_change(transaction, "people", row_id(), &SyncChangeId(vec![0; 32]), usize::MAX).await?.is_none());
             for id in inventory {
-                assert!(codec.export_change(transaction, "people", row_id(), &id, usize::MAX).await?.is_none(), "merge_state rewrites physical records to one snapshot, not lost history");
+                assert!(codec.export_change(transaction, "people", row_id(), &id, 0).await.is_err());
+                let payload = codec.export_change(transaction, "people", row_id(), &id, usize::MAX).await?.expect("snapshot-contained native change");
+                                let change = automerge::Change::from_bytes(payload).expect("one native change");
+                                assert_eq!(change.hash().0.as_slice(), id.0);
             }
-            let codec_digest = <AutomergeRowCodec as SyncRowCodec<engine::InMemoryKernelTransaction>>::manifest_digest(codec, &snapshot, &metadata)?;
+            let summary = codec.history_summary(transaction, "people", row_id(), usize::MAX).await?.expect("document summary");
+                        assert_eq!(summary.metadata, metadata);
+                        assert_eq!(summary.changes.len(), 4);
+                        let codec_digest = <AutomergeRowCodec as SyncRowCodec<engine::InMemoryKernelTransaction>>::manifest_digest(codec, &snapshot, &metadata)?;
+                        assert_eq!(summary.digest, codec_digest);
+                        assert!(codec.history_summary(transaction, "people", row_id(), 1).await.is_err());
             let rewritten = document.save_nocompress();
             assert_eq!(codec_digest, <AutomergeRowCodec as SyncRowCodec<engine::InMemoryKernelTransaction>>::manifest_digest(codec, &rewritten, &metadata)?);
             Ok(())
         })).await.expect("snapshot-only history");
+    });
+}
+
+#[test]
+fn history_summary_keeps_history_and_metadata_in_one_transaction_snapshot() {
+    block_on(async {
+        let source = Arc::new(database().await);
+        let writer = Arc::clone(&source);
+        let original = source
+            .read_transaction(move |codec, transaction| {
+                Box::pin(async move {
+                    let before = codec
+                        .history_summary(transaction, "people", row_id(), usize::MAX)
+                        .await?
+                        .expect("summary");
+                    writer
+                        .translate_and_execute("DELETE FROM people;", &SqlTranslator)
+                        .await?;
+                    let after = codec
+                        .history_summary(transaction, "people", row_id(), usize::MAX)
+                        .await?
+                        .expect("same snapshot");
+                    assert_eq!(
+                        before, after,
+                        "concurrent commit cannot mix new metadata with old history"
+                    );
+                    assert!(
+                        codec
+                            .history_summary(
+                                transaction,
+                                "people",
+                                Uuid::from_bytes([1; 16]),
+                                usize::MAX
+                            )
+                            .await?
+                            .is_none()
+                    );
+                    Ok(before)
+                })
+            })
+            .await
+            .expect("transaction snapshot");
+        source
+            .read_transaction(move |codec, transaction| {
+                Box::pin(async move {
+                    let committed = codec
+                        .history_summary(transaction, "people", row_id(), usize::MAX)
+                        .await?
+                        .expect("committed summary");
+                    assert_eq!(
+                        original.changes, committed.changes,
+                        "delete changes metadata only"
+                    );
+                    assert_ne!(original.digest, committed.digest);
+                    assert!(
+                        postcard::from_bytes::<RowMetadata>(&committed.metadata)
+                            .expect("metadata")
+                            .deleted
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .expect("new snapshot observes deletion");
     });
 }
 
@@ -310,19 +384,99 @@ fn multi_change_payload_uses_actual_change_ids_and_dependency_order() {
                 .await
                 .expect("rejected batch rolled back")
         );
+        let mut orphan = AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut orphan, automerge::ROOT, "parent", 1)
+            .expect("parent");
+        orphan.commit();
+        automerge::transaction::Transactable::put(&mut orphan, automerge::ROOT, "child", 2)
+            .expect("child");
+        orphan.commit();
+        let orphan_changes = orphan.get_changes(&[]);
+        let mut incomplete_snapshot = snapshot.clone();
+        incomplete_snapshot.extend_from_slice(orphan_changes[1].raw_bytes());
+        let invalid_snapshot = sync::SyncStateUnit::new(
+            sync::SyncKey::Row {
+                table: "people".into(),
+                row: row_id(),
+            },
+            incomplete_snapshot,
+            Vec::new(),
+        );
+        assert!(
+            sync::apply_sync_state_for(&destination, invalid_snapshot)
+                .await
+                .is_err(),
+            "snapshot-contained unresolved changes must not be accepted"
+        );
+        assert_eq!(
+            before,
+            sync::sync_manifest_for(&destination)
+                .await
+                .expect("snapshot rejection rolls back")
+        );
+        let mut incomplete = missing[0].raw_bytes().to_vec();
+        incomplete.extend_from_slice(orphan_changes[1].raw_bytes());
+        let invalid = sync::SyncIncrementalChange {
+            table: "people".into(),
+            row: row_id(),
+            id: SyncChangeId(missing[0].hash().0.to_vec()),
+            payload: incomplete,
+        };
+        assert!(
+            sync::apply_incremental_changes_for(&destination, &[invalid])
+                .await
+                .is_err(),
+            "matching one hash must not conceal another unresolved change"
+        );
+        assert_eq!(
+            before,
+            sync::sync_manifest_for(&destination)
+                .await
+                .expect("atomic rejection")
+        );
         let payload = missing
             .iter()
             .flat_map(|change| change.raw_bytes().iter().copied())
             .collect();
+        let payload: Vec<u8> = payload;
+        let mut truncated = payload.clone();
+        truncated.push(0xff);
+        for (id, bytes) in [
+            (inventory.last().expect("last").clone(), truncated),
+            (baseline[0].clone(), payload.clone()),
+            (SyncChangeId(vec![0; 31]), payload.clone()),
+        ] {
+            let invalid = sync::SyncIncrementalChange {
+                table: "people".into(),
+                row: row_id(),
+                id,
+                payload: bytes,
+            };
+            assert!(
+                sync::apply_incremental_changes_for(&destination, &[invalid])
+                    .await
+                    .is_err(),
+                "reject malformed bytes and forged IDs atomically"
+            );
+            assert_eq!(
+                before,
+                sync::sync_manifest_for(&destination)
+                    .await
+                    .expect("unchanged")
+            );
+        }
         let bundled = sync::SyncIncrementalChange {
             table: "people".into(),
             row: row_id(),
             id: inventory.last().expect("last change").clone(),
             payload,
         };
-        sync::apply_incremental_changes_for(&destination, &[bundled])
+        sync::apply_incremental_changes_for(&destination, std::slice::from_ref(&bundled))
             .await
             .expect("multi-change payload");
+        sync::apply_incremental_changes_for(&destination, &[bundled])
+            .await
+            .expect("known native history is an idempotent no-op");
         assert_eq!(
             sync::sync_manifest_for(&source).await.expect("source"),
             sync::sync_manifest_for(&destination)
@@ -347,8 +501,8 @@ fn multi_change_payload_uses_actual_change_ids_and_dependency_order() {
                                 usize::MAX
                             )
                             .await?
-                            .is_none(),
-                        "first bundled change has no separately keyed record"
+                            .is_some(),
+                        "native history exports the first bundled change independently"
                     );
                     assert!(
                         codec
@@ -375,6 +529,7 @@ struct Counts {
     snapshots: AtomicUsize,
     inventories: AtomicUsize,
     digest_loads: AtomicUsize,
+    summaries: AtomicUsize,
 }
 
 struct CountingCodec {
@@ -429,6 +584,18 @@ impl<T: KernelTransaction> RowCodec<T> for CountingCodec {
 }
 
 impl<T: KernelTransaction> SyncRowCodec<T> for CountingCodec {
+    async fn history_summary(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: Uuid,
+        max_bytes: usize,
+    ) -> EngineResult<Option<engine::DocumentSummary>> {
+        self.counts.summaries.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .history_summary(transaction, table, row, max_bytes)
+            .await
+    }
     fn row_ids<'a>(
         &'a self,
         transaction: &'a T,
@@ -550,28 +717,49 @@ fn established_peer_one_row_edit_still_discovers_every_document() {
         }
         reconcile(&left, &right).await;
         left.translate_and_execute("UPDATE people SET name = 'Grace' WHERE id = CAST('018f0f8e-7b6d-7c4a-8f12-000000000001' AS UUID);", &SqlTranslator).await.expect("one row edit");
+        counts.summaries.store(0, Ordering::Relaxed);
         counts.snapshots.store(0, Ordering::Relaxed);
         counts.inventories.store(0, Ordering::Relaxed);
         counts.digest_loads.store(0, Ordering::Relaxed);
         let frames = reconcile(&left, &right).await;
+        let summaries = counts.summaries.load(Ordering::Relaxed);
         let snapshots = counts.snapshots.load(Ordering::Relaxed);
         let inventories = counts.inventories.load(Ordering::Relaxed);
         let digest_loads = counts.digest_loads.load(Ordering::Relaxed);
         eprintln!(
-            "baseline (both peers): snapshots={snapshots}, history_enumerations={inventories}, digest_loads={digest_loads}, reconstruction_lower_bound={}",
-            snapshots + inventories + digest_loads
+            "summary discovery (both peers): summaries={summaries}, snapshots={snapshots}, history_enumerations={inventories}, digest_loads={digest_loads}, reconstruction_lower_bound={}",
+            summaries + snapshots + inventories + digest_loads
         );
         assert_eq!(
             frames,
             (0, 1),
             "incremental wire transfer does not imply selective discovery"
         );
-        assert!(snapshots >= 16, "both peers export all eight user rows");
-        assert!(digest_loads >= 16);
+        assert!(summaries >= 16, "discovery remains broad until ticket04");
+        assert!(
+            snapshots < 49,
+            "manifest discovery removes baseline snapshot exports"
+        );
+        assert!(
+            digest_loads < 48,
+            "manifest discovery removes baseline digest reloads"
+        );
+        counts.snapshots.store(0, Ordering::Relaxed);
+        counts.digest_loads.store(0, Ordering::Relaxed);
         assert!(inventories > 0);
         assert_eq!(
             sync::sync_manifest_for(&left).await.expect("left"),
             sync::sync_manifest_for(&right).await.expect("right")
+        );
+        assert_eq!(
+            counts.snapshots.load(Ordering::Relaxed),
+            0,
+            "manifests use direct summaries, not exported snapshots"
+        );
+        assert_eq!(
+            counts.digest_loads.load(Ordering::Relaxed),
+            0,
+            "manifests never reload saved snapshots"
         );
     });
 }

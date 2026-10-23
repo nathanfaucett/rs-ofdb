@@ -2,18 +2,13 @@ use alloc::{string::String, vec::Vec};
 
 use engine::Uuid;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct SyncChangeId(pub Vec<u8>);
+pub use engine::{DocumentChangeId as SyncChangeId, DocumentDigest as StateDigest};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum SyncKey {
     Row { table: String, row: Uuid },
 }
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct StateDigest(pub [u8; 32]);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncStateUnit {
@@ -39,12 +34,7 @@ impl SyncStateUnit {
     }
 
     pub fn digest_parts(state: &[u8], metadata: &[u8]) -> StateDigest {
-        let mut hasher = Sha256::new();
-        hasher.update((state.len() as u64).to_le_bytes());
-        hasher.update(state);
-        hasher.update((metadata.len() as u64).to_le_bytes());
-        hasher.update(metadata);
-        StateDigest(hasher.finalize().into())
+        StateDigest::from_parts(state, metadata)
     }
 }
 

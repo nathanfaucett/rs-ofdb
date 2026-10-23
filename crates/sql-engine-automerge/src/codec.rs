@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, string::String, vec::Vec};
+use std::{borrow::Cow, string::String, vec::Vec};
 
 use core::ops::Bound;
 
@@ -14,14 +14,12 @@ use btree_automerge::{
 use serde::{Deserialize, Serialize};
 
 use engine::{
-    BytesTable, BytesTableTransaction, ENGINE_TABLE_FIELDS_STORAGE, EngineError, EngineResult,
-    KernelTransaction, RowCatalog, RowCodec, Uuid, catalog_table_for_storage,
+    BytesTable, BytesTableTransaction, DocumentChangeId, DocumentDigest, DocumentSummary,
+    ENGINE_TABLE_FIELDS_STORAGE, EngineError, EngineResult, InspectedHistory, KernelTransaction,
+    RowCatalog, RowCodec, RowReconciler, RowStateView, TableStateView, Uuid,
+    catalog_table_for_storage,
 };
 use futures::{Stream, StreamExt, pin_mut};
-use sync::{
-    InspectedHistory, StateDigest, SyncChangeId, SyncRowCodec, SyncRowView, SyncStateUnit,
-    SyncTableView,
-};
 use value::{Row, Value, ValueType};
 
 const COLUMN_COUNT_BYTES: usize = size_of::<u32>();
@@ -511,6 +509,44 @@ impl AutomergeRowCodec {
         value.extend_from_slice(&column_count.to_be_bytes());
         value.extend_from_slice(&bytes);
         Ok(value)
+    }
+
+    fn native_changes(mut payload: &[u8]) -> EngineResult<Vec<Change>> {
+        let mut changes = Vec::new();
+        while !payload.is_empty() {
+            // Automerge chunks have an eight-byte magic/checksum prefix, a type,
+            // and an unsigned LEB128 body length. The native decoder validates each chunk.
+            let mut end = 9usize;
+            let mut length = 0usize;
+            let mut shift = 0;
+            loop {
+                let byte = *payload
+                    .get(end)
+                    .ok_or_else(|| EngineError::custom("Truncated change header"))?;
+                if shift >= usize::BITS || usize::from(byte & 0x7f) > (usize::MAX >> shift) {
+                    return Err(EngineError::custom("Invalid change length"));
+                }
+                length |= usize::from(byte & 0x7f) << shift;
+                end += 1;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+            }
+            let end = end
+                .checked_add(length)
+                .ok_or_else(|| EngineError::custom("Invalid change length"))?;
+            let chunk = payload
+                .get(..end)
+                .ok_or_else(|| EngineError::custom("Truncated change payload"))?;
+            match AutoCommit::load(chunk) {
+                Ok(_) | Err(automerge::AutomergeError::MissingDeps) => (),
+                Err(error) => return Err(EngineError::custom(error)),
+            }
+            changes.push(Change::try_from(chunk).map_err(EngineError::custom)?);
+            payload = &payload[end..];
+        }
+        Ok(changes)
     }
 
     fn decode_incremental(value: &[u8]) -> EngineResult<(usize, &[u8])> {
@@ -1081,7 +1117,7 @@ where
     }
 }
 
-impl<T> SyncRowCodec<T> for AutomergeRowCodec
+impl<T> RowReconciler<T> for AutomergeRowCodec
 where
     T: KernelTransaction + Send,
 {
@@ -1089,7 +1125,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-    ) -> EngineResult<SyncTableView> {
+    ) -> EngineResult<TableStateView> {
         let columns = Self::columns(transaction, table, 0, None).await?;
         if columns.is_empty() {
             return Err(EngineError::Unsupported(
@@ -1114,14 +1150,14 @@ where
                 .into_iter()
                 .map(|(index, values)| (columns[index].id.clone(), values))
                 .collect();
-            rows.push(SyncRowView {
+            rows.push(RowStateView {
                 id,
                 row,
                 deleted,
                 conflicts,
             });
         }
-        Ok(SyncTableView {
+        Ok(TableStateView {
             name: table.into(),
             columns: columns.into_iter().map(|column| column.id).collect(),
             rows,
@@ -1316,14 +1352,14 @@ where
         Ok(Some(state))
     }
 
-    fn manifest_digest(&self, state: &[u8], metadata: &[u8]) -> EngineResult<StateDigest> {
+    fn manifest_digest(&self, state: &[u8], metadata: &[u8]) -> EngineResult<DocumentDigest> {
         let heads = if state.is_empty() {
             [0; 32]
         } else {
             let mut document = AutoCommit::load(state).map_err(EngineError::custom)?;
             hash_heads(document.get_heads())
         };
-        Ok(SyncStateUnit::digest_parts(&heads, metadata))
+        Ok(DocumentDigest::from_parts(&heads, metadata))
     }
 
     async fn merge_state(
@@ -1335,6 +1371,9 @@ where
     ) -> EngineResult<Option<Row>> {
         let deleted = Self::metadata_deleted(transaction, table, &row).await?;
         let mut incoming = AutoCommit::load(state).map_err(EngineError::custom)?;
+        if !incoming.get_missing_deps(&[]).is_empty() {
+            return Err(EngineError::SyncDependencyUnavailable);
+        }
         let id = Self::document_id(&row);
         let mut existing = Self::document(transaction, table, &id).await?;
         let previous_heads = existing
@@ -1438,54 +1477,65 @@ where
             .await
     }
 
+    async fn history_summary(
+        &self,
+        transaction: &T,
+        table: &str,
+        row: Uuid,
+        max_bytes: usize,
+    ) -> EngineResult<Option<DocumentSummary>> {
+        let mut document = Self::document(transaction, table, &Self::document_id(&row)).await?;
+        let metadata = self.export_metadata(transaction, table, row).await?;
+        if document.is_none() && metadata.is_empty() {
+            return Ok(None);
+        }
+        let heads = document
+            .as_mut()
+            .map_or([0; 32], |document| hash_heads(document.get_heads()));
+        let changes: Vec<_> = document
+            .as_mut()
+            .map(|document| {
+                document
+                    .get_changes(&[])
+                    .into_iter()
+                    .map(|change| DocumentChangeId(change.hash().0.to_vec()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if metadata
+            .len()
+            .saturating_add(changes.len().saturating_mul(160))
+            > max_bytes
+        {
+            return Err(EngineError::custom("History summary exceeds byte budget"));
+        }
+        Ok(Some(DocumentSummary {
+            digest: DocumentDigest::from_parts(&heads, &metadata),
+            metadata,
+            changes,
+        }))
+    }
+
     async fn change_inventory(
         &self,
         transaction: &T,
         table: &str,
         row: Uuid,
         max_bytes: usize,
-    ) -> EngineResult<Vec<SyncChangeId>> {
-        let id = Self::document_id(&row);
-        let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
-        let entries = changes.range(DocumentChangeKey::range_for(&id));
-        pin_mut!(entries);
-        let mut inventory = BTreeMap::new();
-        let mut used_bytes = 0usize;
-        while let Some(entry) = entries.next().await {
-            let (key, payload) = entry.map_err(EngineError::custom)?;
-            if key.r#type().is_incremental() {
-                used_bytes = used_bytes
-                    .saturating_add(payload.len())
-                    .saturating_add(key.change_hash().len())
-                    .saturating_add(128);
-                if used_bytes > max_bytes {
-                    return Err(EngineError::custom(format!(
-                        "sync change inventory exceeds the {max_bytes}-byte budget"
-                    )));
-                }
-                inventory.insert(*key.change_hash(), SyncChangeId(key.change_hash().to_vec()));
-            }
-        }
-        let Some(mut document) = Self::document(transaction, table, &id).await? else {
-            return Ok(inventory.into_values().collect());
+    ) -> EngineResult<Vec<DocumentChangeId>> {
+        let Some(mut document) =
+            Self::document(transaction, table, &Self::document_id(&row)).await?
+        else {
+            return Ok(Vec::new());
         };
-        let mut known = Vec::new();
-        for change in document.get_changes(&[]) {
-            let hash = change.hash().0;
-            let id = if let Some(id) = inventory.remove(&hash) {
-                id
-            } else {
-                used_bytes = used_bytes.saturating_add(hash.len()).saturating_add(128);
-                if used_bytes > max_bytes {
-                    return Err(EngineError::custom(format!(
-                        "sync change inventory exceeds the {max_bytes}-byte budget"
-                    )));
-                }
-                SyncChangeId(hash.to_vec())
-            };
-            known.push(id);
+        let changes = document.get_changes(&[]);
+        if changes.len().saturating_mul(160) > max_bytes {
+            return Err(EngineError::custom("Change inventory exceeds byte budget"));
         }
-        Ok(known)
+        Ok(changes
+            .into_iter()
+            .map(|change| DocumentChangeId(change.hash().0.to_vec()))
+            .collect())
     }
 
     async fn export_change(
@@ -1493,27 +1543,24 @@ where
         transaction: &T,
         table: &str,
         row: Uuid,
-        id: &SyncChangeId,
+        id: &DocumentChangeId,
         max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
         let hash: [u8; 32] =
             id.0.as_slice()
                 .try_into()
                 .map_err(|_| EngineError::custom("Invalid sync change ID"))?;
-        let key = DocumentChangeKey::new_incremental(Self::document_id(&row), hash);
-        let payload = AutomergeChangeStore::new(BytesTable::new(transaction, table))
-            .get(&key)
-            .await
-            .map_err(EngineError::custom)?;
-        if let Some(payload) = &payload
-            && payload.len() > max_bytes
-        {
-            return Err(EngineError::custom(format!(
-                "sync change payload of {} bytes exceeds the {max_bytes}-byte budget",
-                payload.len()
-            )));
+        let Some(document) = Self::document(transaction, table, &Self::document_id(&row)).await?
+        else {
+            return Ok(None);
+        };
+        let Some(change) = document.get_change_by_hash(&automerge::ChangeHash(hash)) else {
+            return Ok(None);
+        };
+        if change.raw_bytes().len() > max_bytes {
+            return Err(EngineError::custom("Change payload exceeds byte budget"));
         }
-        Ok(payload)
+        Ok(Some(change.raw_bytes().to_vec()))
     }
 
     async fn apply_change(
@@ -1521,7 +1568,7 @@ where
         transaction: &mut T,
         table: &str,
         row: Uuid,
-        id: &SyncChangeId,
+        id: &DocumentChangeId,
         payload: &[u8],
     ) -> EngineResult<()> {
         let hash: [u8; 32] =
@@ -1530,29 +1577,26 @@ where
                 .map_err(|_| EngineError::custom("Invalid sync change ID"))?;
         let document_id = Self::document_id(&row);
         let automerge_key = DocumentChangeKey::new_incremental(document_id.clone(), hash);
-        let already_applied = AutomergeChangeStore::new(BytesTable::new(&*transaction, table))
-            .get(&automerge_key)
-            .await
-            .map_err(EngineError::custom)?
-            .is_some();
-        if already_applied || Self::metadata_deleted(transaction, table, &row).await? {
-            return Ok(());
+        let changes = Self::native_changes(payload)?;
+        if !changes.iter().any(|change| change.hash().0 == hash) {
+            return Err(EngineError::custom(
+                "Incremental change hash does not match payload",
+            ));
         }
         let Some(mut document) = Self::document(transaction, table, &document_id).await? else {
             return Err(EngineError::SyncDependencyUnavailable);
         };
         let previous_heads = document.get_heads();
         document
-            .load_incremental(payload)
+            .apply_changes(changes)
             .map_err(EngineError::custom)?;
-        if !document
-            .get_changes(&previous_heads)
-            .iter()
-            .any(|change| change.hash().0 == hash)
+        if !document.get_missing_deps(&[]).is_empty() {
+            return Err(EngineError::SyncDependencyUnavailable);
+        }
+        if document.get_heads() == previous_heads
+            || Self::metadata_deleted(transaction, table, &row).await?
         {
-            return Err(EngineError::custom(
-                "Incremental change hash does not match key",
-            ));
+            return Ok(());
         }
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
         Self::decode_row(&document, &columns)?;

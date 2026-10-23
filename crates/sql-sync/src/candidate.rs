@@ -1,8 +1,7 @@
 use alloc::{collections::BTreeSet, string::String, vec::Vec};
 
-use engine::{EngineError, EngineResult, KernelTransaction, Uuid};
-
-use value::{Row, Value};
+use engine::{EngineError, EngineResult, KernelTransaction};
+use value::Row;
 
 use crate::{SyncKey, SyncRowCodec};
 
@@ -24,22 +23,7 @@ pub struct SyncCandidateView {
     pub tables: Vec<SyncTableView>,
 }
 
-#[derive(Debug)]
-pub struct SyncTableView {
-    pub name: String,
-    /// Decoder order in codec observations; scope-start order in candidate views.
-    /// Rows are normalized by name; conflicts retain their actual column names.
-    pub columns: Vec<String>,
-    pub rows: Vec<SyncRowView>,
-}
-
-#[derive(Debug)]
-pub struct SyncRowView {
-    pub id: Uuid,
-    pub row: Row,
-    pub deleted: bool,
-    pub conflicts: Vec<(String, Vec<Value>)>,
-}
+pub use engine::{RowStateView as SyncRowView, TableStateView as SyncTableView};
 
 pub(crate) type CandidateValidator<'a> =
     dyn Fn(&SyncCandidateView) -> Result<(), String> + Send + Sync + 'a;
