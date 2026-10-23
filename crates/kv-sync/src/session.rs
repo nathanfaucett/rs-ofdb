@@ -1,191 +1,8 @@
-use core::{
-    future::Future,
-    pin::pin,
-    task::{Context, Waker},
-};
-
-use btree::{BTree, BTreeResult};
-use kv::KvStore;
-
 use crate::{
     Config, Error, KvSnapshot, Message, SyncRole, SyncTransport, decode_frame, encode_frame,
+    protocol::VERSION, synchronize,
 };
-
-const VERSION: u8 = 2;
-
-pub async fn synchronize<B, T>(
-    store: &KvStore<B>,
-    transport: &mut T,
-    role: SyncRole,
-    config: Config,
-) -> Result<(), Error<T::Error>>
-where
-    B: BTree<Vec<u8>, Vec<u8>>,
-    T: SyncTransport,
-{
-    synchronize_checked(store, transport, role, config, || {
-        core::future::ready(Ok(()))
-    })
-    .await
-}
-
-/// Checks caller authorization/cancellation before each complete snapshot batch.
-/// Earlier commits remain on failure; the denied batch never opens a transaction.
-/// Abort delivery is attempted once without waiting. Discard the transport after failure.
-pub async fn synchronize_checked<B, T, Q, U>(
-    store: &KvStore<B>,
-    transport: &mut T,
-    role: SyncRole,
-    config: Config,
-    mut check: Q,
-) -> Result<(), Error<T::Error>>
-where
-    B: BTree<Vec<u8>, Vec<u8>>,
-    T: SyncTransport,
-    Q: FnMut() -> U,
-    U: core::future::Future<Output = Result<(), String>>,
-{
-    match role {
-        SyncRole::Initiator => {
-            send(transport, Message::Hello { version: VERSION }, config).await?;
-            expect_hello(receive(transport, config).await?)?;
-            send_snapshots(
-                transport,
-                export(store).await.map_err(storage_error)?,
-                config,
-            )
-            .await?;
-            receive_snapshots(store, transport, config, &mut check).await?;
-            send(transport, Message::Finished, config).await?;
-            expect_finished(receive(transport, config).await?)?;
-        }
-        SyncRole::Responder => {
-            expect_hello(receive(transport, config).await?)?;
-            send(transport, Message::Hello { version: VERSION }, config).await?;
-            receive_snapshots(store, transport, config, &mut check).await?;
-            send_snapshots(
-                transport,
-                export(store).await.map_err(storage_error)?,
-                config,
-            )
-            .await?;
-            expect_finished(receive(transport, config).await?)?;
-            send(transport, Message::Finished, config).await?;
-        }
-    }
-    Ok(())
-}
-
-async fn export<B: BTree<Vec<u8>, Vec<u8>>>(store: &KvStore<B>) -> BTreeResult<Vec<KvSnapshot>> {
-    let transaction = store.transaction().await?;
-    let snapshots = transaction
-        .export_snapshots()
-        .await?
-        .into_iter()
-        .map(|(key, payload)| KvSnapshot { key, payload })
-        .collect();
-    transaction.rollback().await?;
-    Ok(snapshots)
-}
-
-async fn receive_snapshots<B, T, Q, U>(
-    store: &KvStore<B>,
-    transport: &mut T,
-    config: Config,
-    check: &mut Q,
-) -> Result<(), Error<T::Error>>
-where
-    B: BTree<Vec<u8>, Vec<u8>>,
-    T: SyncTransport,
-    Q: FnMut() -> U,
-    U: core::future::Future<Output = Result<(), String>>,
-{
-    loop {
-        match receive(transport, config).await? {
-            Message::Snapshots(snapshots) => {
-                if let Err(reason) = check().await {
-                    let mut notification = pin!(send(transport, Message::Abort, config));
-                    let _ = notification
-                        .as_mut()
-                        .poll(&mut Context::from_waker(Waker::noop()));
-                    return Err(Error::PreApply(reason));
-                }
-                import_batch(store, snapshots)
-                    .await
-                    .map_err(storage_error)?;
-            }
-            Message::End => return Ok(()),
-            _ => return Err(Error::UnexpectedMessage),
-        }
-    }
-}
-
-async fn import_batch<B: BTree<Vec<u8>, Vec<u8>>>(
-    store: &KvStore<B>,
-    snapshots: Vec<KvSnapshot>,
-) -> BTreeResult<()> {
-    let mut transaction = store.transaction().await?;
-    for snapshot in snapshots {
-        if let Err(error) = transaction
-            .import_snapshot((snapshot.key, snapshot.payload))
-            .await
-        {
-            let _ = transaction.rollback().await;
-            return Err(error);
-        }
-    }
-    transaction.commit().await
-}
-
-async fn send_snapshots<T: SyncTransport>(
-    transport: &mut T,
-    snapshots: Vec<KvSnapshot>,
-    config: Config,
-) -> Result<(), Error<T::Error>> {
-    for batch in snapshots.chunks(config.max_snapshots_per_batch.max(1)) {
-        send(transport, Message::Snapshots(batch.to_vec()), config).await?;
-    }
-    send(transport, Message::End, config).await
-}
-
-async fn send<T: SyncTransport>(
-    transport: &mut T,
-    message: Message,
-    config: Config,
-) -> Result<(), Error<T::Error>> {
-    let frame = encode_frame(&message, config).map_err(|error| match error {
-        Error::FrameTooLarge => Error::FrameTooLarge,
-        _ => Error::InvalidFrame,
-    })?;
-    transport.send(frame).await.map_err(Error::Transport)
-}
-
-async fn receive<T: SyncTransport>(
-    transport: &mut T,
-    config: Config,
-) -> Result<Message, Error<T::Error>> {
-    let frame = transport.receive().await.map_err(Error::Transport)?;
-    decode_frame(&frame, config)
-}
-
-fn expect_finished<E>(message: Message) -> Result<(), Error<E>> {
-    match message {
-        Message::Finished => Ok(()),
-        _ => Err(Error::UnexpectedMessage),
-    }
-}
-
-fn expect_hello<E>(message: Message) -> Result<(), Error<E>> {
-    match message {
-        Message::Hello { version: VERSION } => Ok(()),
-        Message::Hello { version } => Err(Error::UnsupportedVersion(version)),
-        _ => Err(Error::UnexpectedMessage),
-    }
-}
-
-fn storage_error<E: core::fmt::Debug, T>(error: E) -> Error<T> {
-    Error::Storage(format!("{error:?}"))
-}
+use kv::KvStore;
 
 #[cfg(test)]
 mod tests {
@@ -227,12 +44,12 @@ mod tests {
         }
     }
 
-    struct FailOnThirdSend {
+    struct FailOnSecondBatch {
         channel: Channel,
-        successful_sends_remaining: usize,
+        successful_batches_remaining: usize,
     }
 
-    impl SyncTransport for FailOnThirdSend {
+    impl SyncTransport for FailOnSecondBatch {
         type Error = ();
 
         async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
@@ -240,11 +57,17 @@ mod tests {
         }
 
         async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
-            if self.successful_sends_remaining == 0 {
+            let data = matches!(
+                decode_frame::<()>(&frame, Config::default()).expect("valid frame"),
+                Message::Snapshots(_) | Message::Changes(_)
+            );
+            if data && self.successful_batches_remaining == 0 {
                 self.channel.sender.close_channel();
                 return Err(());
             }
-            self.successful_sends_remaining -= 1;
+            if data {
+                self.successful_batches_remaining -= 1;
+            }
             self.channel.send(frame).await
         }
     }
@@ -270,6 +93,15 @@ mod tests {
                     encode_frame(&Message::Hello { version: VERSION }, Config::default()).unwrap(),
                 )
                 .unwrap();
+            for message in [
+                Message::Selection(None),
+                Message::Inventory(vec![]),
+                Message::End,
+            ] {
+                peer_sender
+                    .unbounded_send(encode_frame(&message, Config::default()).expect("handshake"))
+                    .expect("queue");
+            }
             peer_sender
                 .unbounded_send(
                     encode_frame(
@@ -320,12 +152,12 @@ mod tests {
 
             let (initiator_sender, initiator_receiver) = mpsc::unbounded();
             let (responder_sender, responder_receiver) = mpsc::unbounded();
-            let mut initiator = FailOnThirdSend {
+            let mut initiator = FailOnSecondBatch {
                 channel: Channel {
                     sender: initiator_sender,
                     receiver: responder_receiver,
                 },
-                successful_sends_remaining: 2,
+                successful_batches_remaining: 1,
             };
             let mut responder = Channel {
                 sender: responder_sender,

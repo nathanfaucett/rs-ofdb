@@ -1,4 +1,7 @@
 mod document_id;
+mod history;
+
+pub use history::{ChangeApply, ChangeSummary, KvHistory, NativeChange};
 
 mod store;
 mod value_document;

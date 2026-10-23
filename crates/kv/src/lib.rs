@@ -9,6 +9,8 @@ mod database;
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 mod transaction;
 
+#[cfg(feature = "sync")]
+pub use btree::ChangeWork;
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 pub use client::Client;
 #[cfg(any(feature = "in-memory", feature = "redb"))]
@@ -16,8 +18,8 @@ pub use database::Database;
 pub use error::{Error, ErrorKind};
 #[cfg(feature = "sync")]
 pub use kv_sync::{
-    ChangeSubscription, Config as SyncConfig, Error as SyncError, KvSnapshot, SyncRole,
-    SyncTransport,
+    ChangeSubscription, Config as SyncConfig, Error as SyncError, KvInvalidation, KvSnapshot,
+    SyncRole, SyncTransport,
 };
 #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
 pub use transaction::Transaction;

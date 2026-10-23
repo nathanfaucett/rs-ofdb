@@ -24,6 +24,8 @@ pub struct Database {
     pub(super) storage: Storage,
     #[cfg(feature = "sync")]
     changes: Option<kv_sync::ChangeSubscription>,
+    #[cfg(feature = "sync")]
+    storage_table: Option<String>,
 }
 
 impl Database {
@@ -75,6 +77,8 @@ impl Database {
             storage: self.storage.clone(),
             #[cfg(feature = "sync")]
             changes: self.changes.clone(),
+            #[cfg(feature = "sync")]
+            storage_table: self.storage_table.clone(),
         }
     }
 
@@ -84,6 +88,8 @@ impl Database {
             storage: Storage::Memory(KvStore::new(InMemoryBTree::new(), uuid_timestamp)),
             #[cfg(feature = "sync")]
             changes: None,
+            #[cfg(feature = "sync")]
+            storage_table: None,
         }
     }
 
@@ -125,12 +131,14 @@ impl Database {
         transaction
             .commit()
             .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
-        let tree = btree_redb::RedbByteBTree::new(Arc::new(db), table);
+        let tree = btree_redb::RedbByteBTree::new(Arc::new(db), table.clone());
         #[cfg(feature = "sync")]
         let changes = tree.subscribe_changes();
         Ok(Self {
             #[cfg(feature = "sync")]
             changes: Some(changes.into()),
+            #[cfg(feature = "sync")]
+            storage_table: Some(table),
             storage: Storage::Redb(
                 btree_redb::NativeResource::new(path, KvStore::new(tree, uuid_timestamp))
                     .map_err(|error| Error::from(btree::BTreeError::custom(error)))?,
@@ -374,7 +382,7 @@ impl Database {
         }
     }
 
-    /// Checks caller authorization/cancellation before each incoming snapshot batch.
+    /// Checks caller authorization/cancellation before each complete incoming data batch.
     /// Earlier commits remain on denial. Abort delivery does not wait for the peer;
     /// discard the transport after failure.
     #[cfg(feature = "sync")]
@@ -407,6 +415,103 @@ impl Database {
                 .await
                 .map_err(|error| crate::SyncError::PreApply(error.to_string()))?,
         }
+    }
+
+    /// Map a token from this database's own (unmerged) subscription.
+    #[cfg(feature = "sync")]
+    pub async fn sync_invalidations(
+        &self,
+        work: &crate::ChangeWork,
+    ) -> Result<Vec<crate::KvInvalidation>, Error> {
+        match &self.storage {
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(_) => {
+                let _ = work;
+                Ok(vec![crate::KvInvalidation::All])
+            }
+            #[cfg(feature = "redb")]
+            Storage::Redb(store) => {
+                let store = store
+                    .read()
+                    .await
+                    .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+                Ok(store.committed_invalidations(
+                    self.storage_table
+                        .as_deref()
+                        .expect("native database retains its physical table"),
+                    work,
+                ))
+            }
+        }
+    }
+
+    /// Reconcile one peer's selected work, acknowledging only on success.
+    /// Keep one unmerged subscription per peer, created anew on reconnect. Call even
+    /// with no local work when a remote wakeup requests reconciliation: local changes
+    /// cannot detect remote-only writes. Memory uses explicit broad synchronization.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_selected_checked<T, Q, U>(
+        &self,
+        changes: &mut crate::ChangeSubscription,
+        transport: &mut T,
+        role: crate::SyncRole,
+        config: crate::SyncConfig,
+        check: Q,
+    ) -> Result<(), crate::SyncError<T::Error>>
+    where
+        T: crate::SyncTransport,
+        Q: FnMut() -> U,
+        U: core::future::Future<Output = Result<(), String>>,
+    {
+        let work = changes.select();
+        let invalidations = match &work {
+            Some(work) => self
+                .sync_invalidations(work)
+                .await
+                .map_err(|error| crate::SyncError::Storage(error.to_string()))?,
+            None => Vec::new(),
+        };
+        match &self.storage {
+            #[cfg(feature = "in-memory")]
+            Storage::Memory(store) => {
+                kv_sync::synchronize_selected_checked(
+                    store,
+                    &invalidations,
+                    transport,
+                    role,
+                    config,
+                    check,
+                )
+                .await?
+            }
+            #[cfg(feature = "redb")]
+            Storage::Redb(store) => store
+                .session(async {
+                    let store = store
+                        .read()
+                        .await
+                        .map_err(|error| crate::SyncError::PreApply(error.to_string()))?;
+                    kv_sync::synchronize_selected_checked(
+                        &*store,
+                        &invalidations,
+                        transport,
+                        role,
+                        config,
+                        check,
+                    )
+                    .await
+                })
+                .await
+                .map_err(|error| crate::SyncError::PreApply(error.to_string()))??,
+        }
+        if let Some(work) = work
+            && !changes.acknowledge(work)
+        {
+            return Err(crate::SyncError::Storage(
+                "selected work belongs to a different subscription".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Unchecked sync: caller owns admission; prefer `synchronize_checked`.

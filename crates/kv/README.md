@@ -14,7 +14,23 @@ The breaking value-format change uses a new persisted-document version and a new
 
 With `sync`, `Database::sync_changes()` returns `std::io::Result<ChangeSubscription>` (`Unsupported` for an in-memory handle). This opaque type belongs to the sync API: it exposes no Tokio receiver or revision bookkeeping. Obtain it before starting reconciliation, then await `changes.run(synchronize)`, where the callback implements `FnMut() -> Future<Output = Result<(), E>>` and supplies an authorized sync session. The sync library owns the initial pass, change coalescing, race-free rescheduling for commits during a pass, and retry of failed work without waiting for another commit. Retry backoff starts at 100 ms, doubles to a 30-second cap, and resets on success. The callback reports/logs its errors and must return `Err` when delivery is still pending, including unavailable peers.
 
-SQL and KV re-export the **same** `ChangeSubscription`. Use `sql.sync_changes()?.merge(kv.sync_changes()?)` and one callback that exchanges SQL and KV to avoid duplicate runners. `changed().await -> std::io::Result<()>` remains available for admission invalidation, not for implementing another sync scheduler. Cloning a subscription starts observing at the current state, like a fresh subscription.
+### Selected per-peer sessions
+
+`Database::synchronize_selected_checked(&mut changes, &mut transport, role, config, check)` selects a watermark before reads, maps committed invalidations using the actual physical table name, reconciles the union of both peers' affected logical keys/latest generations, and acknowledges **only after success**. Keep one unmerged subscription per database/peer; create it anew on connection/reconnection. Incoming apply remains pending for other peers, and commits during a pass cannot be accidentally acknowledged. `Database::sync_invalidations(&ChangeWork)` also exposes the logical mapping for caller-managed selection. The facade re-exports `ChangeWork` and `KvInvalidation`.
+
+```rust,ignore
+let mut peer_changes = database.sync_changes()?;
+database.synchronize_selected_checked(
+    &mut peer_changes, &mut transport, ofdb_kv::SyncRole::Initiator,
+    ofdb_kv::SyncConfig::default(), || core::future::ready(Ok(())),
+).await?;
+```
+
+Fresh subscriptions, unknown writes, gaps and overflow select broad comparison. `synchronize_checked` remains the broad one-shot API, now exchanging native missing history where possible. KV wire v3 is incompatible with earlier versions. Hash/dependency validation, atomic complete batches, snapshot recovery/merge, generation replacement and tombstone semantics apply to both APIs. Memory still returns `Unsupported` from `sync_changes`; explicitly invoke broad sessions there.
+
+**Local subscriptions do not observe remote-only writes.** Callers must provide authorized remote wakeups/receive delivery or explicitly invoke reconciliation even with no local selected work. Neither a local runner nor an idle local subscription alone guarantees bidirectional realtime delivery. After incoming application, local notifications drive fan-out. Repeated known history settles without no-op commits/echo. Selected inventories scale with selected document histories, not the whole database; a document inventory/delta must fit a configured frame.
+
+SQL and KV re-export the **same** `ChangeSubscription`. Use `sql.sync_changes()?.merge(kv.sync_changes()?)` and one **broad** callback that exchanges SQL and KV to avoid duplicate runners. Merged subscriptions are not suitable for selective logical mapping; keep each store/peer's subscription separate for selected sessions. `changed().await -> std::io::Result<()>` remains available for admission invalidation, not for implementing another sync scheduler. Cloning a subscription starts observing at the current state, like a fresh subscription.
 
 The library spawns no task. Poll `run` on a Tokio runtime with time enabled; dropping its future cancels the current callback or retry timer. A caller can select the runner against its shutdown/admission future, and create a fresh runner when its authorized peer scope changes. The runner also stops when all subscribed backends close, including retirement; `changed` returns `BrokenPipe` after closure and pending invalidations. A subscription alone does not retain storage, though its callback can. Existing clients can keep storage alive after `Database` is dropped.
 
