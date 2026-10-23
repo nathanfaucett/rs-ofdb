@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 # Internal dependencies
-btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["changes", "std"] }
 btree-automerge = { version = "0.1", path = "../btree-automerge", package = "ofdb-btree-automerge", default-features = false, features = [] }
 value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = ["std", "automerge"] }
 

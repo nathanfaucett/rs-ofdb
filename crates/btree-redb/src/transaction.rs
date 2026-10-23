@@ -76,11 +76,9 @@ impl NativeWriteTransaction {
     }
 
     pub(crate) fn commit(self) -> BTreeResult<()> {
-        let changed = self.mutations.changed();
+        let invalidations = self.mutations.invalidations();
         self.inner.commit().map_err(BTreeError::custom)?;
-        if changed {
-            self.changes.committed();
-        }
+        self.changes.committed_with(invalidations);
         Ok(())
     }
 

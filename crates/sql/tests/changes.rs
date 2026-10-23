@@ -316,12 +316,12 @@ fn hosted_writes_share_the_backend_signal() {
 
 #[cfg(feature = "in-memory")]
 #[test]
-fn memory_subscription_is_explicitly_unsupported() {
-    assert_eq!(
+fn memory_subscription_starts_with_broad_work() {
+    assert!(
         Database::in_memory()
             .sync_changes()
-            .expect_err("redb only")
-            .kind(),
-        std::io::ErrorKind::Unsupported
+            .expect("memory subscription")
+            .select()
+            .is_some()
     );
 }

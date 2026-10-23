@@ -6,6 +6,8 @@ pub use engine::{
 pub use engine::{InMemoryKernel, InMemoryKernelTransaction};
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 pub use engine_automerge::AutomergeRowCodec;
+#[cfg(feature = "sync")]
+pub use engine_automerge::{ChangeWork, SqlInvalidation};
 #[cfg(feature = "redb")]
 pub use engine_redb::{RedbKernel, RedbKernelTransaction, redb};
 #[cfg(feature = "macros")]

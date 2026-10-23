@@ -265,15 +265,38 @@ impl Database {
     /// Creates the sync-owned lifecycle for committed changes, including remote apply.
     /// `ChangeSubscription::run` owns initial sync, coalescing, races and retry backoff.
     /// Merge with a KV subscription to reconcile both stores in one callback.
-    /// Dropping the runner cancels its in-flight work. Returns Unsupported for memory.
+    /// Dropping the runner cancels its in-flight work.
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> std::io::Result<sync::ChangeSubscription> {
         self.changes.clone().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "continuous sync requires a redb database",
+                "backend does not support committed subscriptions",
             )
         })
+    }
+
+    /// Interpret selected work before exporting state. Acknowledge only after successful sync.
+    #[cfg(feature = "sync")]
+    pub async fn sync_invalidations(
+        &self,
+        work: &crate::ChangeWork,
+    ) -> SqlResult<Vec<crate::SqlInvalidation>> {
+        match &self.backend {
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(resource) => {
+                let engine = resource.read().await.map_err(native_error)?;
+                engine_automerge::committed_invalidations(&engine, work)
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(engine) => {
+                engine_automerge::committed_invalidations(engine, work)
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
+        }
     }
 
     pub fn client(&self) -> crate::Client {
@@ -305,13 +328,13 @@ impl Database {
 
     #[cfg(feature = "in-memory")]
     pub fn in_memory() -> Self {
+        let kernel = InMemoryKernel::new();
+        #[cfg(feature = "sync")]
+        let changes = kernel.subscribe_changes();
         Self {
             #[cfg(feature = "sync")]
-            changes: None,
-            backend: DatabaseBackend::InMemory(Engine::new(
-                InMemoryKernel::new(),
-                AutomergeRowCodec::new(),
-            )),
+            changes: Some(changes.into()),
+            backend: DatabaseBackend::InMemory(Engine::new(kernel, AutomergeRowCodec::new())),
         }
     }
 

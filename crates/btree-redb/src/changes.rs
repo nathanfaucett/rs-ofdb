@@ -1,10 +1,9 @@
 use std::{
-    collections::BTreeMap,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
 };
+
+use btree::StorageInvalidation;
 
 type Key = (String, Vec<u8>);
 type Values = (Option<Vec<u8>>, Option<Vec<u8>>);
@@ -13,7 +12,7 @@ type Values = (Option<Vec<u8>>, Option<Vec<u8>>);
 pub(crate) struct Mutations {
     keys: Mutex<BTreeMap<Key, Values>>,
     tables: Mutex<BTreeMap<String, (bool, bool)>>,
-    dropped: AtomicBool,
+    dropped: Mutex<BTreeSet<String>>,
 }
 
 impl Mutations {
@@ -24,6 +23,7 @@ impl Mutations {
             .get(table)
             .map(|(_, current)| *current)
     }
+
     pub(crate) fn record(
         &self,
         table: &str,
@@ -40,26 +40,37 @@ impl Mutations {
 
     pub(crate) fn table(&self, table: &str, old: bool, new: bool) {
         if old && !new {
-            self.dropped.store(true, Ordering::Relaxed);
+            self.dropped
+                .lock()
+                .expect("transaction dropped table lock")
+                .insert(table.to_owned());
         }
         let mut tables = self.tables.lock().expect("transaction table mutation lock");
         let state = tables.entry(table.to_owned()).or_insert((old, old));
         state.1 = new;
     }
 
-    pub(crate) fn changed(&self) -> bool {
-        self.dropped.load(Ordering::Relaxed)
-            || self
-                .tables
-                .lock()
-                .expect("transaction table mutation lock")
-                .values()
-                .any(|(old, new)| old != new)
-            || self
-                .keys
+    pub(crate) fn invalidations(&self) -> Vec<StorageInvalidation> {
+        let dropped = self.dropped.lock().expect("transaction dropped table lock");
+        let mut result = self
+            .tables
+            .lock()
+            .expect("transaction table mutation lock")
+            .iter()
+            .filter(|(table, (old, new))| old != new || dropped.contains(*table))
+            .map(|(table, _)| StorageInvalidation::Table(table.clone()))
+            .collect::<Vec<_>>();
+        result.extend(
+            self.keys
                 .lock()
                 .expect("transaction mutation lock")
-                .values()
-                .any(|(old, new)| old != new)
+                .iter()
+                .filter(|(_, (old, new))| old != new)
+                .map(|((table, key), _)| StorageInvalidation::Key {
+                    table: table.clone(),
+                    key: key.clone(),
+                }),
+        );
+        result
     }
 }

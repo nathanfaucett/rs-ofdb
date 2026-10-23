@@ -21,6 +21,7 @@ std = [
   "serde/std",
   "serde_json/std",
   "btree/std",
+  "btree/changes",
   "schema/std",
   "value/std",
   "query/std"
