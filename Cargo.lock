@@ -2789,6 +2789,7 @@ dependencies = [
  "ofdb-sql-proto",
  "ofdb-sql-protocol",
  "ofdb-sql-query",
+ "ofdb-value",
  "tokio",
  "tokio-stream",
  "tonic",

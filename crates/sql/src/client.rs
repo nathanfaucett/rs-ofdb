@@ -78,12 +78,12 @@ enum TransactionBackend {
     #[cfg(any(feature = "redb", feature = "in-memory"))]
     Embedded(crate::database::EmbeddedTransaction),
     #[cfg(feature = "remote")]
-    Remote(client::Transaction),
+    Remote(tokio::sync::Mutex<client::Transaction>),
 }
 
 impl Transaction {
-    /// Inspects conflicts in this embedded transaction's snapshot, including local writes.
-    /// Aborted transactions fail; remote conflict operations are unsupported.
+    /// Inspects conflicts in this transaction's snapshot, including local writes.
+    /// Aborted transactions fail on either backend.
     #[inline(never)]
     pub fn row_conflicts<'a>(
         &'a self,
@@ -100,18 +100,17 @@ impl Transaction {
                         transaction.row_conflicts(table, key).await
                     }
                     #[cfg(feature = "remote")]
-                    TransactionBackend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict inspection is unsupported",
-                    )),
+                    TransactionBackend::Remote(transaction) => {
+                        transaction.lock().await.row_conflicts(table, key).await
+                    }
                 }
             })
             .await
         }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
     }
 
-    /// Returns concurrent values from this embedded transaction's snapshot.
-    /// Aborted transactions fail; remote conflict operations are unsupported.
+    /// Returns concurrent values from this transaction's snapshot.
+    /// Aborted transactions fail on either backend.
     #[inline(never)]
     pub fn row_conflict_values<'a>(
         &'a self,
@@ -128,10 +127,13 @@ impl Transaction {
                         transaction.row_conflict_values(table, key).await
                     }
                     #[cfg(feature = "remote")]
-                    TransactionBackend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict inspection is unsupported",
-                    )),
+                    TransactionBackend::Remote(transaction) => {
+                        transaction
+                            .lock()
+                            .await
+                            .row_conflict_values(table, key)
+                            .await
+                    }
                 }
             })
             .await
@@ -166,7 +168,9 @@ impl Transaction {
             #[cfg(any(feature = "redb", feature = "in-memory"))]
             TransactionBackend::Embedded(transaction) => transaction.execute(statements).await,
             #[cfg(feature = "remote")]
-            TransactionBackend::Remote(transaction) => transaction.execute(statements).await,
+            TransactionBackend::Remote(transaction) => {
+                transaction.get_mut().execute(statements).await
+            }
         }
     }
 
@@ -201,7 +205,7 @@ impl Transaction {
             }
             #[cfg(feature = "remote")]
             TransactionBackend::Remote(transaction) => {
-                transaction.execute(translation.await?).await
+                transaction.get_mut().execute(translation.await?).await
             }
         }
     }
@@ -265,7 +269,7 @@ impl Transaction {
                 #[cfg(any(feature = "redb", feature = "in-memory"))]
                 TransactionBackend::Embedded(transaction) => transaction.commit().await,
                 #[cfg(feature = "remote")]
-                TransactionBackend::Remote(transaction) => transaction.commit().await,
+                TransactionBackend::Remote(transaction) => transaction.into_inner().commit().await,
             }
         })
         .await
@@ -278,7 +282,9 @@ impl Transaction {
                 #[cfg(any(feature = "redb", feature = "in-memory"))]
                 TransactionBackend::Embedded(transaction) => transaction.rollback().await,
                 #[cfg(feature = "remote")]
-                TransactionBackend::Remote(transaction) => transaction.rollback().await,
+                TransactionBackend::Remote(transaction) => {
+                    transaction.into_inner().rollback().await
+                }
             }
         })
         .await
@@ -286,9 +292,8 @@ impl Transaction {
 }
 
 impl Client {
-    /// Returns conflicted column names from one embedded read snapshot.
+    /// Returns conflicted column names from one read snapshot.
     /// An empty result means no conflicts, not that the row exists or is authorized.
-    /// Remote conflict operations are unsupported.
     #[inline(never)]
     pub fn row_conflicts<'a>(
         &'a self,
@@ -303,10 +308,7 @@ impl Client {
                     #[cfg(any(feature = "redb", feature = "in-memory"))]
                     Backend::Embedded(database) => database.query_row_conflicts(table, key).await,
                     #[cfg(feature = "remote")]
-                    Backend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict inspection is unsupported",
-                    )),
+                    Backend::Remote(client) => client.row_conflicts(table, key).await,
                 }
             })
             .await
@@ -314,11 +316,11 @@ impl Client {
     }
 
     /// Returns conflicted column names for each key, in input order (including duplicates).
-    /// Uses one fresh embedded read snapshot and loads the table/field catalog once.
+    /// Uses one fresh read snapshot and loads the table/field catalog once.
     /// Validation matches sequential `row_conflicts` calls in that snapshot: the first
     /// error fails the batch without partial results. Empty input inspects no catalog.
     /// Empty per-key results prove neither existence nor authorization; callers must
-    /// still enforce their authorization and history checks. Remote inspection is unsupported.
+    /// still enforce their authorization and history checks.
     #[inline(never)]
     pub fn row_conflicts_batch<'a>(
         &'a self,
@@ -335,10 +337,7 @@ impl Client {
                         database.query_row_conflicts_batch(table, keys).await
                     }
                     #[cfg(feature = "remote")]
-                    Backend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict inspection is unsupported",
-                    )),
+                    Backend::Remote(client) => client.row_conflicts_batch(table, keys).await,
                 }
             })
             .await
@@ -347,7 +346,6 @@ impl Client {
 
     /// Returns all concurrent values for each conflicted column, not just its projection.
     /// Caller-owned security policy decides whether a conflict permits an operation.
-    /// Remote conflict operations are unsupported.
     #[inline(never)]
     pub fn row_conflict_values<'a>(
         &'a self,
@@ -364,10 +362,7 @@ impl Client {
                         database.query_row_conflict_values(table, key).await
                     }
                     #[cfg(feature = "remote")]
-                    Backend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict inspection is unsupported",
-                    )),
+                    Backend::Remote(client) => client.row_conflict_values(table, key).await,
                 }
             })
             .await
@@ -377,7 +372,6 @@ impl Client {
     /// Resolves only the specified conflicted columns in one atomic operation.
     /// Invalid assignments roll back the operation; other conflicts remain intact.
     /// Caller must authorize resolution and enforce lifecycle/audit policy.
-    /// Remote conflict operations are unsupported.
     #[inline(never)]
     pub fn resolve_row<'a>(
         &'a self,
@@ -395,10 +389,7 @@ impl Client {
                         database.query_resolve_row(table, key, values).await
                     }
                     #[cfg(feature = "remote")]
-                    Backend::Remote(_) => Err(QueryError::new(
-                        QueryErrorKind::Unsupported,
-                        "remote conflict resolution is unsupported",
-                    )),
+                    Backend::Remote(client) => client.resolve_row(table, key, values).await,
                 }
             })
             .await
@@ -413,7 +404,9 @@ impl Client {
                     TransactionBackend::Embedded(database.begin_transaction().await?)
                 }
                 #[cfg(feature = "remote")]
-                Backend::Remote(client) => TransactionBackend::Remote(client.transaction().await?),
+                Backend::Remote(client) => {
+                    TransactionBackend::Remote(tokio::sync::Mutex::new(client.transaction().await?))
+                }
             };
             Ok(Transaction {
                 backend,

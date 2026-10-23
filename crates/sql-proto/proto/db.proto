@@ -483,6 +483,9 @@ message Statement {
 
 service QueryService {
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc RowConflicts(ConflictRequest) returns (ConflictResponse);
+  rpc RowConflictValues(ConflictRequest) returns (ConflictValuesResponse);
+  rpc ResolveRow(ResolveRowRequest) returns (google.protobuf.Empty);
   rpc Transaction(stream TransactionRequest) returns (stream TransactionResponse);
 }
 
@@ -491,6 +494,8 @@ message TransactionRequest {
     ExecuteRequest execute = 1;
     google.protobuf.Empty commit = 2;
     google.protobuf.Empty rollback = 3;
+    ConflictRequest row_conflicts = 4;
+    ConflictRequest row_conflict_values = 5;
   }
 }
 
@@ -500,7 +505,37 @@ message TransactionResponse {
     ExecuteResponse executed = 2;
     google.protobuf.Empty completed = 3;
     bytes error_detail = 4;
+    ConflictResponse row_conflicts = 5;
+    ConflictValuesResponse row_conflict_values = 6;
   }
+}
+
+message ConflictRequest {
+  string table = 1;
+  repeated Row keys = 2;
+}
+
+message ConflictColumns {
+  repeated string columns = 1;
+}
+
+message ConflictResponse {
+  repeated ConflictColumns rows = 1;
+}
+
+message ConflictValues {
+  string column = 1;
+  repeated Value values = 2;
+}
+
+message ConflictValuesResponse {
+  repeated ConflictValues columns = 1;
+}
+
+message ResolveRowRequest {
+  string table = 1;
+  Row key = 2;
+  repeated ConflictValues columns = 3;
 }
 
 message ExecuteRequest {

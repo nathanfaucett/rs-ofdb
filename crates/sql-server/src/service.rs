@@ -6,8 +6,8 @@ use proto::{
     transaction_response::Outcome,
 };
 use protocol::{
-    QueryExecutor, QueryServiceError, encode_error_detail, query_result_to_proto,
-    statement_from_proto,
+    QueryExecutor, QueryServiceError, encode_error_detail, query_result_to_proto, row_from_proto,
+    statement_from_proto, value_from_proto, value_to_proto,
 };
 use query::QueryErrorKind;
 use tokio::sync::mpsc;
@@ -110,6 +110,48 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
                             }
                         }
                     }
+                    Some(Command::RowConflicts(request)) => {
+                        let result = async {
+                            if failed {
+                                return Err(QueryServiceError::Rejected(
+                                    "Transaction is aborted".into(),
+                                ));
+                            }
+                            let (table, key) = decode_single_key(request)?;
+                            let columns = transaction.row_conflicts(&table, &key).await?;
+                            Ok(Outcome::RowConflicts(proto::ConflictResponse {
+                                rows: vec![proto::ConflictColumns { columns }],
+                            }))
+                        }
+                        .await;
+                        match result {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                failed = true;
+                                transaction_error(error)
+                            }
+                        }
+                    }
+                    Some(Command::RowConflictValues(request)) => {
+                        let result = async {
+                            if failed {
+                                return Err(QueryServiceError::Rejected(
+                                    "Transaction is aborted".into(),
+                                ));
+                            }
+                            let (table, key) = decode_single_key(request)?;
+                            let values = transaction.row_conflict_values(&table, &key).await?;
+                            Ok(Outcome::RowConflictValues(conflict_values_response(values)))
+                        }
+                        .await;
+                        match result {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                failed = true;
+                                transaction_error(error)
+                            }
+                        }
+                    }
                     Some(Command::Commit(())) | Some(Command::Rollback(())) => {
                         let result =
                             if matches!(request.command, Some(Command::Commit(()))) && !failed {
@@ -157,6 +199,77 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
+    async fn row_conflicts(
+        &self,
+        request: Request<proto::ConflictRequest>,
+    ) -> Result<Response<proto::ConflictResponse>, Status> {
+        let request = request.into_inner();
+        let keys = request
+            .keys
+            .into_iter()
+            .map(row_from_proto)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(status_from_error)?;
+        let rows = self
+            .executor
+            .row_conflicts_batch(&request.table, &keys)
+            .await
+            .map_err(status_from_error)?;
+        Ok(Response::new(proto::ConflictResponse {
+            rows: rows
+                .into_iter()
+                .map(|columns| proto::ConflictColumns { columns })
+                .collect(),
+        }))
+    }
+
+    async fn row_conflict_values(
+        &self,
+        request: Request<proto::ConflictRequest>,
+    ) -> Result<Response<proto::ConflictValuesResponse>, Status> {
+        let (table, key) = decode_single_key(request.into_inner()).map_err(status_from_error)?;
+        let values = self
+            .executor
+            .row_conflict_values(&table, &key)
+            .await
+            .map_err(status_from_error)?;
+        Ok(Response::new(conflict_values_response(values)))
+    }
+
+    async fn resolve_row(
+        &self,
+        request: Request<proto::ResolveRowRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.into_inner();
+        let key = request.key.ok_or_else(|| {
+            status_from_error(QueryServiceError::Invalid("missing row key".into()))
+        })?;
+        let key = row_from_proto(key).map_err(status_from_error)?;
+        let values = request
+            .columns
+            .into_iter()
+            .map(|column| {
+                if column.values.len() != 1 {
+                    return Err(QueryServiceError::Invalid(
+                        "resolution requires one value per column".into(),
+                    ));
+                }
+                let value = column
+                    .values
+                    .into_iter()
+                    .next()
+                    .expect("one resolution value");
+                Ok((column.column, value_from_proto(value)?))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(status_from_error)?;
+        self.executor
+            .resolve_row(&request.table, &key, values)
+            .await
+            .map_err(status_from_error)?;
+        Ok(Response::new(()))
+    }
+
     async fn execute(
         &self,
         request: Request<ExecuteRequest>,
@@ -170,6 +283,30 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
         Ok(Response::new(ExecuteResponse {
             results: results.into_iter().map(query_result_to_proto).collect(),
         }))
+    }
+}
+
+fn decode_single_key(
+    request: proto::ConflictRequest,
+) -> Result<(String, value::Row), QueryServiceError> {
+    if request.keys.len() != 1 {
+        return Err(QueryServiceError::Invalid("expected one row key".into()));
+    }
+    let key = request.keys.into_iter().next().expect("one row key");
+    Ok((request.table, row_from_proto(key)?))
+}
+
+fn conflict_values_response(
+    values: Vec<(String, Vec<value::Value>)>,
+) -> proto::ConflictValuesResponse {
+    proto::ConflictValuesResponse {
+        columns: values
+            .into_iter()
+            .map(|(column, values)| proto::ConflictValues {
+                column,
+                values: values.into_iter().map(value_to_proto).collect(),
+            })
+            .collect(),
     }
 }
 

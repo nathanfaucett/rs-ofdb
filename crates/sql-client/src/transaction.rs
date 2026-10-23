@@ -6,7 +6,8 @@ use protocol::{decode_error_detail, query_result_from_proto, statement_to_proto}
 use query::{QueryError, QueryErrorKind, QueryResult, Statement};
 use tokio::sync::mpsc;
 
-use crate::client::status_error;
+use crate::client::{conflict_request, decode_conflict_values, status_error};
+use value::{Row, Value};
 
 /// A remote transaction. Dropping this handle closes its stream without commit.
 #[derive(Debug)]
@@ -27,6 +28,42 @@ impl Transaction {
         match transaction.response().await? {
             Outcome::Ready(()) => Ok(transaction),
             _ => Err(protocol_error("expected transaction ready response")),
+        }
+    }
+
+    pub async fn row_conflicts(
+        &mut self,
+        table: &str,
+        key: &Row,
+    ) -> Result<Vec<String>, QueryError> {
+        match self
+            .exchange(Command::RowConflicts(conflict_request(
+                table,
+                core::slice::from_ref(key),
+            )))
+            .await?
+        {
+            Outcome::RowConflicts(mut response) if response.rows.len() == 1 => {
+                Ok(response.rows.remove(0).columns)
+            }
+            _ => Err(protocol_error("expected one conflict row")),
+        }
+    }
+
+    pub async fn row_conflict_values(
+        &mut self,
+        table: &str,
+        key: &Row,
+    ) -> Result<Vec<(String, Vec<Value>)>, QueryError> {
+        match self
+            .exchange(Command::RowConflictValues(conflict_request(
+                table,
+                core::slice::from_ref(key),
+            )))
+            .await?
+        {
+            Outcome::RowConflictValues(response) => decode_conflict_values(response),
+            _ => Err(protocol_error("expected conflict values response")),
         }
     }
 

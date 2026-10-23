@@ -19,7 +19,7 @@ fn free_address() -> SocketAddr {
     listener.local_addr().expect("read temporary address")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_client_executes_typed_queries_over_tcp() {
     let address = free_address();
     let database = Database::in_memory();
@@ -68,62 +68,55 @@ async fn remote_client_executes_typed_queries_over_tcp() {
     assert!(results[0].rows.is_empty());
 
     let id = Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("valid test UUID");
+
     let key = Row::new(vec![Value::Uuid(id)]);
-    assert_eq!(
+    assert!(
         client
             .row_conflicts("items", &key)
             .await
-            .expect_err("remote inspection must not imply clear state")
-            .kind,
-        QueryErrorKind::Unsupported
+            .expect("remote conflict inspection")
+            .is_empty()
     );
     for keys in [core::slice::from_ref(&key), &[]] {
         assert_eq!(
             client
                 .row_conflicts_batch("items", keys)
                 .await
-                .expect_err("remote batch inspection remains unsupported")
-                .kind,
-            QueryErrorKind::Unsupported
+                .expect("remote batch conflicts"),
+            database_client
+                .row_conflicts_batch("items", keys)
+                .await
+                .expect("local batch conflicts")
         );
     }
-    assert_eq!(
+    assert!(
         client
             .row_conflict_values("items", &key)
             .await
-            .expect_err("remote concurrent values unsupported")
-            .kind,
-        QueryErrorKind::Unsupported
+            .expect("remote conflict values")
+            .is_empty()
     );
-    assert_eq!(
-        client
-            .resolve_row("items", &key, vec![("id".into(), Value::Uuid(id))])
-            .await
-            .expect_err("remote resolution unsupported")
-            .kind,
-        QueryErrorKind::Unsupported
-    );
+
     let transaction = client.transaction().await.expect("remote transaction");
-    assert_eq!(
+    assert!(
         transaction
             .row_conflicts("items", &key)
             .await
-            .expect_err("remote transaction conflicts unsupported")
-            .kind,
-        QueryErrorKind::Unsupported
+            .expect("transaction conflicts")
+            .is_empty()
     );
-    assert_eq!(
+    assert!(
         transaction
             .row_conflict_values("items", &key)
             .await
-            .expect_err("remote transaction values unsupported")
-            .kind,
-        QueryErrorKind::Unsupported
+            .expect("transaction values")
+            .is_empty()
     );
     transaction
         .rollback()
         .await
-        .expect("unsupported inspections did not close transaction");
+        .expect("inspections did not close transaction");
+
     let params = QueryParams::Positional(vec![Value::Uuid(id)]);
     client
         .translate_and_execute_with_params(

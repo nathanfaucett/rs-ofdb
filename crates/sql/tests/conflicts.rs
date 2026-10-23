@@ -376,6 +376,157 @@ async fn unchanged_updates_commit_without_new_history_and_remain_syncable() {
     );
 }
 
+#[cfg(all(feature = "remote", feature = "server"))]
+#[test]
+fn remote_conflict_inspection_resolution_and_transaction_snapshot() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(2 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let left = Database::in_memory();
+            let right = Database::in_memory();
+            runtime.block_on(diverge(&left, &right));
+            runtime.block_on(check_remote_conflicts(left));
+        })
+        .expect("fixture thread")
+        .join()
+        .expect("remote parity");
+}
+
+#[cfg(all(feature = "remote", feature = "server"))]
+async fn check_remote_conflicts(left: Database) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve address");
+    let address = listener.local_addr().expect("address");
+    drop(listener);
+    let hosted = left.clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        hosted
+            .serve_tcp(address, async {
+                let _ = stopped.await;
+            })
+            .await
+            .expect("serve SQL")
+    });
+    let client = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(client) = ofdb_sql::Client::connect(format!("http://{address}")).await {
+                break client;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("bounded SQL startup");
+    let row = key();
+    let names = vec![
+        "admin_allowed",
+        "selected_id",
+        "revoked_at",
+        "owner_subject",
+    ];
+    assert_eq!(
+        client
+            .row_conflicts("security", &row)
+            .await
+            .expect("remote names"),
+        names
+    );
+    assert_eq!(
+        client
+            .row_conflicts_batch("security", &[row.clone(), row.clone()])
+            .await
+            .expect("remote ordered duplicates"),
+        vec![names.clone(), names.clone()]
+    );
+    let values = client
+        .row_conflict_values("security", &row)
+        .await
+        .expect("remote values");
+    assert_eq!(values.len(), 4);
+    assert!(values[0].1.contains(&Value::Bool(false)));
+    assert!(values[0].1.contains(&Value::Bool(true)));
+    let mut transaction = client.transaction().await.expect("remote transaction");
+    assert_eq!(
+        transaction
+            .row_conflicts("security", &row)
+            .await
+            .expect("snapshot names"),
+        names
+    );
+    assert_eq!(
+        transaction
+            .row_conflict_values("security", &row)
+            .await
+            .expect("snapshot values"),
+        values
+    );
+    transaction
+        .execute_sql("CREATE TABLE pending (id UUID PRIMARY KEY)", None)
+        .await
+        .expect("transaction-local table");
+    assert!(
+        transaction
+            .row_conflicts("pending", &row)
+            .await
+            .expect("inspection sees uncommitted catalog")
+            .is_empty()
+    );
+    transaction
+        .execute_sql("SELECT * FROM absent", None)
+        .await
+        .expect_err("abort transaction");
+    assert!(transaction.row_conflicts("security", &row).await.is_err());
+    assert!(
+        transaction
+            .row_conflict_values("security", &row)
+            .await
+            .is_err()
+    );
+    transaction
+        .commit()
+        .await
+        .expect_err("aborted transaction cannot commit");
+    client
+        .row_conflicts("pending", &row)
+        .await
+        .expect_err("failed transaction rolled back");
+    client
+        .resolve_row(
+            "security",
+            &row,
+            vec![("admin_allowed".into(), Value::Bool(false))],
+        )
+        .await
+        .expect("remote partial resolution");
+    assert_eq!(
+        client
+            .row_conflicts("security", &row)
+            .await
+            .expect("unresolved columns retained"),
+        names[1..]
+    );
+    client
+        .resolve_row(
+            "security",
+            &row,
+            vec![("absent".into(), Value::Bool(false))],
+        )
+        .await
+        .expect_err("invalid resolution fails closed");
+    stop.send(()).expect("stop server");
+    server.await.expect("SQL server task");
+    client
+        .row_conflicts("security", &row)
+        .await
+        .expect_err("unavailable owner must not report clear");
+}
+
 async fn diverge(left: &Database, right: &Database) {
     left.client().execute_sql("CREATE TABLE security (id UUID PRIMARY KEY, admin_allowed BOOLEAN, selected_id UUID, revoked_at INTEGER, owner_subject TEXT)", None).await.expect("schema");
     left.client().execute_sql(&format!("INSERT INTO security VALUES (CAST('{ID}' AS UUID), NULL, CAST('{ID}' AS UUID), NULL, 'original')"), None).await.expect("baseline");
