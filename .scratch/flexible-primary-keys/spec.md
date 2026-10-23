@@ -16,7 +16,7 @@ The engine will be updated to support flexible primary keys. A table can now hav
 ## Implementation Decisions
 
 - **Schema Validation**: The `TableSchema` validation logic will be updated to rename `validate_uuid_primary_key` to `validate_primary_key`. The UUID-type restriction will be removed. The validator will enforce that at least one primary key column exists (allowing composite keys with multiple `primary_key` columns) and that all primary key columns use supported types.
-- **Index Creation**: The `create_table` operation will be modified. If any detected primary key column is not of type `UUID`, the engine will create an implicit unique index spanning all primary key columns plus the internal row `UUID`. This index maps user-provided primary key value(s) to the internal row identifier, enabling efficient lookups by natural, user-defined, or composite keys.
+- **Index Creation**: The `create_table` operation will be modified. If any detected primary key column is not of type `UUID`, the engine will create an implicit unique index spanning all primary key columns plus the internal row `UUID`. This index maps user-provided primary key value(s) to the internal row identifier, enabling efficient lookups by natural, user-defined, or composite keys. The index name is user-configurable; the default follows the existing convention of `pk_<table_name>`.
 - **Lookup Mechanism**: The engine will leverage its existing indexing system to perform lookups via the newly created primary key index.
 
 ## Testing Decisions

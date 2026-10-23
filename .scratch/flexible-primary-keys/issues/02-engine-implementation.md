@@ -8,5 +8,5 @@
 
 - [ ] Update `create_table` in `sql-engine` to use `validate_primary_key`.
 - [ ] Implement logic to detect if any primary key column is a non-UUID type.
-- [ ] Implement automatic creation of a unique index spanning all primary key columns plus the internal row `UUID` for non-UUID primary keys.
+- [ ] Implement automatic creation of a unique index spanning all primary key columns plus the internal row `UUID` for non-UUID primary keys. Index name is user-configurable with default `pk_<table_name>`.
 - [ ] Verify implementation with integration tests.
