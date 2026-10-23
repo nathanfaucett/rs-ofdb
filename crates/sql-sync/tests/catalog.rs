@@ -1468,3 +1468,55 @@ fn incomplete_table_and_index_definitions_are_rejected_without_commit() {
         );
     });
 }
+
+#[test]
+fn selected_negotiation_rejects_version_and_invalid_configuration_before_discovery() {
+    struct SelectionPeer {
+        sends: usize,
+    }
+    impl SyncTransport for SelectionPeer {
+        type Error = Closed;
+        async fn send(&mut self, _: Vec<u8>) -> Result<(), Closed> {
+            self.sends += 1;
+            Ok(())
+        }
+        async fn receive(&mut self) -> Result<Vec<u8>, Closed> {
+            Ok(postcard::to_allocvec(&SyncMessage::Selection {
+                protocol_version: sync::PROTOCOL_VERSION - 1,
+                selection: sync::SyncSelection::All,
+            })
+            .expect("selection"))
+        }
+    }
+    block_on(async {
+        let engine = Engine::new(InMemoryKernel::new(), TestCodec);
+        let factory = sync::MemorySyncStageFactory::new(1024);
+        let before = sync_manifest_for(&engine).await.expect("before");
+        for invalid_config in [false, true] {
+            let mut transport = SelectionPeer { sends: 0 };
+            let config = SessionConfig {
+                max_units_per_frame: if invalid_config { 0 } else { 64 },
+                ..SessionConfig::default()
+            };
+            let result = sync::synchronize_selected_with_stage_factory_checked(
+                &engine,
+                &mut transport,
+                &config,
+                SyncRole::Initiator,
+                &factory,
+                sync::SyncSelection::All,
+                || core::future::ready(Ok(())),
+            )
+            .await;
+            if invalid_config {
+                assert!(matches!(result, Err(sync::SyncError::InvalidConfiguration)));
+                assert_eq!(transport.sends, 0);
+            } else {
+                assert!(
+                    matches!(result, Err(sync::SyncError::IncompatibleProtocol(version)) if version == sync::PROTOCOL_VERSION - 1)
+                );
+            }
+        }
+        assert_eq!(before, sync_manifest_for(&engine).await.expect("unchanged"));
+    });
+}

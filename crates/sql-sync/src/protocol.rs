@@ -3,7 +3,7 @@ use alloc::{string::String, vec::Vec};
 use crate::{SyncChangeId, SyncKey, SyncManifest, SyncStateUnit};
 use engine::Uuid;
 use serde::{Deserialize, Serialize};
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncHello {
@@ -35,6 +35,10 @@ pub struct SyncSnapshotRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SyncMessage {
     Hello(SyncHello),
+    Selection {
+        protocol_version: u16,
+        selection: crate::SyncSelection,
+    },
     Manifest(SyncManifest),
     Inventory(Vec<SyncRowInventory>),
     State(Vec<SyncStateUnit>),

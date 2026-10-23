@@ -307,33 +307,55 @@ fn engine_rollback_aborted_transaction_and_commit_conflict_leave_no_partial_rows
 }
 
 #[test]
-#[ignore = "Existing defect for ticket 04: incremental selection omits deletion metadata when document heads also change; snapshot fallback passes"]
 fn incremental_reconciliation_transfers_combined_document_and_deletion_metadata() {
     block_on(async {
-        let source = database().await;
-        let destination = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
-        reconcile(&source, &destination).await;
-        update(&source, "name", "Grace").await;
-        source
-            .translate_and_execute("DELETE FROM people;", &SqlTranslator)
-            .await
-            .expect("metadata edit after document edit");
-        reconcile(&source, &destination).await;
-        assert!(
-            destination
-                .translate_and_execute("SELECT * FROM people;", &SqlTranslator)
+        for selected in [false, true] {
+            let source = database().await;
+            let destination = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+            reconcile(&source, &destination).await;
+            update(&source, "name", "Grace").await;
+            source
+                .translate_and_execute("DELETE FROM people;", &SqlTranslator)
                 .await
-                .expect("deleted row")[0]
-                .rows
-                .is_empty(),
-            "incremental selection must carry metadata as well as document changes"
-        );
-        assert_eq!(
-            sync::sync_manifest_for(&source).await.expect("source"),
-            sync::sync_manifest_for(&destination)
-                .await
-                .expect("destination")
-        );
+                .expect("metadata edit after document edit");
+            if selected {
+                reconcile_selected(
+                    &source,
+                    &destination,
+                    Some((
+                        sync::SyncSelection::Selected {
+                            tables: vec![],
+                            rows: vec![sync::SyncKey::Row {
+                                table: "people".into(),
+                                row: row_id(),
+                            }],
+                        },
+                        sync::SyncSelection::Selected {
+                            tables: vec![],
+                            rows: vec![],
+                        },
+                    )),
+                )
+                .await;
+            } else {
+                reconcile(&source, &destination).await;
+            }
+            assert!(
+                destination
+                    .translate_and_execute("SELECT * FROM people;", &SqlTranslator)
+                    .await
+                    .expect("deleted row")[0]
+                    .rows
+                    .is_empty(),
+                "incremental selection must carry metadata as well as document changes"
+            );
+            assert_eq!(
+                sync::sync_manifest_for(&source).await.expect("source"),
+                sync::sync_manifest_for(&destination)
+                    .await
+                    .expect("destination")
+            );
+        }
     });
 }
 
@@ -530,6 +552,7 @@ struct Counts {
     inventories: AtomicUsize,
     digest_loads: AtomicUsize,
     summaries: AtomicUsize,
+    row_scans: AtomicUsize,
 }
 
 struct CountingCodec {
@@ -601,6 +624,7 @@ impl<T: KernelTransaction> SyncRowCodec<T> for CountingCodec {
         transaction: &'a T,
         table: &'a str,
     ) -> impl Stream<Item = EngineResult<Uuid>> + Send + 'a {
+        self.counts.row_scans.fetch_add(1, Ordering::Relaxed);
         self.inner.row_ids(transaction, table)
     }
     async fn export_state(
@@ -667,6 +691,14 @@ async fn reconcile<K: engine::Kernel, R: SyncRowCodec<K::Transaction>>(
     left: &Engine<K, R>,
     right: &Engine<K, R>,
 ) -> (usize, usize) {
+    reconcile_selected(left, right, None).await
+}
+
+async fn reconcile_selected<K: engine::Kernel, R: SyncRowCodec<K::Transaction>>(
+    left: &Engine<K, R>,
+    right: &Engine<K, R>,
+    selection: Option<(sync::SyncSelection, sync::SyncSelection)>,
+) -> (usize, usize) {
     let (left_sender, right_receiver) = mpsc::unbounded();
     let (right_sender, left_receiver) = mpsc::unbounded();
     let mut left_transport = Transport {
@@ -682,17 +714,41 @@ async fn reconcile<K: engine::Kernel, R: SyncRowCodec<K::Transaction>>(
         changes: 0,
     };
     let config = SessionConfig::default();
-    let (left_result, right_result) = futures::join!(
-        synchronize(left, &mut left_transport, &config, SyncRole::Initiator),
-        synchronize(right, &mut right_transport, &config, SyncRole::Responder)
-    );
+    let (left_result, right_result) = if let Some((left_selection, right_selection)) = selection {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        futures::join!(
+            sync::synchronize_selected_with_stage_factory_checked(
+                left,
+                &mut left_transport,
+                &config,
+                SyncRole::Initiator,
+                &factory,
+                left_selection,
+                || core::future::ready(Ok(()))
+            ),
+            sync::synchronize_selected_with_stage_factory_checked(
+                right,
+                &mut right_transport,
+                &config,
+                SyncRole::Responder,
+                &factory,
+                right_selection,
+                || core::future::ready(Ok(()))
+            )
+        )
+    } else {
+        futures::join!(
+            synchronize(left, &mut left_transport, &config, SyncRole::Initiator),
+            synchronize(right, &mut right_transport, &config, SyncRole::Responder)
+        )
+    };
     left_result.expect("left reconciliation");
     right_result.expect("right reconciliation");
     (left_transport.states, left_transport.changes)
 }
 
 #[test]
-fn established_peer_one_row_edit_still_discovers_every_document() {
+fn established_peer_one_row_edit_avoids_unrelated_discovery_and_snapshot_exports() {
     block_on(async {
         let counts = Arc::new(Counts::default());
         let make = || {
@@ -717,11 +773,30 @@ fn established_peer_one_row_edit_still_discovers_every_document() {
         }
         reconcile(&left, &right).await;
         left.translate_and_execute("UPDATE people SET name = 'Grace' WHERE id = CAST('018f0f8e-7b6d-7c4a-8f12-000000000001' AS UUID);", &SqlTranslator).await.expect("one row edit");
+        counts.row_scans.store(0, Ordering::Relaxed);
         counts.summaries.store(0, Ordering::Relaxed);
         counts.snapshots.store(0, Ordering::Relaxed);
         counts.inventories.store(0, Ordering::Relaxed);
         counts.digest_loads.store(0, Ordering::Relaxed);
-        let frames = reconcile(&left, &right).await;
+        let selection = sync::SyncSelection::Selected {
+            tables: vec![],
+            rows: vec![sync::SyncKey::Row {
+                table: "people".into(),
+                row: Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-000000000001").expect("row"),
+            }],
+        };
+        let frames = reconcile_selected(
+            &left,
+            &right,
+            Some((
+                selection,
+                sync::SyncSelection::Selected {
+                    tables: vec![],
+                    rows: vec![],
+                },
+            )),
+        )
+        .await;
         let summaries = counts.summaries.load(Ordering::Relaxed);
         let snapshots = counts.snapshots.load(Ordering::Relaxed);
         let inventories = counts.inventories.load(Ordering::Relaxed);
@@ -735,18 +810,29 @@ fn established_peer_one_row_edit_still_discovers_every_document() {
             (0, 1),
             "incremental wire transfer does not imply selective discovery"
         );
-        assert!(summaries >= 16, "discovery remains broad until ticket04");
-        assert!(
-            snapshots < 49,
-            "manifest discovery removes baseline snapshot exports"
+        assert_eq!(
+            counts.row_scans.load(Ordering::Relaxed),
+            0,
+            "no table enumeration for exact rows"
         );
+        assert_eq!(summaries, 2, "only the selected row on each peer");
+        assert_eq!(snapshots, 0, "ordinary live deltas never export full state");
+        assert_eq!(digest_loads, 0, "no save/load solely for digest");
+        assert_eq!(inventories, 0, "summary already contains native history");
+        // Ticket01 baseline: 49 snapshots, 26 inventories, 48 digest reloads;
+        // ticket02: 25 snapshots, 26 inventories, 24 reloads, 24 summaries.
+        counts.summaries.store(0, Ordering::Relaxed);
+        reconcile(&left, &right).await;
         assert!(
-            digest_loads < 48,
-            "manifest discovery removes baseline digest reloads"
+            counts.summaries.load(Ordering::Relaxed) >= 16,
+            "explicit broad fallback still inventories the database"
         );
-        counts.snapshots.store(0, Ordering::Relaxed);
-        counts.digest_loads.store(0, Ordering::Relaxed);
-        assert!(inventories > 0);
+        assert_eq!(
+            counts.snapshots.load(Ordering::Relaxed),
+            0,
+            "broad comparison of known history exports no snapshots either"
+        );
+        assert_eq!(counts.digest_loads.load(Ordering::Relaxed), 0);
         assert_eq!(
             sync::sync_manifest_for(&left).await.expect("left"),
             sync::sync_manifest_for(&right).await.expect("right")

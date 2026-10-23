@@ -715,6 +715,102 @@ impl Database {
         }
     }
 
+    /// Reconcile the union of both peers' pending invalidations, with per-apply checks.
+    /// This is discovery, not authorization: the caller admits the whole database.
+    /// Use the table-scoped validated APIs for restricted history/candidate policies.
+    /// Keep one subscription per peer; select before mapping/export and acknowledge
+    /// only after success. Supply All on reconnect, bootstrap, gaps or remote wakeup
+    /// without a remote selection. Local notifications do not detect remote-only edits.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_selected_checked<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        invalidations: &[engine_automerge::SqlInvalidation],
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
+        self.synchronize_selected_with_stage_factory_checked(
+            transport,
+            config,
+            role,
+            &factory,
+            invalidations,
+            check,
+        )
+        .await
+    }
+
+    /// Checked sync with caller-provided staging; see `Self::synchronize_checked`.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_selected_with_stage_factory_checked<T, F, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        factory: &F,
+        invalidations: &[engine_automerge::SqlInvalidation],
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        F: SyncStageFactory,
+        F::Stage: 'static,
+        Q: FnMut() -> U + Send,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+    {
+        let selection = if invalidations.contains(&engine_automerge::SqlInvalidation::All) {
+            sync::SyncSelection::All
+        } else {
+            let mut tables = Vec::new();
+            let mut rows = Vec::new();
+            for invalidation in invalidations {
+                match invalidation {
+                    engine_automerge::SqlInvalidation::All => unreachable!("handled above"),
+                    engine_automerge::SqlInvalidation::Table(table) => tables.push(table.clone()),
+                    engine_automerge::SqlInvalidation::Row { table, row } => {
+                        rows.push(sync::SyncKey::Row {
+                            table: table.clone(),
+                            row: *row,
+                        })
+                    }
+                }
+            }
+            sync::SyncSelection::Selected { tables, rows }
+        };
+        match &self.backend {
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(engine) => engine
+                .session(async {
+                    let engine = engine
+                        .read()
+                        .await
+                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                    sync::synchronize_selected_with_stage_factory_checked(
+                        &*engine, transport, config, role, factory, selection, check,
+                    )
+                    .await
+                })
+                .await
+                .map_err(|error| SyncError::PreApply(error.to_string()))?,
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(engine) => {
+                sync::synchronize_selected_with_stage_factory_checked(
+                    engine, transport, config, role, factory, selection, check,
+                )
+                .await
+            }
+        }
+    }
+
     /// Native staging plus the same per-operation caller check as memory sync.
     /// Local failure releases stages without waiting for Abort delivery; discard
     /// the transport after failure.

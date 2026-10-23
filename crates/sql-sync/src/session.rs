@@ -8,9 +8,9 @@ use alloc::{
 };
 
 use engine::{
-    ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
-    ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel, KernelTransaction, MutationSummary, Uuid,
-    validate_row_id,
+    DocumentSummary, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
+    ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel,
+    KernelTransaction, MutationSummary, Uuid, validate_row_id,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
 use thiserror::Error;
@@ -165,8 +165,90 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    sync_stage(|| synchronize_scoped(engine, transport, config, role, stage_factory, check, None))
-        .await
+    sync_stage(|| {
+        synchronize_scoped(
+            engine,
+            transport,
+            config,
+            role,
+            stage_factory,
+            check,
+            None,
+            None,
+        )
+    })
+    .await
+}
+
+/// Checked selected discovery. Both peers must use this entry point. Capture each
+/// peer's pending work before calling; acknowledge only on success. All is required
+/// on bootstrap/reconnect/gaps. Remote-only commits require caller-driven wakeups.
+/// Selection is not an authorization scope; scoped validators remain separate APIs.
+#[allow(clippy::too_many_arguments)]
+pub async fn synchronize_selected_with_stage_factory_checked<K, R, T, F, Q, U>(
+    engine: &Engine<K, R>,
+    transport: &mut T,
+    config: &SessionConfig,
+    role: SyncRole,
+    stage_factory: &F,
+    selection: crate::SyncSelection,
+    check: Q,
+) -> Result<SyncResult, SyncError<T::Error>>
+where
+    Q: FnMut() -> U + Send,
+    U: core::future::Future<Output = Result<(), String>> + Send,
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    F: SyncStageFactory,
+    F::Stage: 'static,
+{
+    if config.max_units_per_frame == 0
+        || config.max_session_bytes == 0
+        || config.direction != SyncDirection::Bidirectional
+    {
+        return Err(SyncError::InvalidConfiguration);
+    }
+    let message = SyncMessage::Selection {
+        protocol_version: PROTOCOL_VERSION,
+        selection: selection.clone(),
+    };
+    let remote = match role {
+        SyncRole::Initiator => {
+            send_message(transport, &message).await?;
+            receive_message(transport).await?.0
+        }
+        SyncRole::Responder => {
+            let remote = receive_message(transport).await?.0;
+            send_message(transport, &message).await?;
+            remote
+        }
+    };
+    let SyncMessage::Selection {
+        protocol_version,
+        selection: remote,
+    } = remote
+    else {
+        return Err(SyncError::UnexpectedMessage);
+    };
+    if protocol_version != PROTOCOL_VERSION {
+        return Err(SyncError::IncompatibleProtocol(protocol_version));
+    }
+    let selection = selection.union(remote);
+    sync_stage(|| {
+        synchronize_scoped(
+            engine,
+            transport,
+            config,
+            role,
+            stage_factory,
+            check,
+            None,
+            Some(selection),
+        )
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -361,6 +443,7 @@ where
             stage_factory,
             check,
             Some(scope),
+            None,
         )
     })
     .await
@@ -375,6 +458,7 @@ async fn synchronize_scoped<K, R, T, F, Q, U>(
     stage_factory: &F,
     mut check: Q,
     mut scope: Option<TableScope<'_>>,
+    selection: Option<crate::SyncSelection>,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
     Q: FnMut() -> U + Send,
@@ -407,62 +491,42 @@ where
         return Err(SyncError::InvalidConfiguration);
     }
 
-    let preflight_units = if !config.direction.sends_history() {
-        Some(Vec::new())
-    } else if scope.is_some() {
-        Some(
-            with_engine_abort(
-                transport,
-                sync_stage(|| {
-                    export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref())
-                })
-                .await,
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
-    exchange_hello(transport, role).await?;
-
-    let remote_manifest =
-        sync_stage(|| exchange_manifest(engine, transport, role, scope.as_ref())).await?;
-    let local_units = match preflight_units {
-        Some(units) => units,
-        None => {
-            with_engine_abort(
-                transport,
-                sync_stage(|| {
-                    export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref())
-                })
-                .await,
-            )
-            .await?
-        }
-    };
-
-    let inventory_keys = if config.direction.sends_history() {
-        local_units
-            .iter()
-            .map(|unit| unit.key.clone())
-            .collect::<Vec<_>>()
-    } else {
+    if scope.is_some() && config.direction.sends_history() {
+        // Preserve complete outgoing scoped history/candidate validation before publication.
         with_engine_abort(
             transport,
-            sync_stage(|| sync_manifest_limited(engine, config.max_session_bytes, scope.as_ref()))
-                .await,
+            sync_stage(|| {
+                export_sync_state_limited(engine, config.max_session_bytes, scope.as_ref())
+            })
+            .await,
         )
-        .await?
-        .entries
-        .into_iter()
-        .map(|(key, _)| key)
-        .collect()
-    };
-    let local_inventories = with_engine_abort(
+        .await?;
+    }
+    exchange_hello(transport, role).await?;
+
+    let summaries = with_engine_abort(
         transport,
-        sync_stage(|| inventories_for(engine, &inventory_keys, config.max_session_bytes)).await,
+        discover(engine, config.max_session_bytes, scope.as_ref(), selection).await,
     )
     .await?;
+    let local_manifest = SyncManifest::new(
+        summaries
+            .iter()
+            .map(|(key, summary)| (key.clone(), summary.digest))
+            .collect(),
+    );
+    let remote_manifest = exchange_manifest_value(transport, role, local_manifest).await?;
+    let local_inventories = summaries
+        .iter()
+        .map(|(key, summary)| {
+            let SyncKey::Row { table, row } = key;
+            SyncRowInventory {
+                table: table.clone(),
+                row: *row,
+                changes: summary.changes.clone(),
+            }
+        })
+        .collect();
 
     let remote_inventories = exchange_inventories(transport, role, local_inventories).await?;
 
@@ -495,7 +559,7 @@ where
             sync_stage(|| {
                 build_outbound(
                     engine,
-                    local_units,
+                    summaries,
                     &remote_manifest,
                     remote_inventories,
                     config.max_session_bytes,
@@ -638,6 +702,105 @@ struct Received {
     received_bytes: usize,
 }
 
+async fn discover<K, R>(
+    engine: &Engine<K, R>,
+    max_bytes: usize,
+    scope: Option<&TableScope<'_>>,
+    selection: Option<crate::SyncSelection>,
+) -> Result<Vec<(SyncKey, DocumentSummary)>, EngineError>
+where
+    K: Kernel,
+    R: SyncRowCodec<K::Transaction>,
+{
+    let mut selection = selection.unwrap_or(crate::SyncSelection::All);
+    if let crate::SyncSelection::Selected { tables, rows } = &selection {
+        for key in rows {
+            let SyncKey::Row { table, row } = key;
+            validate_row_id(table, row)?;
+        }
+        if tables
+            .iter()
+            .any(|table| engine::catalog_table_for_storage(table).is_some())
+            || rows.iter().any(|key| {
+                let SyncKey::Row { table, .. } = key;
+                engine::catalog_table_for_storage(table).is_some()
+            })
+        {
+            selection = crate::SyncSelection::All;
+        }
+    }
+    let (tables, mut keys) = match selection {
+        crate::SyncSelection::All => {
+            let mut tables = Vec::from([
+                String::from(ENGINE_TABLES_STORAGE),
+                String::from(ENGINE_TABLE_FIELDS_STORAGE),
+                String::from(ENGINE_INDICES_STORAGE),
+                String::from(ENGINE_INDEX_FIELDS_STORAGE),
+            ]);
+            if let Some(scope) = scope {
+                tables.extend(scope.names.iter().cloned());
+            } else {
+                tables.extend(engine.table_names().await?);
+            }
+            (tables, BTreeSet::new())
+        }
+        crate::SyncSelection::Selected { tables, rows } => (tables, rows.into_iter().collect()),
+    };
+    let scope_keys = scope.map(|scope| (scope.names.clone(), scope.keys.clone()));
+    engine
+        .read_transaction(move |codec, transaction| {
+            Box::pin(async move {
+                for table in tables {
+                    let rows = codec.row_ids(transaction, &table);
+                    pin_mut!(rows);
+                    while let Some(row) = rows.next().await {
+                        keys.insert(SyncKey::Row {
+                            table: table.clone(),
+                            row: row?,
+                        });
+                        // Bound identity discovery even for absent-state/hostile codecs.
+                        if keys.len() > max_bytes / 32 {
+                            return Err(EngineError::InvalidQuery(
+                                "Sync discovery budget exceeded",
+                            ));
+                        }
+                    }
+                }
+                let mut summaries = Vec::new();
+                let mut used = 0;
+                for key in keys {
+                    let SyncKey::Row { table, row } = &key;
+                    if scope_keys
+                        .as_ref()
+                        .is_some_and(|(names, keys)| !names.contains(table) && !keys.contains(&key))
+                    {
+                        continue;
+                    }
+                    used = account_engine_payload(used, table.len().saturating_add(80), max_bytes)?;
+                    if let Some(summary) = codec
+                        .history_summary(transaction, table, *row, max_bytes.saturating_sub(used))
+                        .await?
+                    {
+                        used = account_engine_payload(
+                            used,
+                            summary.metadata.len().saturating_add(
+                                summary
+                                    .changes
+                                    .iter()
+                                    .map(|id| id.0.len().saturating_add(32))
+                                    .sum::<usize>(),
+                            ),
+                            max_bytes,
+                        )?;
+                        summaries.push((key, summary));
+                    }
+                }
+                Ok(summaries)
+            })
+        })
+        .await
+}
+
 pub async fn sync_manifest_for<K, R>(engine: &Engine<K, R>) -> Result<SyncManifest, EngineError>
 where
     K: Kernel,
@@ -655,68 +818,13 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    let mut used_bytes = 0;
-    let mut entries = Vec::new();
-    let mut tables = [
-        ENGINE_TABLES_STORAGE,
-        ENGINE_TABLE_FIELDS_STORAGE,
-        ENGINE_INDICES_STORAGE,
-        ENGINE_INDEX_FIELDS_STORAGE,
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect::<Vec<_>>();
-    tables.extend(engine.table_names().await?);
-    tables.sort_unstable();
-    tables.dedup();
-    for table in tables {
-        let table_for_rows = table.clone();
-        let scope_for_rows = scope.map(|s| (s.names.clone(), s.keys.clone()));
-        let (table_entries, next_used_bytes) = engine
-            .read_transaction(|codec, transaction| {
-                Box::pin(async move {
-                    let mut used_bytes = used_bytes;
-                    let mut entries = Vec::new();
-                    let rows = codec.row_ids(transaction, &table_for_rows);
-                    pin_mut!(rows);
-                    while let Some(row) = rows.next().await {
-                        let row = row?;
-                        if scope_for_rows.as_ref().is_some_and(|(names, keys)| {
-                            !names.contains(&table_for_rows)
-                                && !keys.contains(&SyncKey::Row {
-                                    table: table_for_rows.clone(),
-                                    row,
-                                })
-                        }) {
-                            continue;
-                        }
-                        let entry_bytes = table_for_rows
-                            .len()
-                            .saturating_add(row.as_bytes().len())
-                            .saturating_add(48);
-                        used_bytes = account_engine_payload(used_bytes, entry_bytes, max_bytes)?;
-                        let state_budget = max_bytes.saturating_sub(used_bytes);
-                        if let Some(summary) = codec
-                            .history_summary(transaction, &table_for_rows, row, state_budget)
-                            .await?
-                        {
-                            let key = SyncKey::Row {
-                                table: table_for_rows.clone(),
-                                row,
-                            };
-                            entries.push((key, summary.digest));
-                        } else {
-                            used_bytes = used_bytes.saturating_sub(entry_bytes);
-                        }
-                    }
-                    Ok((entries, used_bytes))
-                })
-            })
-            .await?;
-        entries.extend(table_entries);
-        used_bytes = next_used_bytes;
-    }
-    Ok(SyncManifest::new(entries))
+    Ok(SyncManifest::new(
+        discover(engine, max_bytes, scope, None)
+            .await?
+            .into_iter()
+            .map(|(key, summary)| (key, summary.digest))
+            .collect(),
+    ))
 }
 
 pub async fn export_sync_state_for<K, R>(
@@ -1530,52 +1638,6 @@ fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineEr
     Ok(())
 }
 
-async fn inventories_for<K, R>(
-    engine: &Engine<K, R>,
-    keys: &[SyncKey],
-    max_bytes: usize,
-) -> Result<Vec<SyncRowInventory>, EngineError>
-where
-    K: Kernel,
-    R: SyncRowCodec<K::Transaction>,
-{
-    let mut used_bytes = 0usize;
-    let mut result = Vec::new();
-    for key in keys {
-        let SyncKey::Row { table, row } = key.clone();
-        let key_bytes = table.len() + row.as_bytes().len() + 64;
-        let table_for_inventory = table.clone();
-        let row_for_inventory = row;
-        let inventory_budget = max_bytes.saturating_sub(used_bytes.saturating_add(key_bytes));
-        let changes = engine
-            .read_transaction(|codec, transaction| {
-                Box::pin(async move {
-                    codec
-                        .change_inventory(
-                            transaction,
-                            &table_for_inventory,
-                            row_for_inventory,
-                            inventory_budget,
-                        )
-                        .await
-                })
-            })
-            .await?;
-        let inventory_bytes = changes
-            .iter()
-            .fold(key_bytes, |sum, id| sum.saturating_add(id.0.len() + 8));
-        used_bytes = account_engine_payload(used_bytes, inventory_bytes, max_bytes)?;
-        result.push(SyncRowInventory {
-            table,
-            row,
-            changes,
-        });
-    }
-    result.sort_by_key(SyncRowInventory::key);
-    result.dedup_by(|left, right| left.key() == right.key());
-    Ok(result)
-}
-
 async fn exchange_inventories<T>(
     transport: &mut T,
     role: SyncRole,
@@ -1615,7 +1677,7 @@ where
 
 async fn build_outbound<K, R>(
     engine: &Engine<K, R>,
-    units: Vec<SyncStateUnit>,
+    summaries: Vec<(SyncKey, DocumentSummary)>,
     remote_manifest: &SyncManifest,
     remote_inventories: BTreeMap<SyncKey, SyncRowInventory>,
     max_bytes: usize,
@@ -1627,41 +1689,32 @@ where
 {
     let mut used_bytes = 0;
     let mut outbound = Outbound::default();
-    for unit in units {
-        let SyncKey::Row { table, row } = unit.key.clone();
-        let state = unit.state.clone();
-        let metadata = unit.metadata.clone();
-        let digest = engine
-            .read_transaction(|codec, _| {
-                Box::pin(async move { codec.manifest_digest(&state, &metadata) })
-            })
-            .await?;
-        if remote_manifest.contains(&unit.key, digest) {
+    for (unit_key, summary) in summaries {
+        let SyncKey::Row { table, row } = unit_key.clone();
+        if remote_manifest.contains(&unit_key, summary.digest) {
             continue;
         }
-        let Some(remote) = remote_inventories.get(&unit.key) else {
-            used_bytes =
-                account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
-            outbound.snapshots.push(unit);
+        let remote = remote_inventories.get(&unit_key);
+        // Metadata is outside document history. Never select document-only deltas
+        // when metadata must travel with them.
+        if remote.is_none() || !summary.metadata.is_empty() {
+            for unit in recovery_snapshots(
+                engine,
+                Vec::from([SyncSnapshotRequest { table, row }]),
+                max_bytes.saturating_sub(used_bytes),
+                scope,
+            )
+            .await?
+            {
+                used_bytes =
+                    account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
+                outbound.snapshots.push(unit);
+            }
             continue;
-        };
-        let table_for_inventory = table.clone();
-        let row_for_inventory = row;
-        let inventory_budget = max_bytes.saturating_sub(used_bytes);
-        let local = engine
-            .read_transaction(|codec, transaction| {
-                Box::pin(async move {
-                    codec
-                        .change_inventory(
-                            transaction,
-                            &table_for_inventory,
-                            row_for_inventory,
-                            inventory_budget,
-                        )
-                        .await
-                })
-            })
-            .await?;
+        }
+        let remote = remote.expect("inventory checked above");
+        let local = summary.changes;
+        let has_history = !local.is_empty();
         let row_changes_start = outbound.changes.len();
         let row_bytes_start = used_bytes;
         let mut snapshot_required = false;
@@ -1746,6 +1799,9 @@ where
                 snapshot_required = true;
                 break;
             }
+        }
+        if !snapshot_required && has_history && outbound.changes.len() == row_changes_start {
+            continue;
         }
         if snapshot_required || outbound.changes.len() == row_changes_start {
             outbound.changes.truncate(row_changes_start);
@@ -2672,7 +2728,8 @@ where
                 return Ok(count);
             }
             SyncMessage::Abort(reason) => return Err(SyncError::RemoteAbort(reason)),
-            SyncMessage::Hello(_)
+            SyncMessage::Selection { .. }
+            | SyncMessage::Hello(_)
             | SyncMessage::Manifest(_)
             | SyncMessage::Inventory(_)
             | SyncMessage::RequestSnapshots(_) => {
@@ -2730,23 +2787,15 @@ fn validate_hello<E>(message: SyncMessage) -> Result<(), SyncError<E>> {
     Ok(())
 }
 
-async fn exchange_manifest<K, R, T>(
-    engine: &Engine<K, R>,
+async fn exchange_manifest_value<T>(
     transport: &mut T,
     role: SyncRole,
-    scope: Option<&TableScope<'_>>,
+    manifest: SyncManifest,
 ) -> Result<SyncManifest, SyncError<T::Error>>
 where
-    K: Kernel,
-    R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let manifest = with_engine_abort(
-        transport,
-        sync_manifest_limited(engine, MAX_MESSAGE_BYTES - 64, scope).await,
-    )
-    .await?;
     let message = SyncMessage::Manifest(manifest);
     match role {
         SyncRole::Initiator => {

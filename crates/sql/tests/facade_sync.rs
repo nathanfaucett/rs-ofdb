@@ -623,3 +623,322 @@ async fn native_catalog_replay_error_and_mid_transaction_cancellation_roll_back(
         assert_eq!(std::fs::read_dir(dir.path()).expect("cleanup").count(), 0);
     }
 }
+
+async fn selected_pair(
+    left: &Database,
+    right: &Database,
+    left_changes: &mut ofdb_sql::ChangeSubscription,
+    right_changes: &mut ofdb_sql::ChangeSubscription,
+) {
+    let left_work = left_changes.select();
+    let right_work = right_changes.select();
+    let left_selection = match &left_work {
+        Some(work) => left.sync_invalidations(work).await.expect("left mapping"),
+        None => vec![],
+    };
+    let right_selection = match &right_work {
+        Some(work) => right.sync_invalidations(work).await.expect("right mapping"),
+        None => vec![],
+    };
+    let (mut lt, mut rt) = channels();
+    let config = SessionConfig::default();
+    let (l, r) = tokio::join!(
+        left.synchronize_selected_checked(
+            &mut lt,
+            &config,
+            SyncRole::Initiator,
+            &left_selection,
+            || core::future::ready(Ok(()))
+        ),
+        right.synchronize_selected_checked(
+            &mut rt,
+            &config,
+            SyncRole::Responder,
+            &right_selection,
+            || core::future::ready(Ok(()))
+        )
+    );
+    l.expect("left selected sync");
+    r.expect("right selected sync");
+    if let Some(work) = left_work {
+        assert!(left_changes.acknowledge(work));
+    }
+    if let Some(work) = right_work {
+        assert!(right_changes.acknowledge(work));
+    }
+}
+
+#[tokio::test]
+async fn selected_sessions_fan_out_with_independent_peers_and_broad_reconnect() {
+    let a = Database::in_memory();
+    let b = Database::in_memory();
+    let c = Database::in_memory();
+    let mut ab = a.sync_changes().expect("a to b");
+    let mut ac = a.sync_changes().expect("a to c");
+    let mut ba = b.sync_changes().expect("b to a");
+    let mut ca = c.sync_changes().expect("c to a");
+    seed(&a).await;
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    selected_pair(&a, &c, &mut ac, &mut ca).await;
+    b.client()
+        .execute_sql("UPDATE users SET name = 'from b'", None)
+        .await
+        .expect("remote edit");
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    assert!(
+        ac.select().is_some(),
+        "a's incoming commit remains pending for c"
+    );
+    selected_pair(&a, &c, &mut ac, &mut ca).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        c.sync_manifest().await.expect("fanout")
+    );
+    // Independent offline edits, including metadata, converge through a new peer's All.
+    b.client()
+        .execute_sql("UPDATE users SET name = 'offline b'", None)
+        .await
+        .expect("b offline");
+    c.client()
+        .execute_sql(
+            "UPDATE users SET name = 'offline c'; DELETE FROM users",
+            None,
+        )
+        .await
+        .expect("c offline deletion");
+    ba = b.sync_changes().expect("reconnected b");
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    ca = c.sync_changes().expect("reconnected c");
+    selected_pair(&a, &c, &mut ac, &mut ca).await;
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    selected_pair(&a, &c, &mut ac, &mut ca).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        b.sync_manifest().await.expect("b")
+    );
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        c.sync_manifest().await.expect("c")
+    );
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    selected_pair(&a, &c, &mut ac, &mut ca).await;
+    assert!(
+        ab.select().is_none()
+            && ba.select().is_none()
+            && ac.select().is_none()
+            && ca.select().is_none(),
+        "known state settles without echo commits"
+    );
+}
+
+struct CommitDuringInventory<'a> {
+    inner: Channel,
+    database: &'a Database,
+    committed: bool,
+    sent_frames: usize,
+}
+
+impl SyncTransport for CommitDuringInventory<'_> {
+    type Error = &'static str;
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+        self.inner.receive().await
+    }
+    async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+        // The native protocol's inventory follows the captured summary snapshot.
+        self.sent_frames += 1;
+        if self.sent_frames == 4 {
+            self.committed = true;
+            self.database.client().execute_sql("UPDATE users SET name = 'during session'; INSERT INTO users (name) VALUES ('new during session')", None).await.expect("concurrent local commit");
+        }
+        self.inner.send(frame).await
+    }
+}
+
+#[tokio::test]
+async fn selected_session_acknowledgement_never_hides_concurrent_local_work() {
+    for mode in ["new", "established", "reconnect"] {
+        let a = Database::in_memory();
+        let b = Database::in_memory();
+        seed(&a).await;
+        let mut ab = a.sync_changes().expect("a subscription");
+        let mut ba = b.sync_changes().expect("b subscription");
+        if mode != "new" {
+            selected_pair(&a, &b, &mut ab, &mut ba).await;
+            selected_pair(&a, &b, &mut ab, &mut ba).await;
+        }
+        if mode == "reconnect" {
+            ab = a.sync_changes().expect("new reconnect requires All");
+        }
+        a.client()
+            .execute_sql("UPDATE users SET name = 'before session'", None)
+            .await
+            .expect("edit");
+        let work = ab.select().expect("captured before export");
+        let selected = a.sync_invalidations(&work).await.expect("map");
+        let (lt, mut rt) = channels();
+        let mut lt = CommitDuringInventory {
+            inner: lt,
+            database: &a,
+            committed: false,
+            sent_frames: 0,
+        };
+        let config = SessionConfig::default();
+        let (l, r) = tokio::join!(
+            a.synchronize_selected_checked(
+                &mut lt,
+                &config,
+                SyncRole::Initiator,
+                &selected,
+                || core::future::ready(Ok(()))
+            ),
+            b.synchronize_selected_checked(&mut rt, &config, SyncRole::Responder, &[], || {
+                core::future::ready(Ok(()))
+            })
+        );
+        l.expect("left session");
+        r.expect("right session");
+        assert!(lt.committed);
+        assert!(ab.acknowledge(work));
+        assert!(
+            ab.select().is_some(),
+            "concurrent commit survives selected acknowledgement"
+        );
+        selected_pair(&a, &b, &mut ab, &mut ba).await;
+        assert_eq!(
+            a.sync_manifest().await.expect("a"),
+            b.sync_manifest().await.expect("b")
+        );
+        assert_eq!(
+            b.client()
+                .execute_sql("SELECT * FROM users", None)
+                .await
+                .expect("rows")[0]
+                .rows
+                .len(),
+            2
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_session_denial_retries_without_acknowledging_and_catalog_gap_fall_back() {
+    let a = Database::in_memory();
+    let b = Database::in_memory();
+    seed(&a).await;
+    let mut ab = a.sync_changes().expect("a subscription");
+    let mut ba = b.sync_changes().expect("b subscription");
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    a.client()
+        .execute_sql("UPDATE users SET name = 'denied edit'", None)
+        .await
+        .expect("edit");
+    let work = ab.select().expect("selected");
+    let invalidations = a.sync_invalidations(&work).await.expect("map");
+    let before = b.sync_manifest().await.expect("before");
+    let (mut lt, mut rt) = channels();
+    let config = SessionConfig::default();
+    let (left, right) = tokio::join!(
+        a.synchronize_selected_checked(
+            &mut lt,
+            &config,
+            SyncRole::Initiator,
+            &invalidations,
+            || core::future::ready(Ok(()))
+        ),
+        b.synchronize_selected_checked(&mut rt, &config, SyncRole::Responder, &[], || {
+            core::future::ready(Err("authorization revoked".into()))
+        })
+    );
+    assert!(left.is_err());
+    assert!(matches!(right, Err(ofdb_sql::SyncError::PreApply(_))));
+    assert_eq!(
+        before,
+        b.sync_manifest().await.expect("denied state unchanged")
+    );
+    assert!(
+        ab.select().is_some(),
+        "failed work retries without another commit"
+    );
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    for n in 0..130 {
+        a.client()
+            .execute_sql(&format!("UPDATE users SET name = 'gap {n}'"), None)
+            .await
+            .expect("overflow writes");
+    }
+    let gap = ab.select().expect("gap work");
+    assert_eq!(
+        a.sync_invalidations(&gap).await.expect("gap mapping"),
+        vec![ofdb_sql::SqlInvalidation::All]
+    );
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        b.sync_manifest().await.expect("gap recovered")
+    );
+    a.client().execute_sql("DROP TABLE users; CREATE TABLE users (id UUID PRIMARY KEY, name TEXT); INSERT INTO users (name) VALUES ('recreated')", None).await.expect("catalog recreation");
+    let catalog = ab.select().expect("catalog work");
+    assert_eq!(
+        a.sync_invalidations(&catalog)
+            .await
+            .expect("catalog mapping"),
+        vec![ofdb_sql::SqlInvalidation::All]
+    );
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        b.sync_manifest().await.expect("recreated")
+    );
+    let rows = b
+        .client()
+        .execute_sql("SELECT name FROM users", None)
+        .await
+        .expect("recreated rows");
+    assert_eq!(rows[0].rows.len(), 1);
+    assert_eq!(
+        rows[0].rows[0].values,
+        vec![ofdb_sql::Value::Text("recreated".into())]
+    );
+}
+
+#[cfg(feature = "redb")]
+#[tokio::test]
+async fn redb_selected_sessions_resume_broadly_after_reopen() {
+    let root = tempfile::tempdir().expect("databases");
+    let a = Database::open(root.path().join("a.redb")).expect("a");
+    let b_path = root.path().join("b.redb");
+    let b = Database::open(&b_path).expect("b");
+    let mut ab = a.sync_changes().expect("a subscription");
+    let mut ba = b.sync_changes().expect("b subscription");
+    seed(&a).await;
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    a.client()
+        .execute_sql("UPDATE users SET name = 'selected redb'", None)
+        .await
+        .expect("edit");
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        b.sync_manifest().await.expect("b")
+    );
+    drop(b);
+    let b = Database::open(&b_path).expect("reopen");
+    ba = b.sync_changes().expect("reopened subscription");
+    assert_eq!(
+        b.sync_invalidations(&ba.select().expect("bootstrap"))
+            .await
+            .expect("map"),
+        vec![ofdb_sql::SqlInvalidation::All]
+    );
+    b.client()
+        .execute_sql("UPDATE users SET name = 'reopened redb'", None)
+        .await
+        .expect("remote edit");
+    selected_pair(&a, &b, &mut ab, &mut ba).await;
+    assert_eq!(
+        a.sync_manifest().await.expect("a"),
+        b.sync_manifest().await.expect("b")
+    );
+}
