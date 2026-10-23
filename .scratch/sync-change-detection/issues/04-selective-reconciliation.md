@@ -1,6 +1,6 @@
 # 04 — Integrate selective SQL and incremental KV reconciliation
 
-Status: Planned
+Status: Done
 
 Depends on: 02, 03
 
@@ -28,3 +28,9 @@ Three-peer tests demonstrate bidirectional delivery under the chosen transport c
 Run focused SQL/KV session, facade and lifecycle integration tests. Use deterministic work counters, not latency thresholds, to prove selective discovery.
 
 ## Comments
+
+Implemented on integration branch `sync-change-detection` via SQL commit `3a81acc` and KV commit `d1e76c0`, merged at `a93fd12`. Detailed interfaces, TDD evidence, focused validation and limits are in [SQL integration](../sql-integration.md) and [KV integration](../kv-integration.md).
+
+Both stores negotiate the union of selected work, preserve validated atomic apply and metadata, and use broad fallback for new/reconnected peers, gaps and catalog invalidation. SQL protocol is 7; KV protocol is 3. Caller-driven remote wakeups/reconciliation are explicit: local notifications alone do not observe remote-only commits. The formerly ignored SQL combined document/deletion regression now passes normally. SQL's deterministic established one-row fixture records two summaries with no snapshot exports, row-ID scans, separate inventories or digest reloads. KV's 101-key fixture exchanges only selected-key inventory and no snapshots.
+
+Focused suites and facade multi-peer/denial/retry/concurrent-commit tests passed as recorded in the handoffs. Large SQL payload/cancellation tests exceeded bounded focused runs and remain issue05 validation work, not claimed passes. No workspace feature-powerset or CRAP success is claimed here.
