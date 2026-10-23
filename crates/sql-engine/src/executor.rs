@@ -795,7 +795,7 @@ where
     R: RowCodec<T>,
 {
     table_schema
-        .validate_uuid_primary_key()
+        .validate_primary_key()
         .map_err(EngineError::InvalidQuery)?;
     if catalog_table_for_storage(&table_schema.name).is_some() {
         return Err(EngineError::InvalidQuery(

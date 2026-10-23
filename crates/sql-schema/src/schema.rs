@@ -45,16 +45,17 @@ pub struct TableSchema {
 }
 
 impl TableSchema {
-    pub fn validate_uuid_primary_key(&self) -> Result<(), &'static str> {
-        let mut primary_keys = self.columns.iter().filter(|column| column.primary_key);
-        let Some(primary_key) = primary_keys.next() else {
-            return Err("Table requires a UUID primary key");
-        };
-        if primary_keys.next().is_some() {
-            return Err("Table requires exactly one primary key");
+    pub fn validate_primary_key(&self) -> Result<(), &'static str> {
+        let mut primary_keys = self
+            .columns
+            .iter()
+            .filter(|column| column.primary_key)
+            .peekable();
+        if primary_keys.peek().is_none() {
+            return Err("Table requires a primary key");
         }
-        if primary_key.r#type != ValueType::Uuid {
-            return Err("Primary key must have UUID type");
+        if primary_keys.any(|column| column.r#type == ValueType::Null) {
+            return Err("Primary key must have a non-null type");
         }
         Ok(())
     }
@@ -63,11 +64,13 @@ impl TableSchema {
 #[cfg(test)]
 mod tests {
     #[cfg(not(feature = "std"))]
-    use alloc::vec;
+    use alloc::{string::String, vec};
     #[cfg(feature = "std")]
-    use std::vec;
+    use std::{string::String, vec};
 
-    use super::*;
+    use value::{Value, ValueType};
+
+    use super::{ColumnSchema, TableSchema};
 
     fn column(value_type: ValueType, primary_key: bool) -> ColumnSchema {
         ColumnSchema {
@@ -79,26 +82,89 @@ mod tests {
     }
 
     #[test]
-    fn validates_one_uuid_primary_key() {
-        let valid = TableSchema {
-            name: String::new(),
-            columns: vec![column(ValueType::Uuid, true)],
-        };
-        assert_eq!(valid.validate_uuid_primary_key(), Ok(()));
-
-        for columns in [
-            vec![column(ValueType::Text, false)],
-            vec![column(ValueType::Integer, true)],
-            vec![column(ValueType::Uuid, true), column(ValueType::Uuid, true)],
+    fn accepts_all_supported_non_null_primary_key_types() {
+        for value_type in [
+            ValueType::Type,
+            ValueType::Uuid,
+            ValueType::Bool,
+            ValueType::Integer,
+            ValueType::Float,
+            ValueType::Text,
+            ValueType::Json,
+            ValueType::Blob,
         ] {
-            assert!(
-                TableSchema {
-                    name: String::new(),
-                    columns
-                }
-                .validate_uuid_primary_key()
-                .is_err()
+            let schema = TableSchema {
+                name: String::new(),
+                columns: vec![column(value_type, true)],
+            };
+            assert_eq!(schema.validate_primary_key(), Ok(()), "{value_type:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_composite_primary_keys() {
+        for columns in [
+            vec![
+                column(ValueType::Integer, true),
+                column(ValueType::Text, true),
+            ],
+            vec![column(ValueType::Uuid, true), column(ValueType::Uuid, true)],
+            vec![
+                column(ValueType::Text, false),
+                column(ValueType::Uuid, true),
+                column(ValueType::Integer, true),
+                column(ValueType::Blob, true),
+            ],
+        ] {
+            let schema = TableSchema {
+                name: String::new(),
+                columns,
+            };
+            assert_eq!(schema.validate_primary_key(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn rejects_null_primary_key_components() {
+        for columns in [
+            vec![column(ValueType::Null, true)],
+            vec![column(ValueType::Null, true), column(ValueType::Uuid, true)],
+            vec![column(ValueType::Uuid, true), column(ValueType::Null, true)],
+        ] {
+            let schema = TableSchema {
+                name: String::new(),
+                columns,
+            };
+            assert_eq!(
+                schema.validate_primary_key(),
+                Err("Primary key must have a non-null type")
             );
         }
+    }
+
+    #[test]
+    fn rejects_tables_without_primary_keys() {
+        for columns in [vec![], vec![column(ValueType::Text, false)]] {
+            let schema = TableSchema {
+                name: String::new(),
+                columns,
+            };
+            assert_eq!(
+                schema.validate_primary_key(),
+                Err("Table requires a primary key")
+            );
+        }
+    }
+
+    #[test]
+    fn allows_null_types_outside_primary_key() {
+        let schema = TableSchema {
+            name: String::new(),
+            columns: vec![
+                column(ValueType::Null, false),
+                column(ValueType::Integer, true),
+            ],
+        };
+        assert_eq!(schema.validate_primary_key(), Ok(()));
     }
 }
