@@ -368,6 +368,8 @@ pub enum DataDefinition {
         schema: TableSchema,
         if_not_exists: bool,
     },
+    /// A unique index covering exactly the primary-key columns supplies the primary-key
+    /// index name. Otherwise natural/composite keys get an implicit `pk_<table>` index.
     CreateTableWithIndexes {
         schema: TableSchema,
         indexes: Vec<IndexSchema>,

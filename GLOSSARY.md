@@ -62,7 +62,7 @@ A Row Reconciler stores and resolves Logical Rows through an Engine Transaction.
 
 ## Row Identity
 
-Every SQL Logical Row has one immutable UUID primary key. User rows can have caller-supplied RFC-variant UUIDv5 stable identities or UUIDv7 identities; generated identities and schema-definition identities are UUIDv7. The table name and that exact UUID identify the row for storage and replication; independently created user rows with the same table and UUID share one logical identity. A UUIDv5 identity does not encode creation time or establish authorization. A table's identity is its name, not its schema-definition row UUID.
+Every SQL Logical Row has one immutable internal UUID row identity, distinct from its user primary key. A user primary key is a non-null, unique tuple of one or more supported column values; a single UUID primary key also supplies the row identity, while natural and composite primary keys have independently generated UUIDv7 row identities. Caller-supplied row identities are RFC-variant UUIDv5 stable identities or UUIDv7 identities; generated identities and schema-definition identities are UUIDv7. The table name and that exact row UUID identify the row for storage and replication; independently created user rows with the same table and row UUID share one logical identity. A UUIDv5 identity does not encode creation time or establish authorization. A table's identity is its name, not its schema-definition row UUID.
 
 ## Schema Definition
 

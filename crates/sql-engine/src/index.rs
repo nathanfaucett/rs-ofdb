@@ -10,11 +10,11 @@ use value::{Row, Value};
 
 use crate::{
     EngineError, EngineResult, KernelTransaction, RowCodec, RowTable,
-    executor::{materialize_defaults, row_id},
+    executor::{materialize_defaults, uuid_primary_key, validate_row},
     schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage, table_schema_for},
 };
 
-async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
+pub(crate) async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -44,15 +44,8 @@ async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
 }
 
 fn schema_row_is_valid(schema: &schema::TableSchema, id: uuid::Uuid, row: &Row) -> bool {
-    row.values.len() == schema.columns.len()
-        && schema
-            .columns
-            .iter()
-            .zip(&row.values)
-            .all(|(column, value)| {
-                (value == &Value::Null || value.r#type() == column.r#type)
-                    && (!column.primary_key || value.as_uuid() == Some(&id))
-            })
+    validate_row(schema, row).is_ok()
+        && uuid_primary_key(schema).is_none_or(|index| row.values[index].as_uuid() == Some(&id))
 }
 
 fn record_key(schema: &IndexSchema, row_id: uuid::Uuid, row: &Row) -> EngineResult<Row> {
@@ -76,7 +69,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     name: &str,
     values: &Row,
-) -> EngineResult<Option<Row>> {
+) -> EngineResult<Option<(uuid::Uuid, Row)>> {
     let (_, schema) = index_schema(transaction, codec, name)
         .await?
         .ok_or(EngineError::InvalidQuery("Index not found"))?;
@@ -97,7 +90,10 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
         }
     }
     match winner {
-        Some(row) => codec.get_row(transaction, &schema.table_name, &row).await,
+        Some(id) => Ok(codec
+            .get_row(transaction, &schema.table_name, &id)
+            .await?
+            .map(|row| (id, row))),
         None => Ok(None),
     }
 }
@@ -192,7 +188,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
         }
         rows
     };
-    for (_, row) in rows {
+    for (id, row) in rows {
         for (name, index) in &indexes {
             insert_index_row(
                 transaction,
@@ -200,6 +196,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
                 &schema,
                 name,
                 index,
+                id,
                 &row,
                 enforce_unique,
             )
@@ -213,22 +210,27 @@ pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     table: &str,
+    id: uuid::Uuid,
     old: Option<&Row>,
     new: Option<&Row>,
     enforce_unique: bool,
 ) -> EngineResult<()> {
     let schema = table_schema_for(transaction, codec, table, table.into()).await?;
+    if enforce_unique && let Some(row) = new {
+        validate_row(&schema, row)?;
+        if !schema_row_is_valid(&schema, id, row) {
+            return Err(EngineError::InvalidQuery(
+                "Primary key must match the row UUID",
+            ));
+        }
+    }
     for (name, index) in indexes_for_table(transaction, codec, table).await? {
         transaction.ensure_table(&name).await?;
         if let Some(row) = old {
             transaction
                 .remove_entry(
                     &name,
-                    &record_key(
-                        &index,
-                        row_id(&schema, row)?,
-                        &materialize_defaults(&schema, row.clone()),
-                    )?,
+                    &record_key(&index, id, &materialize_defaults(&schema, row.clone()))?,
                 )
                 .await?;
         }
@@ -239,6 +241,7 @@ pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
                 &schema,
                 &name,
                 &index,
+                id,
                 row,
                 enforce_unique,
             )
@@ -254,11 +257,12 @@ async fn insert_index_row<T: KernelTransaction, R: RowCodec<T>>(
     schema: &schema::TableSchema,
     storage: &str,
     index: &IndexSchema,
+    id: uuid::Uuid,
     row: &Row,
     enforce_unique: bool,
 ) -> EngineResult<()> {
     let row = materialize_defaults(schema, row.clone());
-    let key = record_key(index, row_id(schema, &row)?, &row)?;
+    let key = record_key(index, id, &row)?;
     if enforce_unique
         && index.unique
         && !key.values.iter().any(|value| matches!(value, Value::Null))

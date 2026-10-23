@@ -275,7 +275,7 @@ where
         let transaction = self.kernel.transaction().await?;
         let row = index_lookup(&transaction, self.reconciler.as_ref(), name, values).await?;
         transaction.rollback().await?;
-        Ok(row)
+        Ok(row.map(|(_, row)| row))
     }
 
     pub async fn table_schema(&self, name: &str) -> EngineResult<TableSchema> {

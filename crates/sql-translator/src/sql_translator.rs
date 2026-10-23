@@ -1238,11 +1238,22 @@ fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Sta
         return Err(TranslateError::custom("Foreign keys are not supported"));
     }
 
-    let columns = create_table
+    let mut columns = create_table
         .columns
         .iter()
         .map(translate_column_schema)
         .collect::<TranslateResult<Vec<_>>>()?;
+    for constraint in &create_table.constraints {
+        if let ast::TableConstraint::PrimaryKey(primary) = constraint {
+            for name in unique_columns(&primary.columns)? {
+                let column = columns
+                    .iter_mut()
+                    .find(|column| column.name == name)
+                    .ok_or(TranslateError::custom("PRIMARY KEY column not found"))?;
+                column.primary_key = true;
+            }
+        }
+    }
 
     let schema = TableSchema {
         name: table_name,
@@ -1251,24 +1262,29 @@ fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Sta
 
     let mut indexes = Vec::new();
     for (ordinal, column) in create_table.columns.iter().enumerate() {
-        if column
-            .options
-            .iter()
-            .any(|option| matches!(option.option, ast::ColumnOption::Unique { .. }))
-        {
+        for option in &column.options {
+            let name = match &option.option {
+                ast::ColumnOption::Unique(unique) => {
+                    unique.name.as_ref().or(unique.index_name.as_ref())
+                }
+                ast::ColumnOption::PrimaryKey(primary) => {
+                    let Some(name) = primary
+                        .name
+                        .as_ref()
+                        .or(primary.index_name.as_ref())
+                        .or(option.name.as_ref())
+                    else {
+                        continue;
+                    };
+                    Some(name)
+                }
+                _ => continue,
+            };
             let columns = vec![column.name.value.clone()];
-            let name = column.options.iter().find_map(|option| {
-                let ast::ColumnOption::Unique(unique) = &option.option else {
-                    return None;
-                };
-                unique
-                    .name
-                    .as_ref()
-                    .or(unique.index_name.as_ref())
-                    .map(|name| name.value.clone())
-            });
             indexes.push(schema::IndexSchema {
-                name: name.unwrap_or_else(|| unique_index_name(&schema.name, &columns, ordinal)),
+                name: name
+                    .map(|name| name.value.clone())
+                    .unwrap_or_else(|| unique_index_name(&schema.name, &columns, ordinal)),
                 table_name: schema.name.clone(),
                 column_indices: vec![ordinal as u32],
                 unique: true,
@@ -1276,30 +1292,38 @@ fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Sta
         }
     }
     for (ordinal, constraint) in create_table.constraints.iter().enumerate() {
-        if let ast::TableConstraint::Unique(unique) = constraint {
-            let names = unique_columns(&unique.columns)?;
-            indexes.push(schema::IndexSchema {
-                name: unique
-                    .name
-                    .as_ref()
-                    .or(unique.index_name.as_ref())
-                    .map(|name| name.value.clone())
-                    .unwrap_or_else(|| unique_index_name(&schema.name, &names, ordinal)),
-                table_name: schema.name.clone(),
-                column_indices: names
-                    .iter()
-                    .map(|name| {
-                        schema
-                            .columns
-                            .iter()
-                            .position(|column| column.name == *name)
-                            .map(|index| index as u32)
-                            .ok_or(TranslateError::custom("UNIQUE column not found"))
-                    })
-                    .collect::<TranslateResult<Vec<_>>>()?,
-                unique: true,
-            });
-        }
+        let (columns, name) = match constraint {
+            ast::TableConstraint::Unique(unique) => (
+                &unique.columns,
+                unique.name.as_ref().or(unique.index_name.as_ref()),
+            ),
+            ast::TableConstraint::PrimaryKey(primary) => {
+                let Some(name) = primary.name.as_ref().or(primary.index_name.as_ref()) else {
+                    continue;
+                };
+                (&primary.columns, Some(name))
+            }
+            _ => continue,
+        };
+        let names = unique_columns(columns)?;
+        indexes.push(schema::IndexSchema {
+            name: name
+                .map(|name| name.value.clone())
+                .unwrap_or_else(|| unique_index_name(&schema.name, &names, ordinal)),
+            table_name: schema.name.clone(),
+            column_indices: names
+                .iter()
+                .map(|name| {
+                    schema
+                        .columns
+                        .iter()
+                        .position(|column| column.name == *name)
+                        .map(|index| index as u32)
+                        .ok_or(TranslateError::custom("UNIQUE column not found"))
+                })
+                .collect::<TranslateResult<Vec<_>>>()?,
+            unique: true,
+        });
     }
 
     if indexes.is_empty() {

@@ -1,6 +1,6 @@
 use core::{future::Future, pin::Pin};
 
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 use futures::{StreamExt, pin_mut};
 use query::{
@@ -9,9 +9,9 @@ use query::{
     QueryInsertValue, QueryInsertValues, QueryJoinKind, QueryOrderBy, QueryResult,
     QueryResultColumn, QuerySelect, QuerySortDirection, QueryUpdate, QueryUpdateAssignment,
 };
-use schema::{ColumnSchema, TableSchema};
+use schema::{ColumnSchema, IndexSchema, TableSchema};
 use uuid::Uuid;
-use value::{Row, Value};
+use value::{Row, Value, ValueType};
 
 // Construct large execution futures outside dispatcher poll frames, not just on the heap.
 #[inline(never)]
@@ -246,7 +246,15 @@ where
                     Err(EngineError::InvalidQuery("Table already exists"))
                 };
             }
-            create_table(transaction, codec, timestamp_provider, changes, schema).await?;
+            create_table(
+                transaction,
+                codec,
+                timestamp_provider,
+                changes,
+                schema,
+                vec![],
+            )
+            .await?;
             Ok(QueryResult::default())
         }
         DataDefinition::CreateTableWithIndexes {
@@ -264,10 +272,15 @@ where
                     Err(EngineError::InvalidQuery("Table already exists"))
                 };
             }
-            create_table(transaction, codec, timestamp_provider, changes, schema).await?;
-            for index in indexes {
-                create_index(transaction, codec, timestamp_provider, changes, index).await?;
-            }
+            create_table(
+                transaction,
+                codec,
+                timestamp_provider,
+                changes,
+                schema,
+                indexes,
+            )
+            .await?;
             Ok(QueryResult::default())
         }
         DataDefinition::DropTable {
@@ -639,13 +652,19 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let Some((id, _)) = crate::schema::index_schema(transaction, codec, name).await? else {
+    let Some((id, index)) = crate::schema::index_schema(transaction, codec, name).await? else {
         return if if_exists {
             Ok(())
         } else {
             Err(EngineError::InvalidQuery("Index not found"))
         };
     };
+    let table = table_schema(transaction, codec, &index.table_name).await?;
+    if uuid_primary_key(&table).is_none() && is_primary_key_index(&table, &index) {
+        return Err(EngineError::InvalidQuery(
+            "Cannot drop the primary key index",
+        ));
+    }
     let fields = {
         let rows = codec.scan_row_states(transaction, ENGINE_INDEX_FIELDS_STORAGE);
         pin_mut!(rows);
@@ -694,6 +713,12 @@ where
     R: RowCodec<T>,
 {
     let table_schema = table_schema(transaction, codec, &schema.table_name).await?;
+    if crate::schema::index_schema(transaction, codec, &schema.name)
+        .await?
+        .is_some()
+    {
+        return Err(EngineError::InvalidQuery("Index already exists"));
+    }
     if execution_stage(|| {
         largest_schema_name_claim(transaction, codec, ENGINE_TABLES_STORAGE, &schema.name)
     })
@@ -789,6 +814,7 @@ async fn create_table<T, R>(
     timestamp_provider: TimestampProvider,
     changes: &mut Vec<Change>,
     table_schema: TableSchema,
+    mut indexes: Vec<IndexSchema>,
 ) -> EngineResult<()>
 where
     T: KernelTransaction,
@@ -803,6 +829,24 @@ where
         ));
     }
     let table = table_schema.name.clone();
+    let primary_columns: Vec<_> = table_schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| column.primary_key.then_some(index as u32))
+        .collect();
+    if uuid_primary_key(&table_schema).is_none()
+        && !indexes
+            .iter()
+            .any(|index| is_primary_key_index(&table_schema, index))
+    {
+        indexes.push(IndexSchema {
+            name: format!("pk_{table}"),
+            table_name: table.clone(),
+            column_indices: primary_columns,
+            unique: true,
+        });
+    }
     if execution_stage(|| {
         largest_schema_name_claim(transaction, codec, ENGINE_INDICES_STORAGE, &table)
     })
@@ -849,6 +893,9 @@ where
             column,
         )
         .await?;
+    }
+    for index in indexes {
+        create_index(transaction, codec, timestamp_provider, changes, index).await?;
     }
     Ok(())
 }
@@ -945,7 +992,18 @@ where
 {
     let schema = table_schema(transaction, reconciler, &insert.table).await?;
     let row_value = materialize_insert(&schema, insert.row, timestamp_provider)?;
-    let row = row_id(&schema, &row_value)?;
+    validate_row(&schema, &row_value)?;
+    let row = match uuid_primary_key(&schema) {
+        Some(index) => {
+            let id = row_value.values[index]
+                .as_uuid()
+                .copied()
+                .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))?;
+            crate::schema::validate_row_id(&schema.name, &id)?;
+            id
+        }
+        None => next_uuid(timestamp_provider)?,
+    };
     let table = lookup_table_name(transaction, reconciler, &insert.table).await?;
     if row_is_deleted(reconciler, transaction, &table, row).await? {
         return Err(EngineError::InvalidQuery("Primary key was deleted"));
@@ -1032,22 +1090,26 @@ where
     R: RowCodec<T>,
 {
     let schema = table_schema(transaction, reconciler, &insert.table).await?;
-    let primary_key = schema
-        .columns
-        .iter()
-        .position(|column| column.primary_key)
-        .ok_or(EngineError::InvalidQuery(
-            "Table requires exactly one UUID primary key",
-        ))?;
+    let primary_key = uuid_primary_key(&schema);
     if let Some(target) = insert.on_conflict_do_nothing.as_ref().or_else(|| {
         insert
             .on_conflict_do_update
             .as_ref()
             .map(|(target, _)| target)
-    }) && target.as_slice() != [schema.columns[primary_key].name.as_str()]
+    }) && (target.len()
+        != schema
+            .columns
+            .iter()
+            .filter(|column| column.primary_key)
+            .count()
+        || schema
+            .columns
+            .iter()
+            .filter(|column| column.primary_key)
+            .any(|column| !target.contains(&column.name)))
     {
         return Err(EngineError::InvalidQuery(
-            "ON CONFLICT target must be the UUID primary key",
+            "ON CONFLICT target must be the primary key",
         ));
     }
     let columns = if insert.columns.is_empty() {
@@ -1084,7 +1146,7 @@ where
                 .enumerate()
                 .map(|(index, value)| match value {
                     Some(QueryInsertValue::Value(value)) => Ok(value),
-                    Some(QueryInsertValue::Default) | None if index == primary_key => {
+                    Some(QueryInsertValue::Default) | None if Some(index) == primary_key => {
                         next_uuid(timestamp_provider).map(Value::Uuid)
                     }
                     Some(QueryInsertValue::Default) | None => {
@@ -1094,9 +1156,35 @@ where
                 .collect::<EngineResult<Vec<_>>>()?,
         );
         if insert.on_conflict_do_nothing.is_some() || insert.on_conflict_do_update.is_some() {
-            let row_id = row_id(&schema, &row)?;
+            validate_row(&schema, &row)?;
             let table = lookup_table_name(transaction, reconciler, &insert.table).await?;
-            if let Some(mut existing) = reconciler.get_row(transaction, &table, &row_id).await? {
+            let existing = if let Some(index) = primary_key {
+                let id = row.values[index]
+                    .as_uuid()
+                    .copied()
+                    .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))?;
+                crate::schema::validate_row_id(&table, &id)?;
+                reconciler
+                    .get_row(transaction, &table, &id)
+                    .await?
+                    .map(|row| (id, row))
+            } else {
+                let indexes =
+                    crate::index::indexes_for_table(transaction, reconciler, &table).await?;
+                let (_, index) = indexes
+                    .iter()
+                    .find(|(_, index)| is_primary_key_index(&schema, index))
+                    .ok_or(EngineError::InvalidQuery("Primary key index not found"))?;
+                let key = Row::new(
+                    index
+                        .column_indices
+                        .iter()
+                        .map(|index| row.values[*index as usize].clone())
+                        .collect(),
+                );
+                crate::index::lookup(transaction, reconciler, &index.name, &key).await?
+            };
+            if let Some((row_id, mut existing)) = existing {
                 let Some((_, assignments)) = &insert.on_conflict_do_update else {
                     continue;
                 };
@@ -1228,9 +1316,7 @@ where
                 }
             };
         }
-        if row_id(&schema, &row)? != id {
-            return Err(EngineError::InvalidQuery("Cannot update the primary key"));
-        }
+        validate_row(&schema, &row)?;
         let changed_columns: Vec<_> = assignments.iter().map(|(index, _)| *index).collect();
         let value = reconciler
             .encode_row(transaction, &table, &id, &row, &changed_columns)
@@ -2288,14 +2374,7 @@ fn materialize_insert(
         ));
     }
     let mut values = row.values;
-    let primary_key = schema
-        .columns
-        .iter()
-        .position(|column| column.primary_key)
-        .ok_or(EngineError::InvalidQuery(
-            "Table requires exactly one UUID primary key",
-        ))?;
-    if values.len() < schema.columns.len() && primary_key == 0 {
+    if values.len() < schema.columns.len() && uuid_primary_key(schema) == Some(0) {
         let timestamp = timestamp_provider();
         values.insert(0, Value::Uuid(Uuid::new_v7(timestamp)));
     }
@@ -2311,26 +2390,42 @@ fn materialize_insert(
     Ok(row)
 }
 
-pub(crate) fn row_id(schema: &TableSchema, row: &Row) -> EngineResult<Uuid> {
-    let primary_keys: Vec<_> = schema
+fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) -> bool {
+    let primary_columns: Vec<_> = schema
         .columns
         .iter()
         .enumerate()
-        .filter_map(|(index, column)| column.primary_key.then_some(index))
+        .filter_map(|(index, column)| column.primary_key.then_some(index as u32))
         .collect();
-    let [index] = primary_keys.as_slice() else {
-        return Err(EngineError::InvalidQuery(
-            "Table requires exactly one UUID primary key",
-        ));
-    };
-    let id = row
-        .values
-        .get(*index)
-        .and_then(Value::as_uuid)
-        .copied()
-        .ok_or(EngineError::InvalidQuery("Primary key must be a UUID"))?;
-    crate::schema::validate_row_id(&schema.name, &id)?;
-    Ok(id)
+    let mut columns = index.column_indices.clone();
+    columns.sort();
+    index.unique && index.table_name == schema.name && columns == primary_columns
+}
+
+pub(crate) fn uuid_primary_key(schema: &TableSchema) -> Option<usize> {
+    let mut keys = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.primary_key);
+    let (index, column) = keys.next()?;
+    (keys.next().is_none() && column.r#type == ValueType::Uuid).then_some(index)
+}
+
+pub(crate) fn validate_row(schema: &TableSchema, row: &Row) -> EngineResult<()> {
+    if row.values.len() != schema.columns.len() {
+        return Err(EngineError::InvalidQuery("Row has the wrong column count"));
+    }
+    for (column, value) in schema.columns.iter().zip(&row.values) {
+        if matches!(value, Value::Null) {
+            if column.primary_key {
+                return Err(EngineError::InvalidQuery("Primary key must not be NULL"));
+            }
+        } else if value.r#type() != column.r#type {
+            return Err(EngineError::InvalidQuery("Column value has the wrong type"));
+        }
+    }
+    Ok(())
 }
 
 fn key_row_id(key: &Row) -> EngineResult<Uuid> {
