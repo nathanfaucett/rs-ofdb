@@ -1576,7 +1576,6 @@ where
                 .try_into()
                 .map_err(|_| EngineError::custom("Invalid sync change ID"))?;
         let document_id = Self::document_id(&row);
-        let automerge_key = DocumentChangeKey::new_incremental(document_id.clone(), hash);
         let changes = Self::native_changes(payload)?;
         if !changes.iter().any(|change| change.hash().0 == hash) {
             return Err(EngineError::custom(
@@ -1587,6 +1586,11 @@ where
             return Err(EngineError::SyncDependencyUnavailable);
         };
         let previous_heads = document.get_heads();
+        let new_changes: Vec<_> = changes
+            .iter()
+            .filter(|change| document.get_change_by_hash(&change.hash()).is_none())
+            .cloned()
+            .collect();
         document
             .apply_changes(changes)
             .map_err(EngineError::custom)?;
@@ -1601,10 +1605,16 @@ where
         let columns = Self::document_columns(transaction, table, &row, &document).await?;
         Self::decode_row(&document, &columns)?;
         let stale_definition = Self::document_is_stale(transaction, table, &document).await?;
-        AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table))
-            .insert(automerge_key, payload.to_vec())
-            .await
-            .map_err(EngineError::custom)?;
+        let mut store = AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table));
+        for change in new_changes {
+            store
+                .insert(
+                    DocumentChangeKey::new_incremental(document_id.clone(), change.hash().0),
+                    change.raw_bytes().to_vec(),
+                )
+                .await
+                .map_err(EngineError::custom)?;
+        }
         if stale_definition {
             self.delete_row(transaction, table, &row).await?;
         }

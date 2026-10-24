@@ -46,6 +46,10 @@ pub enum SyncRole {
 pub struct Config {
     pub max_frame_bytes: usize,
     pub max_snapshots_per_batch: usize,
+    /// Maximum cumulative encoded bytes in one received directional inventory.
+    pub max_inventory_bytes: usize,
+    /// Maximum distinct documents retained per directional comparison.
+    pub max_inventory_entries: usize,
 }
 
 impl Default for Config {
@@ -53,6 +57,8 @@ impl Default for Config {
         Self {
             max_frame_bytes: 8 * 1024 * 1024,
             max_snapshots_per_batch: 128,
+            max_inventory_bytes: 64 * 1024 * 1024,
+            max_inventory_entries: 65_536,
         }
     }
 }

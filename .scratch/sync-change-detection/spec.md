@@ -1,6 +1,6 @@
 # Commit-scoped change detection and incremental reconciliation
 
-Status: Implementation complete; validation blocked (see ticket 05)
+Status: Implementation and both confirmed P1 review fixes complete; validation blocked (see ticket 05 and review evidence)
 
 ## Decision
 
@@ -8,7 +8,7 @@ Implemented through tickets 01–04; ticket 05 reconciles current documentation 
 
 Keep SQL and KV Sync Sessions separate. Realtime and offline reconciliation use the same validated apply semantics: transfer missing Automerge history when possible, and snapshots plus metadata when necessary. Improve selection of work before changing crate topology.
 
-Current behavior is documented in [design](../../docs/design.md), [goal](../../docs/goal.md), and the root [glossary](../../GLOSSARY.md). Engine-owned `RowReconciler` capabilities replace protocol-owned semantics; SQL wire 7 and KV wire 3 are intentionally incompatible with earlier versions. See [SQL integration](sql-integration.md), [KV integration](kv-integration.md) and [ticket 05 evidence](issues/05-validation-and-cleanup.md). Implementation completion is not a claim that the full validation gates passed.
+Current behavior is documented in [design](../../docs/design.md), [goal](../../docs/goal.md), and the root [glossary](../../GLOSSARY.md). Engine-owned `RowReconciler` capabilities replace protocol-owned semantics; SQL wire 7 and KV wire 3 are intentionally incompatible with earlier versions. See [SQL integration](sql-integration.md), [KV integration](kv-integration.md) and [ticket 05 evidence](issues/05-validation-and-cleanup.md). Both confirmed independent-review P1 findings are repaired with executable red/green regressions: overlapping SQL bundles preserve full native history, and KV receive inventories enforce cumulative byte/entry budgets plus duplicate-ID rejection. See [review fixes and evidence](review.md). Implementation completion is not a claim that the full validation gates passed.
 
 ## Original problem and source evidence
 
@@ -111,7 +111,7 @@ Before implementation, record complexity/risk/priority: high priority for correc
 - Invalidation is bounded in process: 128 retained commits, each at most 128 physical invalidations / 16 KiB of identity bytes. Oversized commits, lag/gaps, new/cloned subscriptions and reconnect/restart require All. Selected work can combine retained commits; retention limits do not bound all transaction/session memory.
 - Select before reads and acknowledge only success. Every store/peer has independent unmerged subscription lifetime; later commits and other peers remain pending. Tokens are not durable cursors or authorization scopes.
 - SQL exact-row work avoids unrelated row enumeration; table invalidation permits a table scan and catalog/dependency/unknown invalidation is broad. Metadata mismatches use complete state plus metadata. Restricted SQL policies use scoped validated APIs, not selected APIs as admission.
-- KV selected work re-reads latest generations and enumerates full selected document history. Broad fallback retains whole-store inventory; configured per-document/frame limits can reject oversized work. SQL likewise has frame/apply/session budgets; neither protocol chunks a single oversized document.
+- KV selected work re-reads latest generations and enumerates full selected document history. Broad fallback retains whole-store inventory; received KV inventories are additionally bounded per direction by cumulative encoded bytes (64 MiB by default) and document count (65,536), with duplicate document IDs rejected before retention. Configured per-document/frame limits can reject oversized work. SQL likewise has frame/apply/session budgets; neither protocol chunks a single oversized document.
 - Local signals cover shared wrappers only, not external writes or remote-only commits. Callers must arrange remote wakeups/receive delivery or explicit two-sided reconciliation. SQL memory supports subscriptions; KV memory remains caller-driven broad sync. No automatic bidirectional realtime or durable replay promise is introduced.
 
 ## Design guardrails

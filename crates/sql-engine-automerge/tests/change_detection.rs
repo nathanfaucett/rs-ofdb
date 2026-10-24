@@ -508,7 +508,7 @@ fn multi_change_payload_uses_actual_change_ids_and_dependency_order() {
         let (_, _, received) = state(&destination).await;
         assert_eq!(
             inventory, received,
-            "one stored payload still contains two actual change identities"
+            "bundled delivery preserves both native change identities"
         );
         destination
             .read_transaction(move |codec, transaction| {
@@ -543,6 +543,77 @@ fn multi_change_payload_uses_actual_change_ids_and_dependency_order() {
             })
             .await
             .expect("physical exportability differs from history");
+    });
+}
+
+#[test]
+fn overlapping_bundles_preserve_full_history_and_current_values() {
+    block_on(async {
+        let source = database().await;
+        let destination = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        bootstrap(&source, &destination).await;
+        let (_, _, baseline) = state(&source).await;
+        update(&source, "name", "Grace").await;
+        update(&source, "city", "Paris").await;
+        update(&source, "name", "Katherine").await;
+        let (snapshot, _, expected) = state(&source).await;
+        let mut document = AutoCommit::load(&snapshot).expect("source history");
+        let changes = document.get_changes(&[]);
+        let missing = &changes[baseline.len()..];
+        assert_eq!(missing.len(), 3);
+        let bundles: Vec<_> = [0..2, 1..3]
+            .into_iter()
+            .map(|range| sync::SyncIncrementalChange {
+                table: "people".into(),
+                row: row_id(),
+                id: SyncChangeId(missing[1].hash().0.to_vec()),
+                payload: missing[range]
+                    .iter()
+                    .flat_map(|change| change.raw_bytes().iter().copied())
+                    .collect(),
+            })
+            .collect();
+        for bundle in &bundles {
+            sync::apply_incremental_changes_for(&destination, std::slice::from_ref(bundle))
+                .await
+                .expect("overlapping bundle");
+        }
+        let (received, _, inventory) = state(&destination).await;
+        let mut document = AutoCommit::load(&received).expect("received history");
+        assert!(document.get_missing_deps(&[]).is_empty());
+        assert_eq!(inventory, expected, "overlap must retain A, B and C");
+        assert_eq!(
+            destination
+                .translate_and_execute("SELECT name, city FROM people;", &SqlTranslator)
+                .await
+                .expect("current values")[0]
+                .rows,
+            vec![Row::new(vec![
+                Value::from("Katherine"),
+                Value::from("Paris")
+            ])]
+        );
+        let before = sync::sync_manifest_for(&destination)
+            .await
+            .expect("before replay");
+        let mut notifications = destination
+            .subscribe_changes()
+            .expect("memory notifications");
+        assert!(notifications.acknowledge(notifications.select().expect("initial comparison")));
+        sync::apply_incremental_changes_for(&destination, &bundles)
+            .await
+            .expect("known overlap replay");
+        assert_eq!(
+            before,
+            sync::sync_manifest_for(&destination)
+                .await
+                .expect("silent replay")
+        );
+        assert_eq!(state(&destination).await.2, expected);
+        assert!(
+            notifications.select().is_none(),
+            "known history emits no committed invalidation"
+        );
     });
 }
 

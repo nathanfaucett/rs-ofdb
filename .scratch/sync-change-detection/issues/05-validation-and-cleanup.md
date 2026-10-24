@@ -1,6 +1,6 @@
 # 05 — Validate convergence, simplify and update documentation
 
-Status: Validation blocked (documentation and implementation reconciliation complete)
+Status: Validation blocked (implementation reconciliation and both confirmed P1 review fixes complete)
 
 Depends on: 04
 
@@ -76,4 +76,14 @@ Diagnostic-only `cargo clippy --workspace --all-targets -- -D warnings -A clippy
 
 ### Acceptance and remaining gates
 
-Documentation reconciliation and focused scenario/cost checks are complete. **Validation remains explicitly blocked** by strict Clippy, the sharded feature combination, incomplete workspace CRAP, and the two unfinished engine oversized tests (`oversized_single_row_fails_sync_and_preserves_source_data`, `oversized_incremental_fails_sync_and_preserves_both_versions`). The large-payload facade cancellation tests and the SQL-sync oversized test now pass; they do not substitute for the unfinished engine tests. No implementation defect was inferred from a timeout. Independent implementation review is separate, not claimed complete by this ticket.
+Documentation reconciliation and focused scenario/cost checks are complete. **Validation remains explicitly blocked** by strict Clippy, the sharded feature combination, incomplete workspace CRAP, and the two unfinished engine oversized tests (`oversized_single_row_fails_sync_and_preserves_source_data`, `oversized_incremental_fails_sync_and_preserves_both_versions`). The large-payload facade cancellation tests and the SQL-sync oversized test now pass; they do not substitute for the unfinished engine tests. No implementation defect was inferred from a timeout. Independent implementation review is separate, not claimed complete by this ticket's original validation work.
+
+### Confirmed independent-review repairs
+
+Both confirmed P1 findings were independently reproduced and fixed on `sync-change-detection-review-fixes`, based on integration `a34c361`, using the approved public engine apply and KV transport/session seams. Full red/green evidence, limits, exact commands and remaining blockers are in [review.md](../review.md).
+
+- SQL overlapping `[A,B]` then `[B,C]`, both advertised as B: executable red failed on missing dependencies. Persisting only previously unknown individual native changes under their own hashes now preserves full history and current values; replay emits no committed invalidation. Bundled input and full/scoped validated atomic apply remain supported.
+- KV valid multi-frame inventories: executable red consumed through End instead of enforcing an aggregate entry limit or duplicate-ID rejection. Cumulative encoded byte and document-entry budgets are now checked before batch append, and duplicate IDs within/across frames are rejected. Defaults are 64 MiB / 65,536 documents per received direction. Budget/duplicate scripts, a 1,024-entry exact-budget inventory and real 257-key multi-frame value transfer pass. Single-frame selection and bounded single-frame recovery do not have the accumulation issue.
+- Passed focused SQL engine/sync history/metadata/scoped suites (with the existing oversized filter), the SQL-sync oversized test, all 25 SQL facade scoped tests plus facade/lifecycle/stack tests, KV store/sync and KV facade all-targets suites, formatting and affected-package Clippy with only the known Redb `needless_question_mark` allowance.
+- Exact workspace strict Clippy and feature-powerset commands were rerun after fixes: still fail at the same unrelated Redb lint and `sharded`-only B-tree cfg respectively. No unrelated repair or extra lint allowance was introduced. The previous CRAP 600-second timeout was not repeated, as requested; the two unfinished engine oversized tests remain unverified here. Validation status therefore stays blocked, not Done.
+- Integration merge returned Already up to date at `a34c361`; only the review task's implementation/tests/documentation files are committed from the single requested worktree.

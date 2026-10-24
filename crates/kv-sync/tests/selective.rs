@@ -193,6 +193,44 @@ fn selected_native_deltas_merge_nested_edits_and_replay_without_snapshots() {
 }
 
 #[test]
+fn large_valid_inventory_syncs_values_across_many_frames() {
+    block_on(async {
+        let a = store();
+        let b = store();
+        for n in 0..257 {
+            set(&a, &format!("key-{n}"), Value::Integer(n)).await;
+        }
+        let config = Config {
+            max_snapshots_per_batch: 16,
+            max_inventory_entries: 257,
+            ..Config::default()
+        };
+        let (mut at, mut bt) = channels();
+        let (left, right) = join!(
+            synchronize(&a, &mut at, SyncRole::Initiator, config),
+            synchronize(&b, &mut bt, SyncRole::Responder, config)
+        );
+        left.expect("source");
+        right.expect("receiver");
+        assert!(
+            at.sent
+                .iter()
+                .filter(|message| matches!(message, Message::Inventory(_)))
+                .count()
+                > 16
+        );
+        let tx = b.transaction().await.expect("received values");
+        for n in 0..257 {
+            assert_eq!(
+                tx.get(&format!("key-{n}"), 0).await.expect("value"),
+                Some(Value::Integer(n))
+            );
+        }
+        tx.rollback().await.expect("rollback");
+    });
+}
+
+#[test]
 fn dependency_recovery_merges_snapshots_without_discarding_concurrent_work() {
     block_on(async {
         let a = store();

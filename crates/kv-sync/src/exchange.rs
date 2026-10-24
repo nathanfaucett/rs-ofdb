@@ -194,9 +194,25 @@ async fn receive_inventory<T: SyncTransport>(
     config: Config,
 ) -> Result<Vec<KvInventory>, Error<T::Error>> {
     let mut items = Vec::new();
+    let mut ids = BTreeSet::new();
+    let mut bytes = 0usize;
     loop {
-        match receive(transport, config).await? {
-            Message::Inventory(batch) => items.extend(batch),
+        let frame = transport.receive().await.map_err(Error::Transport)?;
+        match decode_frame(&frame, config)? {
+            Message::Inventory(batch) => {
+                bytes = bytes.saturating_add(frame.len());
+                if bytes > config.max_inventory_bytes
+                    || items.len().saturating_add(batch.len()) > config.max_inventory_entries
+                {
+                    return Err(Error::FrameTooLarge);
+                }
+                for item in &batch {
+                    if !ids.insert(item.id.clone()) {
+                        return Err(Error::InvalidFrame);
+                    }
+                }
+                items.extend(batch);
+            }
             Message::End => return Ok(items),
             _ => return Err(Error::UnexpectedMessage),
         }
