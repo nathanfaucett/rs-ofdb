@@ -181,7 +181,7 @@ async fn inventory<B: BTree<Vec<u8>, Vec<u8>>>(
 }
 async fn send_inventory<T: SyncTransport>(
     transport: &mut T,
-    items: Vec<KvInventory>,
+    items: &[KvInventory],
     config: Config,
 ) -> Result<(), Error<T::Error>> {
     for batch in items.chunks(config.max_snapshots_per_batch.max(1)) {
@@ -226,7 +226,7 @@ async fn send_direction<B: BTree<Vec<u8>, Vec<u8>>, T: SyncTransport>(
     config: Config,
 ) -> Result<(), Error<T::Error>> {
     let local = inventory(store, keys).await.map_err(storage_error)?;
-    send_inventory(transport, local.clone(), config).await?;
+    send_inventory(transport, &local, config).await?;
     let remote = receive_inventory(transport, config)
         .await?
         .into_iter()
@@ -322,7 +322,7 @@ where
         .map_err(storage_error)?;
     send_inventory(
         transport,
-        inventory(store, Some(&keys)).await.map_err(storage_error)?,
+        &inventory(store, Some(&keys)).await.map_err(storage_error)?,
         config,
     )
     .await?;

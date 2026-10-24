@@ -2948,10 +2948,14 @@ where
     let frame =
         postcard::to_allocvec(message).map_err(|error| SyncError::Protocol(error.to_string()))?;
     if frame.len() > MAX_MESSAGE_BYTES {
-        return Err(SyncError::MessageTooLarge {
+        let error = SyncError::MessageTooLarge {
             size: frame.len(),
             max: MAX_MESSAGE_BYTES,
-        });
+        };
+        if let Ok(abort) = postcard::to_allocvec(&SyncMessage::Abort(error.to_string())) {
+            let _ = transport.send(abort).now_or_never();
+        }
+        return Err(error);
     }
     transport.send(frame).await.map_err(SyncError::Transport)
 }
@@ -3103,7 +3107,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_message_over_limit_is_not_sent() {
+    fn outbound_message_over_limit_aborts_the_peer() {
         let mut transport = Transport::default();
         let error = block_on(send_message(
             &mut transport,
@@ -3113,7 +3117,14 @@ mod tests {
         assert!(
             matches!(error, SyncError::MessageTooLarge { size, max } if size == MAX_MESSAGE_BYTES + 1 && max == MAX_MESSAGE_BYTES)
         );
-        assert!(transport.outbound.is_none());
+        let frame = transport
+            .outbound
+            .expect("notify the waiting peer of rejection");
+        assert!(frame.len() <= MAX_MESSAGE_BYTES);
+        assert!(matches!(
+            postcard::from_bytes::<SyncMessage>(&frame).expect("valid abort frame"),
+            SyncMessage::Abort(_)
+        ));
     }
 
     #[test]

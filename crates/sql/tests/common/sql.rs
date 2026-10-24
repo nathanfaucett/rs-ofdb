@@ -123,13 +123,13 @@ pub fn case_atomic_batch() -> TestCase {
         .step_failing(
             0,
             "UPDATE users SET name = 'Lin' WHERE name = 'Ada'; INSERT INTO users VALUES (NULL, 'Bad')",
-            ExpectedError::TypeMismatch,
+            ExpectedError::ConstraintViolation,
         )
         .expect_query("SELECT name FROM users", vec![Row::from(["Ada"])])
         .step_failing(
             0,
             "CREATE TABLE missing (id UUID PRIMARY KEY); INSERT INTO missing VALUES (NULL)",
-            ExpectedError::TypeMismatch,
+            ExpectedError::ConstraintViolation,
         )
         .step_failing(0, "SELECT * FROM missing", ExpectedError::TableNotFound)
         .build()

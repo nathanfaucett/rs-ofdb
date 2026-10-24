@@ -265,7 +265,7 @@ mod tests {
         let right =
             Arc::new(Database::open(directory.join("right.redb")).expect("open right database"));
         left.client()
-            .set("replicated".into(), Value::Blob(vec![7, 8]), None)
+            .set("replicated", Value::Blob(vec![7, 8]), None)
             .await
             .expect("write left value");
 
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(
             right
                 .client()
-                .get("replicated".into())
+                .get("replicated")
                 .await
                 .expect("read replicated value"),
             Some(Value::Blob(vec![7, 8]))

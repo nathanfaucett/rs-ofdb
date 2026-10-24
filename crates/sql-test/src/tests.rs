@@ -172,6 +172,10 @@ fn expected_errors_match_their_categories() {
             EngineError::custom("duplicate key"),
         ),
         (
+            ExpectedError::ConstraintViolation,
+            EngineError::InvalidQuery("Primary key must not be NULL"),
+        ),
+        (
             ExpectedError::TableNotFound,
             EngineError::custom("table not found"),
         ),
@@ -182,6 +186,10 @@ fn expected_errors_match_their_categories() {
         (
             ExpectedError::TypeMismatch,
             EngineError::custom("type mismatch"),
+        ),
+        (
+            ExpectedError::TypeMismatch,
+            EngineError::InvalidQuery("Column value has the wrong type"),
         ),
     ];
     for (expected, error) in cases {

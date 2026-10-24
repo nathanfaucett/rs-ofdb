@@ -341,7 +341,7 @@ mod tests {
         fn shard(&self, key: &T) -> Self::Key {
             let mut hasher = self.hasher.lock().expect("failed to lock hasher");
             key.hash(&mut *hasher);
-            hasher.finish() % 2 == 0
+            hasher.finish().is_multiple_of(2)
         }
     }
 

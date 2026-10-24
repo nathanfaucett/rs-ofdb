@@ -92,7 +92,7 @@ where
             .open_table(table_definition::<K, V>(&self.name))
             .map_err(BTreeError::custom)?;
 
-        Ok(table.is_empty().map_err(BTreeError::custom)?)
+        table.is_empty().map_err(BTreeError::custom)
     }
 }
 

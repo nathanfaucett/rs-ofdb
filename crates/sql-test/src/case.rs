@@ -44,6 +44,7 @@ impl ExpectedError {
                     "tombstoned",
                     "constraint",
                     "primary key was deleted",
+                    "primary key must not be null",
                     "cannot update the primary key",
                     "cannot resolve the primary key",
                 ],
@@ -67,6 +68,7 @@ impl ExpectedError {
                 &[
                     "must be a uuid",
                     "type mismatch",
+                    "wrong type",
                     "wrong column count",
                     "column/value count mismatch",
                     "invalid type",
