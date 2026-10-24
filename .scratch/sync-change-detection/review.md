@@ -1,6 +1,6 @@
 # Independent-review fixes
 
-Status: Both confirmed P1 findings fixed; focused validation passed; workspace validation remains blocked
+Status: Both confirmed P1 findings fixed and independently re-reviewed; focused validation passed; workspace validation remains blocked
 
 ## Scope and assessment
 
@@ -71,13 +71,21 @@ The SQL facade scoped suite completed **25/25**, including large-payload cancell
 
 Exact final workspace gates rerun after the fixes:
 
-| Command | Result |
-| --- | --- |
-| `cargo fmt --all -- --check` | Passed. |
-| `cargo clippy --workspace --all-targets -- -D warnings` | Failed (101), same pre-existing `clippy::needless_question_mark` at `crates/btree-redb/src/btree.rs:95`. |
+| Command                                                        | Result                                                                                                                                                                                 |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all -- --check`                                   | Passed.                                                                                                                                                                                |
+| `cargo clippy --workspace --all-targets -- -D warnings`        | Failed (101), same pre-existing `clippy::needless_question_mark` at `crates/btree-redb/src/btree.rs:95`.                                                                               |
 | `cargo hack test --feature-powerset --workspace --all-targets` | Failed (1; underlying Cargo 101), same `ofdb-btree --no-default-features --features sharded` configuration: unavailable std/async_stream/in-memory shard factory and missing ToString. |
-| `just crap` | Not repeated, as requested: ticket05's unchanged 600-second instrumented-build timeout still leaves no workspace CRAP score. |
+| `just crap`                                                    | Not repeated, as requested: ticket05's unchanged 600-second instrumented-build timeout still leaves no workspace CRAP score.                                                           |
 
 The prior diagnostic-only workspace Clippy allowance run also exposed unrelated KV-server CLI `useless_conversion`; it was not fixed or claimed cleared by the affected-package Clippy pass. Full validation remains blocked independently of these two repaired findings.
 
 Integration merge `GIT_EDITOR=true git merge --no-edit sync-change-detection` returned **Already up to date**, integration tip `a34c361`. Only these review fixes/tests and their documentation/evidence are included in the review-fixes commit.
+
+## Independent follow-up review
+
+After integration at `e3b4b5d`, the original independent reviewer inspected both repairs and their regressions and found no remaining actionable correctness issue in the repair diff. The reviewer ran cached focused test executables and a temporary probe: the original overlap scenario and an already-persisted `[A,B]` physical bundle under B both preserve complete native history after `[B,C]`, with no missing dependencies and no invalidation on replay. The stored bundle remains unchanged and only C is added. The selective SQL counter test and all three KV inventory-limit regressions passed in this follow-up.
+
+The follow-up checked aggregate accounting, exact-limit acceptance, empty-frame byte accounting, saturation and duplicate IDs across frames. It confirmed the documentation distinguishes received-inventory limits from total session/local-discovery memory and retains database/token ownership as a caller obligation. No repository edits or heavy workspace builds were made by the reviewer.
+
+The requested `change-review` skill was unavailable in this session; an independent read-only review and a second verification pass supplied the equivalent review step. Required workspace validation blockers above remain unchanged. Implementation tickets 01–04 are resolved; ticket 05 deliberately remains validation blocked rather than falsely claiming a complete workspace pass.
