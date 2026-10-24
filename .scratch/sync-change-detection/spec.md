@@ -1,16 +1,18 @@
 # Commit-scoped change detection and incremental reconciliation
 
-Status: Proposed
+Status: Implementation complete; validation blocked (see ticket 05)
 
 ## Decision
 
-Plan implementation now. A separate throwaway prototype is not a prerequisite. Start with focused executable characterization tests and a small end-to-end slice; use a prototype only if that work exposes an unresolved design choice that cannot be answered economically in production tests.
+Implemented through tickets 01–04; ticket 05 reconciles current documentation and records final validation evidence and blockers. No separate prototype or new shared sync-core crate was needed.
 
 Keep SQL and KV Sync Sessions separate. Realtime and offline reconciliation use the same validated apply semantics: transfer missing Automerge history when possible, and snapshots plus metadata when necessary. Improve selection of work before changing crate topology.
 
-This is a proposal, not the current implementation contract. In particular, moving document capabilities out of `sql-sync` would change the current ownership described in `GLOSSARY.md` under Sync Manifest. Update that documentation when the change is implemented, not before.
+Current behavior is documented in [design](../../docs/design.md), [goal](../../docs/goal.md), and the root [glossary](../../GLOSSARY.md). Engine-owned `RowReconciler` capabilities replace protocol-owned semantics; SQL wire 7 and KV wire 3 are intentionally incompatible with earlier versions. See [SQL integration](sql-integration.md), [KV integration](kv-integration.md) and [ticket 05 evidence](issues/05-validation-and-cleanup.md). Implementation completion is not a claim that the full validation gates passed.
 
-## Problem and source evidence
+## Original problem and source evidence
+
+This is the pre-implementation baseline retained for comparison, not a description of current ownership/discovery. Tickets 02–04 replaced the production dependency, summary/discovery and invalidation paths below.
 
 - `crates/btree/src/changes.rs` provides coalesced committed wakeups, not changed identities or durable replay. `crates/sync-runtime/src/subscription.rs` schedules reconciliation over those wakeups.
 - `crates/sql-sync/src/session.rs::sync_manifest_limited` enumerates rows and exports document state to calculate manifests. With `AutomergeRowCodec`, digest calculation then loads that state to hash its heads. Incremental transmission therefore does not imply incremental discovery cost.
@@ -40,18 +42,18 @@ This is a proposal, not the current implementation contract. In particular, movi
 - Automatic background tasks or replacement of caller-owned network admission.
 - Compatibility wrappers for superseded interfaces or formats.
 
-## Proposed ownership
+## Implemented ownership
 
-| Concern | Owner |
-| --- | --- |
-| Successful commit and generic committed notification | Storage transaction machinery |
-| Changed Logical Row/catalog identities and dependency invalidation | SQL engine with its Row Reconciler |
-| Changed KV Key/Generation and generation invalidation | KV Store |
-| Document reconstruction, heads, change dependencies and history export | Automerge implementation |
-| Peer comparison, framing, staging, recovery and retry | Store-specific sync modules and existing runtime |
-| Atomic apply and derived Index Records | SQL engine; KV Store for KV state |
+| Concern                                                                | Owner                                            |
+| ---------------------------------------------------------------------- | ------------------------------------------------ |
+| Successful commit and generic committed notification                   | Storage transaction machinery                    |
+| Changed Logical Row/catalog identities and dependency invalidation     | SQL engine with its Row Reconciler               |
+| Changed KV Key/Generation and generation invalidation                  | KV Store                                         |
+| Document reconstruction, heads, change dependencies and history export | Automerge implementation                         |
+| Peer comparison, framing, staging, recovery and retry                  | Store-specific sync modules and existing runtime |
+| Atomic apply and derived Index Records                                 | SQL engine; KV Store for KV state                |
 
-Prefer extending existing transaction bookkeeping over introducing a parallel observer framework. Evaluate `MutationSummary` and the existing transaction `changes` collection, but do not assume either captures all semantic changes. Capture indirect changes such as unique-key conflict tombstones and schema cleanup as well as explicitly requested rows.
+Transaction-owned physical mutation bookkeeping captures successful commits, including indirect tombstones/schema cleanup and incoming replication. SQL/KV map it to logical invalidation; neither requested `changes` nor `MutationSummary` alone is treated as a complete inventory. No parallel observer framework or persisted peer frontier was added.
 
 The minimum useful notification contains identities/invalidation, not retained payloads. A conservative table/catalog invalidation is acceptable where exact row collection is unsafe or expensive. Unsupported/untracked mutation paths must request broader reconciliation rather than silently omit work.
 
@@ -84,9 +86,9 @@ The minimum useful notification contains identities/invalidation, not retained p
 - KV retains latest-generation selection, stale-generation rejection, tombstone-wins reconciliation and same-generation merge. A generation replacement invalidates selection for its KV Key.
 - KV Expiry is read-time visibility, not a committed mutation. Preserve its existing semantics without promising timer-generated sync events.
 
-## Implementation sequence
+## Implementation sequence and outcome
 
-See [map.md](map.md) and the individual issues. Use a SQL end-to-end selective slice first, then KV incremental exchange using established document mechanics without forcing shared store semantics.
+See [map.md](map.md) and individual issues for the completed sequence and remaining validation gates. SQL and KV reuse native document history without unifying store semantics.
 
 1. Characterize commit, history and metadata invariants; measure current work.
 2. Put document history/state capabilities on the engine/Row Reconciler side of the seam; retain protocol messages in SQL sync.
@@ -104,7 +106,15 @@ Use deterministic counters or test instrumentation to compare document reconstru
 
 Before implementation, record complexity/risk/priority: high priority for correctness, high risk around commit publication and missed metadata, medium-to-high implementation complexity. Run focused checks during implementation. Final validation after implementation: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo hack test --feature-powerset --workspace --all-targets`, and `just crap`. Report unavailable tools or unrelated failures rather than claiming validation passed.
 
-## Stop conditions
+## Retained implementation limits
+
+- Invalidation is bounded in process: 128 retained commits, each at most 128 physical invalidations / 16 KiB of identity bytes. Oversized commits, lag/gaps, new/cloned subscriptions and reconnect/restart require All. Selected work can combine retained commits; retention limits do not bound all transaction/session memory.
+- Select before reads and acknowledge only success. Every store/peer has independent unmerged subscription lifetime; later commits and other peers remain pending. Tokens are not durable cursors or authorization scopes.
+- SQL exact-row work avoids unrelated row enumeration; table invalidation permits a table scan and catalog/dependency/unknown invalidation is broad. Metadata mismatches use complete state plus metadata. Restricted SQL policies use scoped validated APIs, not selected APIs as admission.
+- KV selected work re-reads latest generations and enumerates full selected document history. Broad fallback retains whole-store inventory; configured per-document/frame limits can reject oversized work. SQL likewise has frame/apply/session budgets; neither protocol chunks a single oversized document.
+- Local signals cover shared wrappers only, not external writes or remote-only commits. Callers must arrange remote wakeups/receive delivery or explicit two-sided reconciliation. SQL memory supports subscriptions; KV memory remains caller-driven broad sync. No automatic bidirectional realtime or durable replay promise is introduced.
+
+## Design guardrails
 
 - If exact row tracking would duplicate SQL mutation logic, use conservative table invalidation first.
 - If notification ownership cannot provide reliable per-peer progress, keep broad reconciliation until a tested contract exists.

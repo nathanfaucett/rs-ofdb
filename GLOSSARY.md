@@ -30,7 +30,7 @@ A Database Host owns the embedded database used to answer remote query requests.
 
 ### Committed Change Subscription
 
-A Committed Change Subscription connects database-owned committed changes, including incoming replication, to a sync-owned continuous reconciliation lifecycle. It coalesces wakeups rather than retaining a durable change log; sync owns initial reconciliation, race-free rescheduling and retry, while callers supply authorized transport and the lifetime of the runner.
+A Committed Change Subscription is an independent consumer of bounded, process-local invalidation for successfully committed mutations, including incoming replication. Its wakeups are not durable replay or evidence of remote-only writes.
 
 ### Sync Session
 
@@ -58,7 +58,7 @@ A Logical Row is the row value the Engine reads, writes, and indexes. Its stored
 
 ## Row Reconciler
 
-A Row Reconciler stores and resolves Logical Rows through an Engine Transaction. The Automerge Row Reconciler uses one Automerge document per Logical Row with stable column keys. The Engine is the only path for applying local or incoming Automerge changes to an engine-managed Logical Row. Concurrent values for one column are retained as a Conflict; Automerge canonical ordering selects the visible value.
+A Row Reconciler is the Engine's transaction-bound capability for storing, resolving, inspecting and transferring Logical Row state, metadata and document history. It owns no peer or wire-protocol state; engine-managed changes remain subject to the Engine's validated apply semantics.
 
 ## Row Identity
 
@@ -102,7 +102,19 @@ A Sync State Unit is sync-owned canonical transferable state for one Logical Row
 
 ## Sync Manifest
 
-A Sync Manifest maps each sync-owned state-unit identity to its digest. A Sync Session exchanges manifests, transfers mismatched units in batches, and retries by exchanging manifests again. Normal realtime updates transfer only missing incremental payloads identified by opaque sync change IDs; full state units are for bootstrap and dependency recovery. Automerge implements `sync::SyncRowCodec`, while the Engine stores no protocol state, frontier, checkpoint, envelope log, or quarantine state.
+A Sync Manifest maps each compared SQL row identity to a digest of its document history and metadata. It describes the current comparison set, not a durable frontier or a whole-database snapshot.
+
+## Committed Invalidation
+
+A Committed Invalidation identifies replicated state that may need comparison after a successful commit, or requires a broader comparison when exact selection is unavailable. It contains identities rather than document payloads and is not an authorization scope.
+
+## Selected Work
+
+Selected Work is a consumer-specific invalidation set and completion watermark captured before reconciliation reads. Successful acknowledgement completes only that selection; later commits and other consumers remain independent.
+
+## Document History
+
+Document History is the native changes and dependencies that describe a document, including history retained inside snapshots. Native change identities are distinct from physical storage-record labels and from a digest of document heads.
 
 ## Tombstone
 
@@ -118,7 +130,7 @@ A KV Store holds shared `ofdb-value::Value` values under UTF-8 keys, with Autome
 
 ## KV Expiry
 
-KV Expiry is an optional absolute Unix-millisecond deadline. A value is hidden when the read time reaches that deadline. Expiry does not tombstone the generation; it is not a relative TTL.
+KV Expiry is an optional absolute Unix-millisecond deadline. A value is hidden when the read time reaches that deadline. Expiry does not tombstone the generation or produce a committed invalidation; it is not a relative TTL.
 
 ## KV Key
 

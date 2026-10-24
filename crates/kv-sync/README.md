@@ -19,7 +19,7 @@ if let Some(work) = work {
 }
 ```
 
-Keep an independent subscription for every peer. `All` overrides partial key selections. Do not use merged subscriptions for selective logical mapping. The facade offers success-only selection/acknowledgement directly. With optional `continuous`, `ChangeSubscription::run` remains a broad-session scheduler with retry/backoff and explicit caller-owned lifetime; it spawns no task.
+Keep an independent subscription for every peer; map tokens only against the corresponding store/backend. The signal retains 128 commits capped at 128 physical invalidations / 16 KiB of identity bytes per commit; oversized commits or lag require All. Tokens may combine retained commits. `changed()` consumes wakeups, not selected work; failure/cancellation must not acknowledge it. `All` overrides partial key selections. Do not use merged subscriptions for selective logical mapping. The facade offers success-only selection/acknowledgement directly. With optional `continuous`, `ChangeSubscription::run` remains a broad-session scheduler with retry/backoff and explicit caller-owned lifetime; it spawns no task.
 
 **Remote delivery is caller-driven.** Local subscriptions observe incoming replication once applied locally, but cannot observe commits made only at a remote peer. Arrange an authorized remote wakeup/receive path or explicitly invoke reconciliation, even if local selected work is empty. Reconnect with a fresh subscription for broad comparison. Local wakeups alone do not provide bidirectional realtime delivery. Generic KV memory subscriptions remain unsupported; use caller-driven broad sessions.
 
