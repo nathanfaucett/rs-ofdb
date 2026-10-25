@@ -16,6 +16,7 @@ default = []
 std = []
 remote = ["dep:platform", "std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "tokio/sync", "dep:tokio-stream", "dep:tower", "dep:hyper-util"]
 in-memory = ["dep:platform", "std", "dep:btree", "dep:kv-store", "dep:uuid", "btree/in-memory"]
+indexeddb = ["dep:platform", "std", "dep:btree", "dep:kv-store", "dep:uuid", "dep:btree-indexeddb"]
 redb = ["dep:platform", "std", "dep:btree", "dep:kv-store", "dep:uuid", "dep:btree-redb", "dep:redb"]
 server = ["remote", "dep:kv-server"]
 sync = ["dep:platform", "std", "dep:btree", "dep:kv-sync", "kv-sync/continuous", "dep:kv-store", "dep:uuid"]
@@ -26,6 +27,7 @@ platform = { version = "0.1", path = "../platform", package = "ofdb-platform", d
 
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"], optional = true }
+btree-indexeddb = { version = "0.1", path = "../btree-indexeddb", package = "ofdb-btree-indexeddb", default-features = false, features = [], optional = true }
 btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [], optional = true }
 kv-proto = { version = "0.1", path = "../kv-proto", package = "ofdb-kv-proto", default-features = false, features = [], optional = true }
 kv-server = { version = "0.1", path = "../kv-server", package = "ofdb-kv-server", default-features = false, features = [], optional = true }

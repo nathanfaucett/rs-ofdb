@@ -34,11 +34,17 @@ pub enum Error {
         feature = "remote",
         feature = "in-memory",
         feature = "redb",
+        feature = "indexeddb",
         feature = "sync",
         feature = "server"
     )))]
     Unconfigured,
-    #[cfg(any(feature = "in-memory", feature = "redb", feature = "sync"))]
+    #[cfg(any(
+        feature = "in-memory",
+        feature = "redb",
+        feature = "indexeddb",
+        feature = "sync"
+    ))]
     Storage { kind: ErrorKind, message: String },
     #[cfg(feature = "remote")]
     Connect(String),
@@ -46,7 +52,12 @@ pub enum Error {
     Transport(String),
     #[cfg(feature = "remote")]
     Query { kind: ErrorKind, message: String },
-    #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
+    #[cfg(any(
+        feature = "remote",
+        feature = "in-memory",
+        feature = "redb",
+        feature = "indexeddb"
+    ))]
     Timeout,
 }
 
@@ -57,11 +68,17 @@ impl fmt::Display for Error {
                 feature = "remote",
                 feature = "in-memory",
                 feature = "redb",
+                feature = "indexeddb",
                 feature = "sync",
                 feature = "server"
             )))]
             Self::Unconfigured => formatter.write_str("KV facade has no enabled features"),
-            #[cfg(any(feature = "in-memory", feature = "redb", feature = "sync"))]
+            #[cfg(any(
+                feature = "in-memory",
+                feature = "redb",
+                feature = "indexeddb",
+                feature = "sync"
+            ))]
             Self::Storage { kind, message } => {
                 write!(formatter, "KV storage error ({kind:?}): {message}")
             }
@@ -73,7 +90,12 @@ impl fmt::Display for Error {
             Self::Query { kind, message } => {
                 write!(formatter, "KV query error ({kind:?}): {message}")
             }
-            #[cfg(any(feature = "remote", feature = "in-memory", feature = "redb"))]
+            #[cfg(any(
+                feature = "remote",
+                feature = "in-memory",
+                feature = "redb",
+                feature = "indexeddb"
+            ))]
             Self::Timeout => formatter.write_str("KV request deadline exceeded"),
         }
     }
@@ -82,7 +104,12 @@ impl fmt::Display for Error {
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
-#[cfg(any(feature = "in-memory", feature = "redb", feature = "sync"))]
+#[cfg(any(
+    feature = "in-memory",
+    feature = "redb",
+    feature = "indexeddb",
+    feature = "sync"
+))]
 impl From<btree::BTreeError> for Error {
     fn from(error: btree::BTreeError) -> Self {
         use btree::BTreeError;

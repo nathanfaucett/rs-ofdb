@@ -11,13 +11,20 @@ worker = []
 sync = ["ofdb-sql/sync", "ofdb-kv/sync"]
 
 [dependencies]
-ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory"] }
+ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory", "indexeddb"] }
 ofdb-sql = { path = "../../crates/sql", default-features = false, features = ["in-memory", "sql"] }
 wasm-bindgen-test = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = { version = "0.3", default-features = false, features = ["std"] }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
 
+# Browser test helpers
+kv-store = { version = "0.1", path = "../../crates/kv-store", package = "ofdb-kv-store", default-features = false, features = [] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+wasm-bindgen-futures = { version = "0.4", default-features = false, features = ["std"] }
+
 # Public storage seams under test
+btree-indexeddb = { version = "0.1", path = "../../crates/btree-indexeddb", package = "ofdb-btree-indexeddb", default-features = false, features = [] }
 automerge = { version = "0.10", default-features = false, features = [] }
 btree = { version = "0.1", package = "ofdb-btree", path = "../../crates/btree", default-features = false, features = ["in-memory", "std"] }
 engine = { version = "0.1", package = "ofdb-sql-engine", path = "../../crates/sql-engine", default-features = false, features = ["in-memory", "std"] }

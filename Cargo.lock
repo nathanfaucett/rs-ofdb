@@ -2622,6 +2622,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-btree-indexeddb"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "js-sys",
+ "ofdb-btree",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "ofdb-btree-redb"
 version = "0.1.0"
 dependencies = [
@@ -2646,6 +2657,7 @@ dependencies = [
  "futures",
  "hyper-util",
  "ofdb-btree",
+ "ofdb-btree-indexeddb",
  "ofdb-btree-redb",
  "ofdb-kv-client",
  "ofdb-kv-proto",

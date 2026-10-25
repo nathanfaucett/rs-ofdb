@@ -62,6 +62,7 @@ Crates in this workspace use empty default features (`default-features = false`)
 ### `ofdb-kv`
 
 - `in-memory`: In-memory embedded key-value store.
+- `indexeddb`: Browser KV persistence on `wasm32-unknown-unknown`; asynchronously open with `Database::open_indexeddb(name)`. See [browser persistence](crates/btree-indexeddb/README.md) for transaction costs and limits.
 - `redb`: On-disk persistent key-value store using Redb.
 - `remote`: Enables the gRPC client to query remote KV database hosts.
 - `server`: Enables `serve_tcp` and `serve_unix` on `Database` to host gRPC services.

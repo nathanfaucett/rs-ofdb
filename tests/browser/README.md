@@ -1,10 +1,10 @@
 # Browser-local execution harness
 
-This isolated Rust consumer exercises the public in-memory SQL/KV clients in real
-browsers without a Tokio runtime. Its own workspace prevents native facade
+This isolated Rust consumer exercises public in-memory SQL/KV clients and durable
+IndexedDB KV storage in real browsers without a Tokio runtime. Its own workspace prevents native facade
 **development** dependencies (Redb, servers, native networking and temporary
-files) from entering browser builds. It is the harness for subsequent IndexedDB
-tickets; it does not implement or test persistence yet.
+files) from entering browser builds. SQL persistence and browser/native sync
+interoperability remain subsequent-ticket work.
 
 ## Run
 
@@ -19,8 +19,8 @@ wasm-pack test --headless --firefox tests/browser --features worker,sync
 ```
 
 The default context is Window; `worker` selects Dedicated Worker. Tests assert the
-actual context. `sync` also compiles the facade sync/staging APIs; this ticket does
-not claim browser/native sync interoperability or IndexedDB validation.
+actual context. `sync` also compiles the facade sync/staging APIs; it does not
+claim browser/native sync interoperability.
 `wasm-pack` obtains matching wasm-bindgen and WebDriver tools if absent (network
 access required). `--chromedriver PATH` or `--geckodriver PATH` can select existing
 drivers; also supply `--chrome` or `--firefox` explicitly.
@@ -83,3 +83,37 @@ clock and UUID timestamp with JS wall time, check distinct UUIDs and actor IDs,
 and check expired and future KV values. Browser sleep/timeout use platform timers,
 including fractional-millisecond rounding and chunking waits longer than the
 signed 32-bit timer limit. Native deadlines retain Tokio's behavior.
+
+## IndexedDB persistence checks
+
+`src/indexeddb.rs` exercises the byte BTree, database-wide snapshot/staging API,
+public KV facade, and native history API. It checks binary comparison using real
+`indexedDB.cmp`, typed values (including integer limits and exact float bits),
+Unicode/NUL/literal-prefix scans, expiry, generations, and stale history after
+persisted Tombstones. Revision conflicts are tested with independent handles and
+with two simultaneously staged writers in separate Wasm worker instances.
+
+The fixture also exports **test-only** `restart_probe` and `race_begin` Wasm
+functions. `indexeddb_helpers.js` loads the generated `/wasm-bindgen-test` module
+in fresh module workers and same-origin iframe pages; this URL is supplied by the
+wasm-bindgen-test runner, not a production application requirement. A writer is
+terminated/removed after commit; a fresh instance reads identical generation IDs,
+heads and native history. The iframe restart check is Window-only. Worker runs
+still destroy/recreate separate nested workers. These are real execution-context
+restarts, not just reopening Rust handles; they do not simulate a browser-process
+crash, OS restart or power loss.
+
+Fault injection is confined to the fixture: abort after a native write request
+succeeds, and throw `QuotaExceededError` after another request has been queued.
+Both must roll back records, table metadata and revision together. Access denial,
+incompatible metadata/version, versionchange closure, cancellation after issued
+commit, independent completion invalidation, rollback/drop, read-only and net
+byte no-op behavior are covered. Actual disk quota exhaustion is not claimed.
+
+The measurement test loads 100 and 1,000 records with 1 KiB values and logs elapsed
+snapshot time and raw key+value bytes. For visible samples, run a built test
+module with `wasm-bindgen-test-runner MODULE snapshot_materialization_measurement
+--nocapture` and the same WebDriver environment. No timing threshold is asserted.
+Snapshots read the entire database, reconstruct ordered maps and retain **two
+Rust-owned copies**, in addition to transient IndexedDB/JS data. This is not a
+selective-I/O or bounded-memory implementation.

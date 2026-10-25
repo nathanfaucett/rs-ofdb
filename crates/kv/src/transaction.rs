@@ -7,7 +7,11 @@ use kv_proto::kvdb::{
     TransactionRequest, TransactionResponse, kv_service_client::KvServiceClient,
     transaction_request::Command, transaction_response::Outcome,
 };
-#[cfg(any(feature = "in-memory", feature = "redb"))]
+#[cfg(any(
+    feature = "in-memory",
+    feature = "redb",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+))]
 use kv_store::KvTransaction;
 #[cfg(feature = "remote")]
 use tokio::sync::mpsc;
@@ -29,7 +33,12 @@ type MemoryTransaction = KvTransaction<
 type RedbTransaction =
     KvTransaction<<btree_redb::RedbByteBTree as btree::BTree<Vec<u8>, Vec<u8>>>::Transaction>;
 
+#[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+type IndexedDbTransaction = KvTransaction<btree_indexeddb::Transaction>;
+
 enum Backend {
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    IndexedDb(Box<IndexedDbTransaction>),
     #[cfg(feature = "in-memory")]
     Memory(Box<MemoryTransaction>),
     #[cfg(feature = "redb")]
@@ -44,12 +53,20 @@ enum Backend {
 }
 
 impl Transaction {
-    #[cfg(any(feature = "in-memory", feature = "redb"))]
+    #[cfg(any(
+        feature = "in-memory",
+        feature = "redb",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     pub(crate) async fn embedded(
         database: &crate::Database,
         deadline: Option<Duration>,
     ) -> Result<Self, Error> {
         let backend = match &database.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            crate::database::Storage::IndexedDb(store) => {
+                Backend::IndexedDb(Box::new(store.transaction().await?))
+            }
             #[cfg(feature = "in-memory")]
             crate::database::Storage::Memory(store) => {
                 Backend::Memory(Box::new(store.transaction().await?))
@@ -80,6 +97,10 @@ impl Transaction {
     pub async fn get(&mut self, key: &str) -> Result<Option<Value>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => {
+                    tx.get(key, current_time_millis()).await.map_err(Into::into)
+                }
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.get(key, current_time_millis()).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -106,6 +127,8 @@ impl Transaction {
         let value = value.into();
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx.set(key, value, expires_at).await.map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.set(key, value, expires_at).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -126,6 +149,8 @@ impl Transaction {
     pub async fn delete(&mut self, key: &str) -> Result<(), Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx.delete(key).await.map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.delete(key).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -146,6 +171,11 @@ impl Transaction {
     pub async fn scan(&mut self, start: &str, end: &str) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx
+                    .scan(start.to_owned()..end.to_owned(), current_time_millis())
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx
                     .scan(start.to_owned()..end.to_owned(), current_time_millis())
@@ -169,6 +199,11 @@ impl Transaction {
     pub async fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx
+                    .scan_prefix(prefix, current_time_millis())
+                    .await
+                    .map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx
                     .scan_prefix(prefix, current_time_millis())
@@ -192,6 +227,10 @@ impl Transaction {
     pub async fn scan_all(&mut self) -> Result<Vec<(String, Value)>, Error> {
         Self::run(self.request_deadline, async {
             match &mut self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => {
+                    tx.scan_all(current_time_millis()).await.map_err(Into::into)
+                }
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.scan_all(current_time_millis()).await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -213,6 +252,8 @@ impl Transaction {
         let deadline = self.request_deadline;
         Self::run(deadline, async move {
             match self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx.commit().await.map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.commit().await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -231,6 +272,8 @@ impl Transaction {
         let deadline = self.request_deadline;
         Self::run(deadline, async move {
             match self.backend {
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                Backend::IndexedDb(tx) => tx.rollback().await.map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx.rollback().await.map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -401,7 +444,11 @@ fn protocol_error(message: &str) -> Error {
     }
 }
 
-#[cfg(any(feature = "in-memory", feature = "redb"))]
+#[cfg(any(
+    feature = "in-memory",
+    feature = "redb",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+))]
 fn current_time_millis() -> i64 {
     platform::unix_millis()
 }

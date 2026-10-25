@@ -12,6 +12,8 @@ use crate::Error;
 
 #[derive(Clone)]
 pub(super) enum Storage {
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    IndexedDb(KvStore<btree_indexeddb::ByteBTree>),
     #[cfg(feature = "in-memory")]
     Memory(KvStore<InMemoryBTree<Vec<u8>, Vec<u8>>>),
     #[cfg(feature = "redb")]
@@ -36,6 +38,11 @@ impl Database {
     pub async fn retire_and_remove(&self) -> std::io::Result<()> {
         match &self.storage {
             Storage::Redb(resource) => resource.retire_and_remove().await,
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not a native resource",
+            )),
             #[cfg(feature = "in-memory")]
             Storage::Memory(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -78,6 +85,25 @@ impl Database {
             #[cfg(feature = "sync")]
             storage_table: self.storage_table.clone(),
         }
+    }
+
+    /// Opens durable browser KV storage; never falls back to memory.
+    /// Each operation materializes a whole-database snapshot. Mutating stale
+    /// transactions fail with Conflict and are not replayed. Issued commits
+    /// remain observed after cancellation; timeout does not prove rollback.
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    pub async fn open_indexeddb(name: &str) -> Result<Self, Error> {
+        let database = btree_indexeddb::Database::open(name, "kv").await?;
+        Ok(Self {
+            storage: Storage::IndexedDb(KvStore::new(
+                btree_indexeddb::ByteBTree::new(database, "ofdb-kv"),
+                uuid_timestamp,
+            )),
+            #[cfg(feature = "sync")]
+            changes: None,
+            #[cfg(feature = "sync")]
+            storage_table: None,
+        })
     }
 
     #[cfg(feature = "in-memory")]
@@ -147,6 +173,8 @@ impl Database {
     pub(crate) async fn query_get(&self, key: &str) -> Result<Option<Value>, Error> {
         let now = current_time_millis();
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => read_get(store, key, now).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_get(store, key, now).await,
             #[cfg(feature = "redb")]
@@ -167,6 +195,8 @@ impl Database {
         expires_at: Option<i64>,
     ) -> Result<(), Error> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => write_set(store, key, value, expires_at).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => write_set(store, key, value, expires_at).await,
             #[cfg(feature = "redb")]
@@ -182,6 +212,8 @@ impl Database {
 
     pub(crate) async fn query_delete(&self, key: &str) -> Result<(), Error> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => write_delete(store, key).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => write_delete(store, key).await,
             #[cfg(feature = "redb")]
@@ -202,6 +234,8 @@ impl Database {
     ) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => read_scan(store, start, end, now).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_scan(store, start, end, now).await,
             #[cfg(feature = "redb")]
@@ -221,6 +255,8 @@ impl Database {
     ) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => read_prefix(store, prefix, now).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_prefix(store, prefix, now).await,
             #[cfg(feature = "redb")]
@@ -237,6 +273,8 @@ impl Database {
     pub(crate) async fn query_scan_all(&self) -> Result<Vec<(String, Value)>, Error> {
         let now = current_time_millis();
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => read_all(store, now).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => read_all(store, now).await,
             #[cfg(feature = "redb")]
@@ -279,6 +317,12 @@ impl Database {
         shutdown: impl core::future::Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "native hosting is unavailable for IndexedDB",
+            )
+            .into()),
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => {
                 let server = kv_server::Server::tcp(address, store.clone());
@@ -348,6 +392,8 @@ impl Database {
     #[cfg(feature = "sync")]
     pub async fn export_snapshots(&self) -> Result<Vec<crate::KvSnapshot>, Error> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => export_snapshots(store).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => export_snapshots(store).await,
             #[cfg(feature = "redb")]
@@ -367,6 +413,8 @@ impl Database {
     #[cfg(feature = "sync")]
     pub async fn import_snapshots(&self, snapshots: Vec<crate::KvSnapshot>) -> Result<(), Error> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => import_snapshots(store, snapshots).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => import_snapshots(store, snapshots).await,
             #[cfg(feature = "redb")]
@@ -397,6 +445,10 @@ impl Database {
         U: core::future::Future<Output = Result<(), String>>,
     {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => {
+                kv_sync::synchronize_checked(store, transport, role, config, check).await
+            }
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => {
                 kv_sync::synchronize_checked(store, transport, role, config, check).await
@@ -422,6 +474,11 @@ impl Database {
         work: &crate::ChangeWork,
     ) -> Result<Vec<crate::KvInvalidation>, Error> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(_) => {
+                let _ = work;
+                Ok(vec![crate::KvInvalidation::All])
+            }
             #[cfg(feature = "in-memory")]
             Storage::Memory(_) => {
                 let _ = work;
@@ -470,6 +527,18 @@ impl Database {
             None => Vec::new(),
         };
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => {
+                kv_sync::synchronize_selected_checked(
+                    store,
+                    &invalidations,
+                    transport,
+                    role,
+                    config,
+                    check,
+                )
+                .await?
+            }
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => {
                 kv_sync::synchronize_selected_checked(
@@ -521,6 +590,8 @@ impl Database {
         config: kv_sync::Config,
     ) -> Result<(), kv_sync::Error<T::Error>> {
         match &self.storage {
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Storage::IndexedDb(store) => kv_sync::synchronize(store, transport, role, config).await,
             #[cfg(feature = "in-memory")]
             Storage::Memory(store) => kv_sync::synchronize(store, transport, role, config).await,
             #[cfg(feature = "redb")]

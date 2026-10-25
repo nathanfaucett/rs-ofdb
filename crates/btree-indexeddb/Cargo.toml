@@ -1,0 +1,20 @@
+[package]
+name = "ofdb-btree-indexeddb"
+description = "Browser IndexedDB byte persistence and atomic snapshot staging"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Storage contracts
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std", "changes"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser platform
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+js-sys = { version = "0.3", default-features = false, features = ["std"] }
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+wasm-bindgen-futures = { version = "0.4", default-features = false, features = ["std"] }

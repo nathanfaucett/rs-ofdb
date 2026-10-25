@@ -38,7 +38,11 @@ pub struct Client {
 }
 
 enum Backend {
-    #[cfg(any(feature = "in-memory", feature = "redb"))]
+    #[cfg(any(
+        feature = "in-memory",
+        feature = "redb",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     Embedded(crate::Database),
     #[cfg(feature = "remote")]
     Remote(Channel),
@@ -47,7 +51,11 @@ enum Backend {
 impl Clone for Backend {
     fn clone(&self) -> Self {
         match self {
-            #[cfg(any(feature = "in-memory", feature = "redb"))]
+            #[cfg(any(
+                feature = "in-memory",
+                feature = "redb",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            ))]
             Self::Embedded(database) => Self::Embedded(database.clone_shared()),
             #[cfg(feature = "remote")]
             Self::Remote(channel) => Self::Remote(channel.clone()),
@@ -62,7 +70,11 @@ impl core::fmt::Debug for Client {
             .field(
                 "backend",
                 &match &self.backend {
-                    #[cfg(any(feature = "in-memory", feature = "redb"))]
+                    #[cfg(any(
+                        feature = "in-memory",
+                        feature = "redb",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(_) => "Embedded",
                     #[cfg(feature = "remote")]
                     Backend::Remote(_) => "Remote",
@@ -76,7 +88,14 @@ impl core::fmt::Debug for Client {
 impl Client {
     pub async fn transaction(&self) -> Result<crate::Transaction, Error> {
         self.request(async {
-            #[cfg(all(any(feature = "in-memory", feature = "redb"), feature = "remote"))]
+            #[cfg(all(
+                any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ),
+                feature = "remote"
+            ))]
             {
                 match &self.backend {
                     Backend::Embedded(database) => {
@@ -87,7 +106,14 @@ impl Client {
                     }
                 }
             }
-            #[cfg(all(any(feature = "in-memory", feature = "redb"), not(feature = "remote")))]
+            #[cfg(all(
+                any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ),
+                not(feature = "remote")
+            ))]
             {
                 match &self.backend {
                     Backend::Embedded(database) => {
@@ -95,7 +121,14 @@ impl Client {
                     }
                 }
             }
-            #[cfg(all(feature = "remote", not(any(feature = "in-memory", feature = "redb"))))]
+            #[cfg(all(
+                feature = "remote",
+                not(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))
+            ))]
             {
                 match &self.backend {
                     Backend::Remote(channel) => {
@@ -107,7 +140,11 @@ impl Client {
         .await
     }
 
-    #[cfg(any(feature = "in-memory", feature = "redb"))]
+    #[cfg(any(
+        feature = "in-memory",
+        feature = "redb",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     pub(crate) fn embedded(database: crate::Database) -> Self {
         Self {
             backend: Backend::Embedded(database),
@@ -198,7 +235,11 @@ impl Client {
     pub async fn get(&self, key: &str) -> Result<Option<Value>, Error> {
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_get(key).await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {
@@ -224,7 +265,11 @@ impl Client {
         let value = value.into();
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_set(key, value, expires_at).await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {
@@ -246,7 +291,11 @@ impl Client {
     pub async fn delete(&self, key: &str) -> Result<(), Error> {
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_delete(key).await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {
@@ -266,7 +315,11 @@ impl Client {
     pub async fn scan(&self, start: &str, end: &str) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_scan(start, end).await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {
@@ -287,7 +340,11 @@ impl Client {
     pub async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_scan_prefix(prefix).await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {
@@ -307,7 +364,11 @@ impl Client {
     pub async fn scan_all(&self) -> Result<Vec<(String, Value)>, Error> {
         self.request(async {
             match &self.backend {
-                #[cfg(any(feature = "in-memory", feature = "redb"))]
+                #[cfg(any(
+                    feature = "in-memory",
+                    feature = "redb",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => database.query_scan_all().await,
                 #[cfg(feature = "remote")]
                 Backend::Remote(channel) => {

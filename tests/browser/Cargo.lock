@@ -741,14 +741,19 @@ dependencies = [
  "futures",
  "js-sys",
  "ofdb-btree",
+ "ofdb-btree-indexeddb",
  "ofdb-kv",
+ "ofdb-kv-store",
  "ofdb-platform",
  "ofdb-sql",
  "ofdb-sql-engine",
  "ofdb-sql-engine-automerge",
  "ofdb-value",
+ "serde_json",
  "tokio",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
 ]
 
@@ -781,11 +786,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-btree-indexeddb"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "js-sys",
+ "ofdb-btree",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "ofdb-kv"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ofdb-btree",
+ "ofdb-btree-indexeddb",
  "ofdb-kv-store",
  "ofdb-kv-sync",
  "ofdb-platform",
