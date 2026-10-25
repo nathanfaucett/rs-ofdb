@@ -748,6 +748,9 @@ dependencies = [
  "ofdb-sql",
  "ofdb-sql-engine",
  "ofdb-sql-engine-automerge",
+ "ofdb-sql-engine-indexeddb",
+ "ofdb-sql-query",
+ "ofdb-sql-schema",
  "ofdb-value",
  "serde_json",
  "tokio",
@@ -854,6 +857,7 @@ dependencies = [
  "ofdb-platform",
  "ofdb-sql-engine",
  "ofdb-sql-engine-automerge",
+ "ofdb-sql-engine-indexeddb",
  "ofdb-sql-query",
  "ofdb-sql-schema",
  "ofdb-sql-sync",
@@ -897,6 +901,16 @@ dependencies = [
  "postcard",
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-engine-indexeddb"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-indexeddb",
+ "ofdb-sql-engine",
 ]
 
 [[package]]

@@ -2,14 +2,15 @@
 
 The SQL facade provides an embedded control handle, `Database`, and a query and transaction `Client` for embedded or remote access. Enable only the features needed by your application.
 
-- `in-memory` or `redb` enables an embedded database backend.
+- `in-memory` or `redb` enables a native embedded database backend; `in-memory` also runs in browsers.
+- `indexeddb` enables browser persistence on `wasm32-unknown-unknown` with async `Database::open_indexeddb(name)`.
 - `remote` enables the remote gRPC client and connection constructors.
 - `sql` enables SQL-text translation. Typed statements do not require it.
 - `sync` enables one-shot sessions and the continuous change-driven lifecycle. Transport and peer authorization remain caller-owned.
 - `server` enables SQL request serving through `Database::serve_tcp` and, on Unix, `Database::serve_unix`.
 - `native-stage` enables optional native sync staging; `sync` already provides memory and caller-defined staging. `Client::transaction()` starts an explicit SQL transaction for embedded and remote clients; transactions are not exposed on `Database`.
 
-Default features are empty. Remote-only builds do not include a local SQL engine or sync implementation. Neither handle has a default request deadline. `Client::with_deadline(Duration)` applies to embedded and remote queries. A configured embedded deadline requires a Tokio runtime with time enabled; an untimed embedded query does not require one. A timeout does not prove rollback or guarantee interruption of blocking storage work.
+Default features are empty. Remote-only builds do not include a local SQL engine or sync implementation. Neither handle has a default request deadline. `Client::with_deadline(Duration)` applies to embedded and remote queries. A configured native embedded deadline requires a Tokio runtime with time enabled; browser deadlines use platform timers; an untimed embedded query does not require one. A timeout does not prove rollback or guarantee interruption of blocking storage work.
 
 `serve_tcp` and `serve_unix` borrow the embedded database and serve a shared engine clone. The caller owns the database handle and shutdown future. The serving future owns the bound listener until shutdown. The caller owns Unix socket path cleanup. Sync is a separate explicit operation. An interrupted session can leave already-applied batches committed; run sync again to reconcile. SQL transactions use `Client::transaction()` for embedded and remote access. A remote transaction holds one server-side engine transaction across calls; dropping its handle rolls it back. Each execute batch is atomic within the transaction. Commit applies the transaction as one engine operation; rollback discards it. Remote calls do not share a transaction unless they use the same transaction handle.
 
@@ -76,3 +77,48 @@ database
     .serve_tcp(address, shutdown_signal())
     .await?;
 ```
+
+## Browser SQL persistence
+
+Enable `indexeddb` for typed statements, and add `sql` only for SQL-text translation:
+
+```toml
+[dependencies]
+ofdb-sql = { version = "0.1", default-features = false, features = ["indexeddb", "sql"] }
+```
+
+```rust,ignore
+let database = ofdb_sql::Database::open_indexeddb("application").await?;
+let client = database.client();
+client.execute_sql("CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY)", None).await?;
+client.execute_sql("INSERT INTO people VALUES ('Ada')", None).await?;
+```
+
+The existing engine and Automerge Row Reconciler execute all statements; IndexedDB
+only persists bytes. Catalogs, rows, Tombstones, constraints and derived indexes
+commit together in one database-wide native transaction. Logical DDL changes data,
+not the physical IndexedDB schema. SQL names use `ofdb:3:sql:<name>`; KV has a
+separate namespace. Failed/unsupported opens return errors, never volatile storage.
+
+Explicit transactions own a consistent snapshot plus staged writes across browser
+event-loop awaits. Commit rejects a stale mutating snapshot without replaying it;
+SQL currently categorizes storage conflicts/commit failures as `ErrorKind::Storage`,
+retaining the backend detail in the error message. Rollback/drop discard staging;
+a failed SQL statement aborts its explicit transaction. Commit success means native
+IndexedDB completion. Canceling an issued commit does not prove rollback; the shared
+adapter continues observing completion independently of the query future.
+
+Snapshot loading is O(database size) memory/I/O and ordered reconstruction adds
+O(N log N) work, retaining two Rust copies plus transient browser data. This is not
+selective physical I/O. Names are origin-scoped; private-mode restrictions, quota,
+eviction and user-cleared site data apply. Native completion does not promise
+filesystem-equivalent durability or protection from eviction/power loss. See the
+[byte adapter](../btree-indexeddb/README.md) for format/lifecycle details.
+
+Window and Dedicated Worker tests run in Chrome and Firefox without a Tokio
+runtime, native networking or Redb. Consumers must provision the documented
+[Wasm stack budget](../../tests/browser/README.md#stack-budget) (the harness uses
+16 MiB). No WebKit support or default-stack guarantee is claimed. SQL browser/native
+sync interoperability and facade committed subscriptions remain ticket 08 work;
+`sync_changes()` on IndexedDB currently returns Unsupported. Cross-tab wakeups are
+not provided; revision checks still prevent stale writes across independent opens.

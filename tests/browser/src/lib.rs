@@ -4,3 +4,5 @@ mod local_storage;
 mod smoke;
 
 mod indexeddb;
+
+mod sql_indexeddb;

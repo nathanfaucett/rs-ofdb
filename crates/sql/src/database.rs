@@ -1,10 +1,19 @@
-#[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
+#[cfg(any(
+    feature = "redb",
+    feature = "in-memory",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+    feature = "sync"
+))]
 use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
 use engine::Engine;
-#[cfg(any(feature = "redb", feature = "in-memory",))]
+#[cfg(any(
+    feature = "redb",
+    feature = "in-memory",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+))]
 use engine::EngineTransaction;
 #[cfg(feature = "in-memory")]
 use engine::InMemoryKernel;
@@ -26,7 +35,11 @@ fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::P
 }
 
 // Keep concrete engine conflict futures out of the caller's poll frame during construction.
-#[cfg(any(feature = "redb", feature = "in-memory"))]
+#[cfg(any(
+    feature = "redb",
+    feature = "in-memory",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+))]
 #[inline(never)]
 fn conflict_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
     Box::pin(make())
@@ -40,8 +53,15 @@ type CandidateValidator<'a> =
 type CandidateValidator<'a> =
     dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + 'a;
 
-#[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
+#[cfg(any(
+    feature = "redb",
+    feature = "in-memory",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+    feature = "sync"
+))]
 use engine_automerge::AutomergeRowCodec;
+#[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+use engine_indexeddb::IndexedDbKernel;
 #[cfg(feature = "redb")]
 use engine_redb::RedbKernel;
 
@@ -57,6 +77,8 @@ pub struct Database {
 
 #[derive(Clone)]
 enum DatabaseBackend {
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    IndexedDb(Engine<IndexedDbKernel, AutomergeRowCodec>),
     #[cfg(feature = "redb")]
     File(engine_redb::NativeResource<Engine<RedbKernel, AutomergeRowCodec>>),
     #[cfg(feature = "in-memory")]
@@ -64,6 +86,8 @@ enum DatabaseBackend {
 }
 
 pub(crate) enum EmbeddedTransaction {
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    IndexedDb(EngineTransaction<IndexedDbKernel, AutomergeRowCodec>),
     #[cfg(feature = "redb")]
     File(
         engine_redb::NativeTransaction<
@@ -81,6 +105,12 @@ impl EmbeddedTransaction {
             #[cfg(feature = "redb")]
             Self::File(transaction) => {
                 let transaction = transaction.read().await.map_err(native_error)?;
+                conflict_stage(|| transaction.row_conflicts(table, key))
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => {
                 conflict_stage(|| transaction.row_conflicts(table, key))
                     .await
                     .map_err(crate::error::from_engine)
@@ -105,6 +135,12 @@ impl EmbeddedTransaction {
                     .await
                     .map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => {
+                conflict_stage(|| transaction.row_conflict_values(table, key))
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => {
                 conflict_stage(|| transaction.row_conflict_values(table, key))
@@ -124,6 +160,11 @@ impl EmbeddedTransaction {
                 .read()
                 .await
                 .map_err(native_error)?
+                .execute(statements)
+                .await
+                .map_err(crate::error::from_engine),
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => transaction
                 .execute(statements)
                 .await
                 .map_err(crate::error::from_engine),
@@ -151,6 +192,11 @@ impl EmbeddedTransaction {
                     .await
                     .map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => transaction
+                .execute(translation.await?)
+                .await
+                .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
                 .execute(translation.await?)
@@ -169,6 +215,11 @@ impl EmbeddedTransaction {
                     .await
                     .map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => transaction
+                .commit()
+                .await
+                .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
                 .commit()
@@ -187,6 +238,11 @@ impl EmbeddedTransaction {
                     .await
                     .map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => transaction
+                .rollback()
+                .await
+                .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             Self::InMemory(transaction) => transaction
                 .rollback()
@@ -207,6 +263,8 @@ macro_rules! database_call {
                 let $engine = &*admitted;
                 $body.map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb($engine) => $body.map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory($engine) => $body.map_err(crate::error::from_engine),
         }
@@ -223,6 +281,11 @@ impl Database {
     pub async fn retire_and_remove(&self) -> std::io::Result<()> {
         match &self.backend {
             DatabaseBackend::File(resource) => resource.retire_and_remove().await,
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not a native resource",
+            )),
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -261,6 +324,8 @@ impl Database {
                     factory
                 }
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(_) => factory,
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(_) => factory,
         }
@@ -294,6 +359,12 @@ impl Database {
                     .await
                     .map_err(crate::error::from_engine)
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                engine_automerge::committed_invalidations(engine, work)
+                    .await
+                    .map_err(crate::error::from_engine)
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 engine_automerge::committed_invalidations(engine, work)
@@ -301,6 +372,20 @@ impl Database {
                     .map_err(crate::error::from_engine)
             }
         }
+    }
+
+    /// Opens origin-scoped browser persistence. Never falls back to memory.
+    /// Transactions materialize the whole database; stale writes fail without retry.
+    #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+    pub async fn open_indexeddb(name: &str) -> SqlResult<Self> {
+        let kernel = IndexedDbKernel::open(name)
+            .await
+            .map_err(crate::error::from_engine)?;
+        Ok(Self {
+            #[cfg(feature = "sync")]
+            changes: None,
+            backend: DatabaseBackend::IndexedDb(Engine::new(kernel, AutomergeRowCodec::new())),
+        })
     }
 
     pub fn client(&self) -> crate::Client {
@@ -355,6 +440,12 @@ impl Database {
                     resource.transaction(Box::new(transaction)),
                 ))
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => engine
+                .transaction()
+                .await
+                .map(EmbeddedTransaction::IndexedDb)
+                .map_err(crate::error::from_engine),
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => engine
                 .transaction()
@@ -515,6 +606,22 @@ impl Database {
                     })
                     .await?
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                let server =
+                    crate::Server::tcp(address, crate::EngineExecutor::new(engine.clone()));
+                let server = match identity.take() {
+                    Some((certificate, private_key)) => {
+                        server.tls_identity(certificate, private_key)
+                    }
+                    None => server,
+                };
+                let server = match client_ca {
+                    Some(ca) => server.tls_client_ca(ca),
+                    None => server,
+                };
+                server.serve(shutdown).await
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 let server =
@@ -552,6 +659,12 @@ impl Database {
                     })
                     .await?
             }
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
+                    .serve(shutdown)
+                    .await
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 crate::Server::unix(path, crate::EngineExecutor::new(engine.clone()))
@@ -574,7 +687,11 @@ impl Database {
         T: SyncTransport,
         T::Error: core::fmt::Display,
     {
-        #[cfg(any(feature = "redb", feature = "in-memory",))]
+        #[cfg(any(
+            feature = "redb",
+            feature = "in-memory",
+            all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+        ))]
         {
             match &self.backend {
                 #[cfg(feature = "redb")]
@@ -588,6 +705,10 @@ impl Database {
                     })
                     .await
                     .map_err(|error| SyncError::PreApply(error.to_string()))?,
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                DatabaseBackend::IndexedDb(engine) => {
+                    synchronize_engine(engine, transport, config, role).await
+                }
                 #[cfg(feature = "in-memory")]
                 DatabaseBackend::InMemory(engine) => {
                     synchronize_engine(engine, transport, config, role).await
@@ -612,7 +733,11 @@ impl Database {
         F::Error: core::fmt::Display,
         F::Stage: 'static,
     {
-        #[cfg(any(feature = "redb", feature = "in-memory",))]
+        #[cfg(any(
+            feature = "redb",
+            feature = "in-memory",
+            all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+        ))]
         {
             match &self.backend {
                 #[cfg(feature = "redb")]
@@ -627,6 +752,10 @@ impl Database {
                     })
                     .await
                     .map_err(|error| SyncError::PreApply(error.to_string()))?,
+                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+                DatabaseBackend::IndexedDb(engine) => {
+                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
+                }
                 #[cfg(feature = "in-memory")]
                 DatabaseBackend::InMemory(engine) => {
                     synchronize_staged_engine(engine, transport, config, role, stage_factory).await
@@ -709,6 +838,13 @@ impl Database {
                 })
                 .await
                 .map_err(|error| SyncError::PreApply(error.to_string()))?,
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                sync::synchronize_with_stage_factory_checked(
+                    engine, transport, config, role, factory, check,
+                )
+                .await
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 sync::synchronize_with_stage_factory_checked(
@@ -805,6 +941,13 @@ impl Database {
                 })
                 .await
                 .map_err(|error| SyncError::PreApply(error.to_string()))?,
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                sync::synchronize_selected_with_stage_factory_checked(
+                    engine, transport, config, role, factory, selection, check,
+                )
+                .await
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 sync::synchronize_selected_with_stage_factory_checked(
@@ -1121,6 +1264,25 @@ impl Database {
                 }))
                 .await
                 .map_err(|error| SyncError::PreApply(error.to_string()))?,
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            DatabaseBackend::IndexedDb(engine) => {
+                if let Some(candidate) = validate_candidate {
+                    sync_stage(|| {
+                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
+                            engine, transport, config, role, factory, tables, validate, candidate,
+                            check,
+                        )
+                    })
+                    .await
+                } else {
+                    sync_stage(|| {
+                        sync::synchronize_tables_with_stage_factory_validated_checked(
+                            engine, transport, config, role, factory, tables, validate, check,
+                        )
+                    })
+                    .await
+                }
+            }
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(engine) => {
                 if let Some(candidate) = validate_candidate {

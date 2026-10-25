@@ -1,0 +1,18 @@
+[package]
+name = "ofdb-sql-engine-indexeddb"
+description = "Browser IndexedDB kernel for the ofdb SQL engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Storage contracts
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std", "changes"] }
+btree-indexeddb = { version = "0.1", path = "../btree-indexeddb", package = "ofdb-btree-indexeddb", default-features = false }
+engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = ["std"] }
+
+# Streams
+futures = { version = "0.3", default-features = false, features = ["std"] }

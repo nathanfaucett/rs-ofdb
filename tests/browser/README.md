@@ -1,10 +1,9 @@
 # Browser-local execution harness
 
 This isolated Rust consumer exercises public in-memory SQL/KV clients and durable
-IndexedDB KV storage in real browsers without a Tokio runtime. Its own workspace prevents native facade
+IndexedDB SQL/KV storage in real browsers without a Tokio runtime. Its own workspace prevents native facade
 **development** dependencies (Redb, servers, native networking and temporary
-files) from entering browser builds. SQL persistence and browser/native sync
-interoperability remain subsequent-ticket work.
+files) from entering browser builds. Browser/native sync interoperability remains subsequent-ticket work.
 
 ## Run
 
@@ -117,3 +116,16 @@ module with `wasm-bindgen-test-runner MODULE snapshot_materialization_measuremen
 Snapshots read the entire database, reconstruct ordered maps and retain **two
 Rust-owned copies**, in addition to transient IndexedDB/JS data. This is not a
 selective-I/O or bounded-memory implementation.
+
+### SQL persistence
+
+`src/sql_indexeddb.rs` tests typed DDL/insert/select separately from SQL-text
+execution, client ownership, catalog/index reopen, failed-batch atomicity, stable
+transactions across timer awaits, stale commits, rollback/drop/aborted transactions,
+logical table drop/recreation, SQL/KV/name isolation and injected native failures.
+The Kernel seam additionally checks binary ranges, missing tables and stale
+read-only commits. `sql_indexeddb_helpers.js` restarts fresh worker/iframe Wasm
+instances through the test-only `sql_restart_probe` export; persisted indexed reads,
+unique constraints and UUID Tombstones must survive. These are execution-context
+restarts, not whole-browser/OS crash or power-loss tests. SQL browser sync remains
+separate follow-up work.

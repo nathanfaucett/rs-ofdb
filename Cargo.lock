@@ -2793,6 +2793,7 @@ dependencies = [
  "ofdb-sql-client",
  "ofdb-sql-engine",
  "ofdb-sql-engine-automerge",
+ "ofdb-sql-engine-indexeddb",
  "ofdb-sql-engine-redb",
  "ofdb-sql-macros",
  "ofdb-sql-query",
@@ -2878,6 +2879,16 @@ dependencies = [
  "redb",
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-engine-indexeddb"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-btree",
+ "ofdb-btree-indexeddb",
+ "ofdb-sql-engine",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ sql = ["dep:sql-translator", "sql-translator/std"]
 native-stage = ["sync", "sync/native-stage"]
 sync = ["dep:platform", "dep:sync", "sync/continuous", "dep:engine", "dep:engine-automerge", "std"]
 redb = ["dep:platform", "dep:engine", "dep:engine-redb", "dep:engine-automerge", "std"]
+indexeddb = ["dep:platform", "dep:engine", "dep:engine-indexeddb", "dep:engine-automerge", "std"]
 in-memory = ["dep:platform", "engine/in-memory", "dep:engine-automerge", "std"]
 remote = ["dep:platform", "dep:client", "client/unix", "dep:tokio", "std"]
 server = ["dep:sql-server", "std"]
@@ -86,3 +87,7 @@ required-features = ["sql", "in-memory"]
 [[example]]
 name = "redb_automerge"
 required-features = ["sql", "redb"]
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser persistence
+engine-indexeddb = { version = "0.1", path = "../sql-engine-indexeddb", package = "ofdb-sql-engine-indexeddb", default-features = false, optional = true }

@@ -42,7 +42,11 @@ pub struct Client {
 
 #[derive(Clone)]
 enum Backend {
-    #[cfg(any(feature = "redb", feature = "in-memory"))]
+    #[cfg(any(
+        feature = "redb",
+        feature = "in-memory",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     Embedded(crate::Database),
     #[cfg(feature = "remote")]
     Remote(SqlClient),
@@ -55,7 +59,11 @@ impl fmt::Debug for Client {
             .field(
                 "backend",
                 &match self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(_) => "Embedded",
                     #[cfg(feature = "remote")]
                     Backend::Remote(_) => "Remote",
@@ -75,7 +83,11 @@ pub struct Transaction {
 }
 
 enum TransactionBackend {
-    #[cfg(any(feature = "redb", feature = "in-memory"))]
+    #[cfg(any(
+        feature = "redb",
+        feature = "in-memory",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     Embedded(crate::database::EmbeddedTransaction),
     #[cfg(feature = "remote")]
     Remote(tokio::sync::Mutex<client::Transaction>),
@@ -91,11 +103,19 @@ impl Transaction {
         key: &'a Row,
     ) -> impl Future<Output = Result<Vec<String>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, key);
             Self::run(self.request_deadline, async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     TransactionBackend::Embedded(transaction) => {
                         transaction.row_conflicts(table, key).await
                     }
@@ -119,11 +139,19 @@ impl Transaction {
     ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + platform::MaybeSend + 'a
     {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, key);
             Self::run(self.request_deadline, async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     TransactionBackend::Embedded(transaction) => {
                         transaction.row_conflict_values(table, key).await
                     }
@@ -164,7 +192,11 @@ impl Transaction {
             ));
         }
         match &mut self.backend {
-            #[cfg(any(feature = "redb", feature = "in-memory"))]
+            #[cfg(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            ))]
             TransactionBackend::Embedded(transaction) => transaction.execute(statements).await,
             #[cfg(feature = "remote")]
             TransactionBackend::Remote(transaction) => {
@@ -198,7 +230,11 @@ impl Transaction {
             Ok(statements)
         };
         match &mut self.backend {
-            #[cfg(any(feature = "redb", feature = "in-memory"))]
+            #[cfg(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            ))]
             TransactionBackend::Embedded(transaction) => {
                 transaction.execute_translated(translation).await
             }
@@ -265,7 +301,11 @@ impl Transaction {
         let deadline = self.request_deadline;
         Self::run(deadline, async move {
             match self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 TransactionBackend::Embedded(transaction) => transaction.commit().await,
                 #[cfg(feature = "remote")]
                 TransactionBackend::Remote(transaction) => transaction.into_inner().commit().await,
@@ -278,7 +318,11 @@ impl Transaction {
         let deadline = self.request_deadline;
         Self::run(deadline, async move {
             match self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 TransactionBackend::Embedded(transaction) => transaction.rollback().await,
                 #[cfg(feature = "remote")]
                 TransactionBackend::Remote(transaction) => {
@@ -300,11 +344,19 @@ impl Client {
         key: &'a Row,
     ) -> impl Future<Output = Result<Vec<String>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, key);
             self.run(async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(database) => database.query_row_conflicts(table, key).await,
                     #[cfg(feature = "remote")]
                     Backend::Remote(client) => client.row_conflicts(table, key).await,
@@ -327,11 +379,19 @@ impl Client {
         keys: &'a [Row],
     ) -> impl Future<Output = Result<Vec<Vec<String>>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, keys);
             self.run(async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(database) => {
                         database.query_row_conflicts_batch(table, keys).await
                     }
@@ -353,11 +413,19 @@ impl Client {
     ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + platform::MaybeSend + 'a
     {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, key);
             self.run(async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(database) => {
                         database.query_row_conflict_values(table, key).await
                     }
@@ -380,11 +448,19 @@ impl Client {
         values: Vec<(String, Value)>,
     ) -> impl Future<Output = Result<(), QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
-            #[cfg(not(any(feature = "redb", feature = "in-memory")))]
+            #[cfg(not(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            )))]
             let _ = (table, key, &values);
             self.run(async {
                 match &self.backend {
-                    #[cfg(any(feature = "redb", feature = "in-memory"))]
+                    #[cfg(any(
+                        feature = "redb",
+                        feature = "in-memory",
+                        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                    ))]
                     Backend::Embedded(database) => {
                         database.query_resolve_row(table, key, values).await
                     }
@@ -399,7 +475,11 @@ impl Client {
     pub async fn transaction(&self) -> Result<Transaction, QueryError> {
         self.run(async {
             let backend = match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => {
                     TransactionBackend::Embedded(database.begin_transaction().await?)
                 }
@@ -415,7 +495,11 @@ impl Client {
         })
         .await
     }
-    #[cfg(any(feature = "redb", feature = "in-memory"))]
+    #[cfg(any(
+        feature = "redb",
+        feature = "in-memory",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    ))]
     pub(crate) fn embedded(database: crate::Database) -> Self {
         Self {
             backend: Backend::Embedded(database),
@@ -494,7 +578,11 @@ impl Client {
             ));
         }
         match &self.backend {
-            #[cfg(any(feature = "redb", feature = "in-memory"))]
+            #[cfg(any(
+                feature = "redb",
+                feature = "in-memory",
+                all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+            ))]
             Backend::Embedded(database) => database.query_execute_untimed(statements).await,
             #[cfg(feature = "remote")]
             Backend::Remote(client) => client.execute(statements).await,
@@ -515,7 +603,11 @@ impl Client {
     ) -> Result<Vec<QueryResult>, QueryError> {
         self.run(async {
             match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => {
                     database
                         .query_translate_and_execute(query, translator)
@@ -544,7 +636,11 @@ impl Client {
     ) -> Result<Vec<QueryResult>, QueryError> {
         self.run(async {
             match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => {
                     database
                         .query_translate_and_execute_with_params(query, params, translator)
@@ -575,7 +671,11 @@ impl Client {
     ) -> Result<Vec<U>, QueryError> {
         self.run(async {
             match &self.backend {
-                #[cfg(any(feature = "redb", feature = "in-memory"))]
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
                 Backend::Embedded(database) => {
                     database.query_translate_and_select(query, translator).await
                 }

@@ -12,7 +12,7 @@ sync = ["ofdb-sql/sync", "ofdb-kv/sync"]
 
 [dependencies]
 ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory", "indexeddb"] }
-ofdb-sql = { path = "../../crates/sql", default-features = false, features = ["in-memory", "sql"] }
+ofdb-sql = { path = "../../crates/sql", default-features = false, features = ["in-memory", "sql", "indexeddb"] }
 wasm-bindgen-test = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = { version = "0.3", default-features = false, features = ["std"] }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
@@ -22,6 +22,13 @@ kv-store = { version = "0.1", path = "../../crates/kv-store", package = "ofdb-kv
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
 wasm-bindgen-futures = { version = "0.4", default-features = false, features = ["std"] }
+
+# SQL kernel seam
+engine-indexeddb = { version = "0.1", path = "../../crates/sql-engine-indexeddb", package = "ofdb-sql-engine-indexeddb", default-features = false }
+
+# Typed SQL construction
+query = { version = "0.1", path = "../../crates/sql-query", package = "ofdb-sql-query", default-features = false }
+schema = { version = "0.1", path = "../../crates/sql-schema", package = "ofdb-sql-schema", default-features = false }
 
 # Public storage seams under test
 btree-indexeddb = { version = "0.1", path = "../../crates/btree-indexeddb", package = "ofdb-btree-indexeddb", default-features = false, features = [] }

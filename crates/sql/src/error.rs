@@ -1,6 +1,11 @@
 pub use query::{QueryError as Error, QueryErrorKind as ErrorKind};
 
-#[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
+#[cfg(any(
+    feature = "redb",
+    feature = "in-memory",
+    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
+    feature = "sync"
+))]
 pub(crate) fn from_engine(error: engine::EngineError) -> Error {
     use engine::EngineError;
     use query::QueryErrorKind;
