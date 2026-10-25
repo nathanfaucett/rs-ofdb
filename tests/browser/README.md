@@ -159,3 +159,18 @@ These are logical native/browser interoperability checks without bundled network
 transport. Local subscriptions do not monitor other tabs/opens or remote-only
 writes: external-write gaps require broad recovery. Selected logical inventories
 do not avoid the IndexedDB backend's whole-database physical snapshots.
+
+
+## Storage lifecycle
+
+`src/storage_lifecycle.rs` adds SQL/KV facade acceptance for incompatible physical
+schemas and kind markers without reset, value-free actionable access errors,
+client clones after Database drop, independent namespace isolation, native
+abort/injected-quota atomicity, and revision exhaustion at the byte-storage seam.
+Its separate JS helper uses actual peer workers for version-change closure and
+an uncooperative connection blocking deletion. The latter queues a facade open
+without an open blocked event: it must fail on the documented five-second timer,
+and releasing the peer must not let the late request create an empty database.
+The same tests run under both Window and Dedicated Worker runners. Injected
+quota failures are not evidence of real storage exhaustion; see the
+[storage policy](../../crates/btree-indexeddb/README.md#lifecycle-and-browser-failures).

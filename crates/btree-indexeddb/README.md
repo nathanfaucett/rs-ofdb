@@ -31,7 +31,7 @@ until native completion.
 ## Storage and transaction contract
 
 The fixed version-1 IndexedDB schema has `meta`, `tables`, and `records` object
-stores. `meta` holds format `ofdb-byte-storage-1` and a decimal-string u64 revision;
+stores. `meta` holds format `ofdb-byte-storage-1`, the exact `kind` marker and a decimal-string u64 revision;
 logical table names are data, not schema upgrades. Record keys are compound
 `[table name, Uint8Array byte key]` keys; values are `Uint8Array` bytes. Arbitrary
 binary keys are never encoded as JavaScript strings. Revisions use BigInt inside
@@ -63,9 +63,9 @@ quota/access exceptions and version errors propagate without partial persistence
 
 Notifications are process-local to clones of one opened adapter. Independently
 opened tabs/handles are protected by the persisted revision but do not receive
-cross-context notifications. Public facade continuous-sync subscription wiring
-and browser/native replication are subsequent-ticket work; the facade's
-`sync_changes()` still returns Unsupported for IndexedDB in this ticket.
+cross-context notifications. KV facade committed subscriptions and checked sync
+are supported; SQL browser sync is separate work. External-write gaps require
+broad reconciliation rather than relying only on local invalidation.
 
 ## Initial cost and limits
 
@@ -106,3 +106,58 @@ uses the already-resolved `wasm-bindgen`, `js-sys`, `wasm-bindgen-futures` and
 `futures` APIs; no additional binding, serializer framework, deprecated serde
 feature or executor package is introduced. JS callbacks are GC-owned, with no
 Rust closure-forgetting or unsafe Send/Sync assertions.
+
+
+## Lifecycle and browser failures
+
+SQL (`sql`) and KV (`kv`) share this policy, not a database namespace. Open checks
+physical version 1, exactly the three expected object stores, out-of-line keys,
+no auto-increment or physical indexes, and format/kind/revision metadata before
+returning a handle. Missing markers, unsupported versions and malformed schemas
+are errors. Earlier experimental databases without the kind marker are also
+incompatible: there is no migration, reset, deletion or memory fallback. Keep the
+original database for a compatible reader or choose a new name explicitly.
+
+A blocked event fails immediately. A **5,000 ms browser timer** also bounds open
+and metadata validation, including an open queued behind another context's
+blocked deletion (which may never emit its own blocked event). Close other tabs,
+iframes and workers using the origin's database, then retry explicitly. Browser
+suspension and throttling can delay timer delivery: this is not a hard real-time
+wall-clock guarantee. IndexedDB has no cancellation API for an open request;
+a refused request retains only cleanup callbacks. A late upgrade is aborted
+before stores are created, and any late successful connection is closed.
+This construction policy is independent of optional query deadlines.
+
+On version change or deletion, connections close immediately. All client clones
+sharing that connection are stale; new queries and commits (including unchanged
+staging) fail with an explicit closure error. There is no automatic reopen,
+transaction replay or transfer of staged writes. Already-owned Rust staging is
+not silently discarded or rewritten; discard it explicitly and construct a new
+compatible handle. Already-issued native transactions still settle through their
+normal complete/abort observer: closure or cancellation is not proof of rollback.
+Dropping Database alone does not close a connection owned by Clients; dropping
+the last owner closes it after any issued commit's independent observer finishes.
+
+Native failure names (for example SecurityError, QuotaExceededError and
+AbortError) receive operation-specific, actionable messages without copying
+browser exception messages, database names, keys or stored values. Revision
+conflicts retain BTree Conflict / KV Conflict. Other browser failures preserve the
+existing facade Storage category and include abort/quota/access/closure detail;
+SQL's existing error model also categorizes persistence conflicts as Storage.
+No new public or remote wire error category is introduced. A failed native
+transaction leaves records, logical-table metadata and revision unchanged, and
+publishes no successful-commit invalidation. Injected abort/quota tests validate
+atomic failure handling, **not** actual disk-quota exhaustion.
+
+Storage belongs to the browser origin (scheme, host and port), profile and any
+browser partitioning policy; the same name on another origin is another database.
+Private browsing may deny IndexedDB, impose different quotas or remove data when
+the session ends. The browser may evict non-persistent origin storage; users may
+clear even persistent storage. Applications may use the browser StorageManager
+API to inspect estimates/request persistence, but permission is not guaranteed
+and this library neither reserves quota nor requests it automatically. Handle
+quota/access errors and keep an application-appropriate backup or replica.
+IndexedDB completion is browser transaction completion, not native filesystem
+fsync durability, an eviction guarantee or a native retirement fence. No native
+retirement emulation is provided. Browser-process crashes, OS/power failure and
+WebKit/private-mode/quota-exhaustion behavior have not been validated here.

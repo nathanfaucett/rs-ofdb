@@ -8,3 +8,5 @@ mod indexeddb;
 #[cfg(feature = "sync")]
 mod kv_sync;
 mod sql_indexeddb;
+
+mod storage_lifecycle;
