@@ -3,8 +3,9 @@
 This isolated Rust consumer exercises public in-memory SQL/KV clients and durable
 IndexedDB KV storage in real browsers without a Tokio runtime. Its own workspace prevents native facade
 **development** dependencies (Redb, servers, native networking and temporary
-files) from entering browser builds. SQL persistence and browser/native sync
-interoperability remain subsequent-ticket work.
+files) from entering browser builds. SQL persistence remains subsequent-ticket
+work. With `sync`, KV tests exercise checked broad/selected sessions and native
+protocol fixtures.
 
 ## Run
 
@@ -19,8 +20,9 @@ wasm-pack test --headless --firefox tests/browser --features worker,sync
 ```
 
 The default context is Window; `worker` selects Dedicated Worker. Tests assert the
-actual context. `sync` also compiles the facade sync/staging APIs; it does not
-claim browser/native sync interoperability.
+actual context. `sync` enables KV protocol and committed-subscription tests alongside
+the facade sync/staging compile checks. Set `WASM_BINDGEN_TEST_TIMEOUT=120` for the
+full suite, including notification-retention overflow scenarios.
 `wasm-pack` obtains matching wasm-bindgen and WebDriver tools if absent (network
 access required). `--chromedriver PATH` or `--geckodriver PATH` can select existing
 drivers; also supply `--chrome` or `--firefox` explicitly.
@@ -117,3 +119,30 @@ module with `wasm-bindgen-test-runner MODULE snapshot_materialization_measuremen
 Snapshots read the entire database, reconstruct ordered maps and retain **two
 Rust-owned copies**, in addition to transient IndexedDB/JS data. This is not a
 selective-I/O or bounded-memory implementation.
+
+## KV checked sync acceptance
+
+With `sync`, `src/kv_sync.rs` tests broad/selected caller-owned local transports,
+offline nested merges, native deltas and missing-dependency snapshot recovery,
+generations/Tombstones, expiry history, independent acknowledgements, concurrent
+commits, overflow/gaps, replay silence, rejection and cancellation. The test-only
+`kv_sync_helpers.js` observes an actual issued incoming write so the session can
+be dropped before completion; committed state and subscription fan-out must survive.
+Abort/quota faults reuse the existing injected native-API failures, not disk exhaustion.
+
+`src/kv_native_fixture.json` contains native-generated current-protocol initial
+snapshot and subsequent incremental-change transcripts, expected native response
+bytes, and committed snapshots. Browser responders must match both transcripts
+and retained history exactly. The native consumer verifies the same committed
+fixture without regenerating it:
+
+```sh
+cargo test --manifest-path tests/browser/Cargo.toml --test kv_protocol --features sync
+# Explicitly regenerate only when intentionally updating the fixture:
+OFDB_REGENERATE_KV_FIXTURE=1 cargo test --manifest-path tests/browser/Cargo.toml --test kv_protocol --features sync
+```
+
+These are logical native/browser interoperability checks without bundled network
+transport. Local subscriptions do not monitor other tabs/opens or remote-only
+writes: external-write gaps require broad recovery. Selected logical inventories
+do not avoid the IndexedDB backend's whole-database physical snapshots.

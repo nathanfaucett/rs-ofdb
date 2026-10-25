@@ -67,12 +67,14 @@ impl Database {
     /// `ChangeSubscription::run` owns initial sync, coalescing, races and retry backoff.
     /// Merge with a SQL subscription to reconcile both stores in one callback.
     /// Dropping the runner cancels its in-flight work. Returns Unsupported for memory.
+    /// IndexedDB subscriptions observe this opened backend and its shared clients,
+    /// not other tabs/opens. External-write gaps require broad recovery.
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> std::io::Result<kv_sync::ChangeSubscription> {
         self.changes.clone().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "continuous sync requires a redb database",
+                "committed changes require a persistent database",
             )
         })
     }
@@ -94,15 +96,17 @@ impl Database {
     #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
     pub async fn open_indexeddb(name: &str) -> Result<Self, Error> {
         let database = btree_indexeddb::Database::open(name, "kv").await?;
+        #[cfg(feature = "sync")]
+        let changes = database.subscribe_changes();
         Ok(Self {
             storage: Storage::IndexedDb(KvStore::new(
                 btree_indexeddb::ByteBTree::new(database, "ofdb-kv"),
                 uuid_timestamp,
             )),
             #[cfg(feature = "sync")]
-            changes: None,
+            changes: Some(changes.into()),
             #[cfg(feature = "sync")]
-            storage_table: None,
+            storage_table: Some("ofdb-kv".into()),
         })
     }
 
@@ -475,10 +479,12 @@ impl Database {
     ) -> Result<Vec<crate::KvInvalidation>, Error> {
         match &self.storage {
             #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-            Storage::IndexedDb(_) => {
-                let _ = work;
-                Ok(vec![crate::KvInvalidation::All])
-            }
+            Storage::IndexedDb(store) => Ok(store.committed_invalidations(
+                self.storage_table
+                    .as_deref()
+                    .expect("IndexedDB database retains its physical table"),
+                work,
+            )),
             #[cfg(feature = "in-memory")]
             Storage::Memory(_) => {
                 let _ = work;

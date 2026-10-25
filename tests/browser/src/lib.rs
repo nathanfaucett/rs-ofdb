@@ -4,3 +4,6 @@ mod local_storage;
 mod smoke;
 
 mod indexeddb;
+
+#[cfg(feature = "sync")]
+mod kv_sync;
