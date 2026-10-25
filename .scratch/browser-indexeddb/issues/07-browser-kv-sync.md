@@ -4,14 +4,140 @@
 
 **Blocked by:** 02 — Persist KV queries and explicit transactions in IndexedDB.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Support broad and selected checked Sync Sessions through the public facade with browser-local futures and caller-owned transport and authorization.
-- [ ] Preserve the current KV protocol version and payload formats, native history validation, snapshot recovery, latest-generation selection and Tombstone semantics.
-- [ ] Integrate Committed Change Subscriptions for shared clients and incoming replication, publishing only after successful IndexedDB transaction completion, including when a commit caller stops polling.
-- [ ] Preserve independent selected-work acknowledgement, broad initial work, overflow/gap fallback and retention of commits arriving during reconciliation.
-- [ ] Read-only commits, rollback, failed commit, identical bytes and known replay remain silent. History changes may notify even when visible values do not change; elapsed expiry does not notify.
-- [ ] Browser facade tests cover nested-value merges, offline concurrent edits, generation replacement, stale imports, Tombstones, expiry history and replay silence.
-- [ ] Rejected, malformed or canceled incoming batches persist no partial writes; earlier committed batches remain valid progress and a fresh session can converge.
-- [ ] Verify browser/native logical interoperability using payload exchange or fixtures produced by the current native implementation, without adding bundled network transports.
-- [ ] Document that local subscriptions do not automatically observe another tab or remote-only writes, and that external-write gaps require broad recovery. Do not claim bounded physical reads for a full-snapshot backend.
+- [x] Support broad and selected checked Sync Sessions through the public facade with browser-local futures and caller-owned transport and authorization.
+- [x] Preserve the current KV protocol version and payload formats, native history validation, snapshot recovery, latest-generation selection and Tombstone semantics.
+- [x] Integrate Committed Change Subscriptions for shared clients and incoming replication, publishing only after successful IndexedDB transaction completion, including when a commit caller stops polling.
+- [x] Preserve independent selected-work acknowledgement, broad initial work, overflow/gap fallback and retention of commits arriving during reconciliation.
+- [x] Read-only commits, rollback, failed commit, identical bytes and known replay remain silent. History changes may notify even when visible values do not change; elapsed expiry does not notify.
+- [x] Browser facade tests cover nested-value merges, offline concurrent edits, generation replacement, stale imports, Tombstones, expiry history and replay silence.
+- [x] Rejected, malformed or canceled incoming batches persist no partial writes; earlier committed batches remain valid progress and a fresh session can converge.
+- [x] Verify browser/native logical interoperability using payload exchange or fixtures produced by the current native implementation, without adding bundled network transports.
+- [x] Document that local subscriptions do not automatically observe another tab or remote-only writes, and that external-write gaps require broad recovery. Do not claim bounded physical reads for a full-snapshot backend.
+
+
+## Comments
+
+### Implementation and validation — 2026-10-25
+
+Confirmed clean worktree `/home/nathan/code/rust/aicacia/ofdb-browser-07`, branch
+`browser-indexeddb-07`, based exactly on integration `browser-indexeddb` at
+`64f6ee544a902adfb63bfc6d96fb58741edd51f9` (ticket 02). Read AGENTS, GLOSSARY, the
+full browser spec, tickets/notes 01/02, this ticket and the browser harness README.
+Loaded TDD and minimal-implementation skills. Used the requested public KV facade,
+committed-subscription and current native-protocol fixture seams. Complexity:
+small facade wiring, substantial behavioral coverage; risk: high for cancellation,
+atomic incoming commits and selected-work acknowledgement; priority: browser sync.
+
+IndexedDB facade construction now retains the byte backend's existing committed
+subscription and physical KV table identity. `sync_invalidations` maps actual
+physical work through the existing KV generation mapper instead of unconditionally
+returning All. Existing checked broad/selected sessions already supported the
+browser-local execution contract; no replacement protocol, adapter, executor or
+transport was introduced. Reused ticket 02's independent persistence-completion
+observer; no extra notification layer or replication task. Native behavior and
+thread-safety remain unchanged.
+
+The initial TDD test went red in actual Firefox because `sync_changes()` returned
+Unsupported for IndexedDB. It passed after wiring the existing signal and mapping.
+Subsequent slices exercised existing protocol/application behavior through public
+facades. Concurrent Automerge snapshot serialization is not canonical: an initial
+byte-equality assertion on concurrent histories was corrected to check converged
+generation identities/history heads plus expected merged values. Nonconcurrent
+native fixtures retain exact wire/response and committed-snapshot assertions.
+
+Added **12 KV browser tests** (`tests/browser/src/kv_sync.rs`), one test-only issued
+write observer, and a committed fixture generated by the current native public KV
+implementation. The fixture covers both initial snapshot and later native-change
+transcripts, including expected native response bytes and committed state; the
+browser matches these exactly. The native test validates that same committed
+fixture without regeneration. Regeneration requires explicit
+`OFDB_REGENERATE_KV_FIXTURE=1`, documented in the harness README.
+
+Coverage includes: local `Rc` transports/authorization; initial broad and selected
+logical inventories; offline nested-map merge; generation replacement and stale
+imports; delete/update Tombstones; native delta validation and missing-dependency
+snapshot recovery; independent subscribers; incoming fan-out; commits during
+selection; bounded-history lag/oversized-commit All fallback; history-only changes;
+expiry without history mutation; known snapshot/native-change replay silence;
+read-only/identical writes/rollback/drop/failure silence; independent-open revision
+conflicts; denial/cancellation in both protocol roles with prior valid batch
+progress; malformed multi-document rollback; incoming abort/quota failure rollback
+and retry; cancellation before persistence and after an actual issued incoming
+write. Issued local/incoming commits remain durable and publish independently of
+caller polling; a canceled selected session does not acknowledge its work.
+
+Only KV facade/docs and KV sync tests were owned. No SQL adapter, SQL facade or SQL
+test implementation was changed. Shared harness changes are limited to the new
+KV module declaration, optional existing-workspace protocol dependency/lock entry,
+and accurate README coverage/limitations. Integration tip was explicitly merged
+before finalization (`Already up to date` at the confirmed base); no merge conflicts.
+
+#### Passing final validation
+
+Commands below are relative to the worktree root. The editor exposes the sibling
+integration checkout, so actual invocations used `--manifest-path` / fixture path
+arguments into this worktree. Browser runs reused ignored ticket-01 machine-local
+capabilities at
+`/home/nathan/code/rust/aicacia/ofdb-browser-01/tests/browser/webdriver.local.json`
+and its matching `target/chromedriver-linux64/chromedriver`. Set
+`WASM_BINDGEN_TEST_TIMEOUT=120`; use the harness's documented optimized dev profile
+and **16 MiB Wasm linear stack**. Browser executable versions were checked again.
+
+- `wasm-pack test --headless --chrome --chromedriver DRIVER tests/browser --features sync`:
+  **32 passed**, Chrome **156.0.8078.47**, Window.
+- `wasm-pack test --headless --firefox tests/browser --features sync`:
+  **32 passed**, Firefox **158.0.1**, Window.
+- `wasm-pack test --headless --chrome --chromedriver DRIVER tests/browser --features worker,sync`:
+  **31 passed**, same Chrome, Dedicated Worker (Window-only iframe test excluded).
+- `wasm-pack test --headless --firefox tests/browser --features worker,sync`:
+  **31 passed**, same Firefox, Dedicated Worker.
+- `RUST_MIN_STACK=16777216 cargo test --manifest-path tests/browser/Cargo.toml --features sync --test kv_protocol --test native`:
+  **3 passed** (1 committed native snapshot/delta fixture + 2 existing native
+  Send/Sync/spawned query/transaction/sync checks). Explicit fixture generation also passed.
+- `RUST_MIN_STACK=16777216 cargo test -p ofdb-kv --features in-memory,redb,sync --test facade_sync --test changes --test embedded_client`:
+  **16 passed** (5 checked facade sessions + 8 committed-change + 3 ownership tests).
+- `cargo test -p ofdb-kv-sync --tests`: **18 passed** (8 unit/session + 3 inventory
+  limit + 1 Redb restart + 6 selective tests).
+- `cargo check -p ofdb-kv --no-default-features --features indexeddb,sync --target wasm32-unknown-unknown`:
+  standalone browser backend/sync build, without relying on fixture in-memory features.
+- `cargo clippy -p ofdb-kv --features in-memory,indexeddb,sync -- -D warnings`.
+- `cargo clippy --manifest-path tests/browser/Cargo.toml --tests --target wasm32-unknown-unknown --features worker,sync -- -D warnings`.
+- `cargo clippy --manifest-path tests/browser/Cargo.toml --test kv_protocol --features sync -- -D warnings`.
+- `cargo tree --manifest-path tests/browser/Cargo.toml --target wasm32-unknown-unknown --edges normal --prefix none --format '{p}' --features sync`:
+  programmatically checked absence of Redb, native BTree/SQL backends, Tonic,
+  Iroh, tempfile and native SQL/KV server/protocol packages.
+- Workspace/fixture `cargo fmt --all -- --check`; `git diff --check`.
+
+#### Failed/incomplete broad gates and limits
+
+- `RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=2 cargo hack test --feature-powerset --all-targets`:
+  **failed**, stopped at `ofdb-btree --no-default-features --features sharded`
+  with 8 errors (unavailable async_stream/std/in-memory exports and ToString).
+  This is the same pre-existing failure base-reproduced and documented in ticket
+  01 and reproduced again in ticket 02; no BTree source changed in ticket 07.
+  The remaining workspace powerset is **not** claimed passing.
+- `CARGO_BUILD_JOBS=2 just crap`: **timed out at 240 seconds**, while coverage
+  reached package 4/31 (`ofdb-btree-indexeddb`) after earlier BTree-Automerge tests
+  passed. No completed workspace coverage or CRAP score exists.
+- The first native regression build hit its 240-second compilation limit; cached
+  retry and final focused runs passed. An intermediate Firefox startup failed
+  with WebDriver/browser shutdown output; later complete runs passed. The initial
+  129-update overflow scenario exceeded the default browser test timeout; the
+  final scenario uses 129 independent committed keys (the same retention gap),
+  plus a 129-key oversized transaction, and the documented 120-second test budget.
+- No Safari/WebKit, actual disk quota exhaustion, browser-process crash/power loss,
+  live bundled network transport, cross-tab notification delivery, default-stack
+  support or full release-memory ceiling is claimed. Faults use fixture-only
+  native IndexedDB API injection. Native/browser interoperability here means
+  current native-generated wire/history fixtures, not a live network peer.
+- Local subscriptions observe only one opened backend and its shared handles;
+  independent opens/tabs and remote-only writes need caller wakeups/broad recovery.
+  Selected inventories remain logical optimization only: IndexedDB still reads
+  and copies a whole-database snapshot per transaction. Browser eviction and
+  user-cleared storage remain platform limitations. Continuous runner lifecycle
+  acceptance belongs to ticket 09; no automatic replication is started here.
+
+Ticket-07 behavior is complete with the focused/browser evidence above. Broad
+matrix/complexity gates remain explicitly incomplete, not silently waived.

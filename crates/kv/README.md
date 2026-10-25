@@ -1,14 +1,39 @@
 # ofdb-kv
 
-`ofdb-kv` is a KV-only facade with an embedded `Database` and a query/transaction `Client` for embedded or remote access. Default features are empty. Enable `in-memory` or `redb` for embedded storage, `remote` for network clients, `server` for hosting, and `sync` for one-shot sessions and the continuous change-driven lifecycle.
+`ofdb-kv` is a KV-only facade with an embedded `Database` and a query/transaction `Client` for embedded or remote access. Default features are empty. Enable `in-memory`, `redb`, or browser `indexeddb` for embedded storage, `remote` for network clients, `server` for hosting, and `sync` for one-shot sessions and the continuous change-driven lifecycle.
 
 `Client` provides `get`, `set`, `delete`, `scan`, `scan_prefix`, and `scan_all` for both embedded and remote stores. `Client::transaction()` provides the same operations on one transaction, with explicit `commit` and `rollback`, for embedded and remote stores. `Database` constructs and controls the embedded store; use `Database::client()` for queries and transactions. Values use the shared `ofdb-value::Value` type. It supports primitives, blobs, and nested JSON objects and arrays. Automerge reconciles nested values; concurrent edits to different map fields can merge, while concurrent scalar edits can produce a conflict. Expiry is an optional absolute millisecond deadline. Reads and scans use the local process clock for embedded access and the host clock for remote access. Callers do not provide clocks or timestamps.
 
 A standalone write commits as one local transaction. Standalone reads and scans use one read transaction each. Operations inside a client transaction share one transaction and become durable together on commit. Remote calls outside a transaction are independent; a lost write response does not prove that the operation failed. Dropping an uncommitted remote transaction rolls it back when the server observes stream closure.
 
-Create an embedded client with `Database::client()`. It shares storage with the database and remains usable after the database handle is dropped. `Database::open(path)` uses the `ofdb-kv` Redb table; `Database::open_with_table(path, name)` selects a table for existing Redb integrations. A remote client connects eagerly with `Client::connect` or `Client::connect_unix`. `Client::with_deadline(Duration)` configures a deadline for embedded or remote queries; no deadline is set by default. Configured embedded deadlines require a Tokio runtime with time enabled. A timeout does not prove rollback or guarantee interruption of blocking storage work.
+Create an embedded client with `Database::client()`. It shares storage with the database and remains usable after the database handle is dropped. `Database::open(path)` uses the `ofdb-kv` Redb table; `Database::open_with_table(path, name)` selects a table for existing Redb integrations. A remote client connects eagerly with `Client::connect` or `Client::connect_unix`. `Client::with_deadline(Duration)` configures a deadline for embedded or remote queries; no deadline is set by default. Configured native embedded deadlines require a Tokio runtime with time enabled; browser deadlines use platform timers. A timeout does not prove rollback or guarantee interruption of blocking storage work.
 
 The breaking value-format change uses a new persisted-document version and a new gRPC service name. Existing database documents and old clients are rejected; there is no migration path. Errors use the facade's `Error` and `ErrorKind` types; they do not expose Tonic statuses. Local storage errors and remote server responses retain KV categories through structured error details, not message parsing. Timeout and transport failures remain distinct from query failures. A lost write response does not prove that the write failed.
+
+## Browser IndexedDB synchronization
+
+With `indexeddb,sync` on `wasm32-unknown-unknown`, asynchronously construct
+`Database::open_indexeddb(name).await?` and use the same broad
+`synchronize_checked` or per-peer `synchronize_selected_checked` sessions. Transport
+and authorization futures may be browser-local (for example, own `Rc`); no Tokio
+runtime, native transport, or automatic replication task is required. Wire v3,
+native changes, checked atomic batches, snapshot recovery, generations and
+Tombstones are identical to native peers.
+
+`sync_changes()` observes shared clients and incoming commits from this opened
+backend. Publication follows native IndexedDB transaction completion, including
+when an issued commit's caller stops polling. Cancellation before issue discards
+staging; cancellation after issue does **not** prove rollback. A small independent
+completion observer remains until persistence finishes; it does not run replication.
+Rollback, failure, read-only/net byte no-op commits and known replay stay silent.
+
+Subscriptions do **not** automatically observe independent opens, other tabs, or
+remote-only writes. Arrange caller-owned remote wakeups; use a fresh subscription
+or explicit broad reconciliation after reconnects or possible external-write gaps.
+Selected work narrows logical inventories, **not physical reads**: every IndexedDB
+transaction currently materializes the entire committed database snapshot, with
+O(database-size) read/memory cost. Origin scoping, quota, eviction and user-cleared
+site data remain browser storage constraints, not native filesystem durability.
 
 ## Continuous synchronization
 
@@ -32,7 +57,7 @@ The shared signal retains 128 commits, each capped at 128 physical invalidations
 
 SQL and KV re-export the **same** `ChangeSubscription`. Use `sql.sync_changes()?.merge(kv.sync_changes()?)` and one **broad** callback that exchanges SQL and KV to avoid duplicate runners. Merged subscriptions are not suitable for selective logical mapping; keep each store/peer's subscription separate for selected sessions. `changed().await -> std::io::Result<()>` remains available for admission invalidation, not for implementing another sync scheduler. Cloning creates an independent consumer requiring initial broad reconciliation.
 
-The library spawns no task. Poll `run` on a Tokio runtime with time enabled; dropping its future cancels the current callback or retry timer. A caller can select the runner against its shutdown/admission future, and create a fresh runner when its authorized peer scope changes. The runner also stops when all subscribed backends close, including retirement; `changed` returns `BrokenPipe` after closure and pending invalidations. A subscription alone does not retain storage, though its callback can. Existing clients can keep storage alive after `Database` is dropped.
+The library spawns no task. On native targets poll `run` on a Tokio runtime with time enabled; on browser Wasm it uses platform timers; dropping its future cancels the current callback or retry timer. A caller can select the runner against its shutdown/admission future, and create a fresh runner when its authorized peer scope changes. The runner also stops when all subscribed backends close, including retirement; `changed` returns `BrokenPipe` after closure and pending invalidations. A subscription alone does not retain storage, though its callback can. Existing clients can keep storage alive after `Database` is dropped.
 
 The committed signal covers shared clients, hosted queries, explicit transactions and incoming sync. Read-only commits, identical byte writes, failed/rolled-back transactions and replayed sync are silent. Touched-key tracking suppresses net byte no-ops; structural table drops are conservatively dirty without copying their contents. A history change can notify even when the visible value is unchanged; elapsed expiry alone is not a commit and does not notify. Notifications are process-local coalesced invalidations, not a durable log, and do not monitor writes outside the shared backend.
 

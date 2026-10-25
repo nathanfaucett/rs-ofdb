@@ -8,7 +8,7 @@ publish = false
 
 [features]
 worker = []
-sync = ["ofdb-sql/sync", "ofdb-kv/sync"]
+sync = ["ofdb-sql/sync", "ofdb-kv/sync", "dep:kv-sync"]
 
 [dependencies]
 ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory", "indexeddb"] }
@@ -16,6 +16,9 @@ ofdb-sql = { path = "../../crates/sql", default-features = false, features = ["i
 wasm-bindgen-test = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = { version = "0.3", default-features = false, features = ["std"] }
 uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
+
+# KV protocol acceptance fixtures
+kv-sync = { version = "0.1", path = "../../crates/kv-sync", package = "ofdb-kv-sync", default-features = false, optional = true }
 
 # Browser test helpers
 kv-store = { version = "0.1", path = "../../crates/kv-store", package = "ofdb-kv-store", default-features = false, features = [] }

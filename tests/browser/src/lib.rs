@@ -5,4 +5,6 @@ mod smoke;
 
 mod indexeddb;
 
+#[cfg(feature = "sync")]
+mod kv_sync;
 mod sql_indexeddb;

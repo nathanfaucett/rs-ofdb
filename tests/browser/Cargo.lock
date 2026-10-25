@@ -744,6 +744,7 @@ dependencies = [
  "ofdb-btree-indexeddb",
  "ofdb-kv",
  "ofdb-kv-store",
+ "ofdb-kv-sync",
  "ofdb-platform",
  "ofdb-sql",
  "ofdb-sql-engine",
