@@ -451,6 +451,13 @@ async fn deadlines_sql_issued_query_and_transaction_survive_timeout_and_cancella
                 .execute_sql("CREATE TABLE items (id TEXT PRIMARY KEY)", None)
                 .await
                 .expect("DDL");
+            #[cfg(feature = "sync")]
+            let mut changes = {
+                let mut changes = db.sync_changes().expect("SQL subscription");
+                let initial = changes.select().expect("initial work");
+                assert!(changes.acknowledge(initial));
+                changes
+            };
             let timed = client.clone().with_deadline(Duration::from_millis(100));
             let mut tx = if explicit {
                 let mut tx = timed.transaction().await.expect("begin");
@@ -486,7 +493,17 @@ async fn deadlines_sql_issued_query_and_transaction_survive_timeout_and_cancella
                 );
             }
             completion.completed().await;
+            #[cfg(feature = "sync")]
+            assert!(
+                changes.select().is_none(),
+                "held completion must not publish early"
+            );
             drop(completion);
+            #[cfg(feature = "sync")]
+            platform::timeout(Duration::from_secs(10), changes.changed())
+                .await
+                .expect("SQL commit publication survives timeout/cancellation")
+                .expect("committed wakeup");
             let reopened = ofdb_sql::Database::open_indexeddb(&name)
                 .await
                 .expect("independent reopen")

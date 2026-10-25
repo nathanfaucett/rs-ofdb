@@ -300,7 +300,10 @@ impl Database {
         engine_redb::remove_retired(path)
     }
 
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     fn native_stage_factory(
         &self,
         directory: impl AsRef<std::path::Path>,
@@ -324,8 +327,6 @@ impl Database {
                     factory
                 }
             }
-            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-            DatabaseBackend::IndexedDb(_) => factory,
             #[cfg(feature = "in-memory")]
             DatabaseBackend::InMemory(_) => factory,
         }
@@ -381,9 +382,11 @@ impl Database {
         let kernel = IndexedDbKernel::open(name)
             .await
             .map_err(crate::error::from_engine)?;
+        #[cfg(feature = "sync")]
+        let changes = engine::Kernel::subscribe_changes(&kernel);
         Ok(Self {
             #[cfg(feature = "sync")]
-            changes: None,
+            changes: changes.map(Into::into),
             backend: DatabaseBackend::IndexedDb(Engine::new(kernel, AutomergeRowCodec::new())),
         })
     }
@@ -765,7 +768,10 @@ impl Database {
     }
 
     /// Uses ofdb-owned native temporary records in the caller-selected directory.
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub async fn synchronize_with_stage_directory<T>(
         &self,
         transport: &mut T,
@@ -961,7 +967,10 @@ impl Database {
     /// Native staging plus the same per-operation caller check as memory sync.
     /// Local failure releases stages without waiting for Abort delivery; discard
     /// the transport after failure.
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     pub async fn synchronize_with_stage_directory_checked<T, Q, U>(
         &self,
         transport: &mut T,
@@ -1020,7 +1029,10 @@ impl Database {
     /// Fixed-schema scoped sync with owner-native temporary stages.
     /// Uses the same structural-only checks and failure/cleanup contract as
     /// `Self::synchronize_tables_checked`; domain values are not validated.
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn synchronize_tables_with_stage_directory_checked<T, Q, U>(
         &self,
@@ -1088,7 +1100,10 @@ impl Database {
 
     /// Historical-value validated scoped sync with owner-native temporary stages.
     /// Uses the same validation and failure contract as `Self::synchronize_tables_validated_checked`.
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn synchronize_tables_with_stage_directory_validated_checked<T, V, Q, U>(
         &self,
@@ -1168,7 +1183,10 @@ impl Database {
     /// Candidate/historical-value validated scoped sync with owner-native stages.
     /// Same contract as `Self::synchronize_tables_candidate_validated_checked`.
     /// Discard the transport on error; stages are removed without waiting for Abort delivery.
-    #[cfg(feature = "native-stage")]
+    #[cfg(all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn synchronize_tables_with_stage_directory_candidate_validated_checked<
         T,

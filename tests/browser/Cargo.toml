@@ -8,7 +8,7 @@ publish = false
 
 [features]
 worker = []
-sync = ["ofdb-sql/sync", "ofdb-kv/sync", "dep:kv-sync"]
+sync = ["ofdb-sql/sync", "ofdb-kv/sync", "dep:kv-sync", "dep:postcard", "dep:sql-sync"]
 
 [dependencies]
 ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory", "indexeddb"] }
@@ -19,6 +19,10 @@ uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
 
 # KV protocol acceptance fixtures
 kv-sync = { version = "0.1", path = "../../crates/kv-sync", package = "ofdb-kv-sync", default-features = false, optional = true }
+
+# SQL protocol acceptance fixtures
+postcard = { version = "1.1", default-features = false, features = ["alloc"], optional = true }
+sql-sync = { version = "0.1", path = "../../crates/sql-sync", package = "ofdb-sql-sync", default-features = false, optional = true }
 
 # Browser test helpers
 kv-store = { version = "0.1", path = "../../crates/kv-store", package = "ofdb-kv-store", default-features = false, features = [] }

@@ -1,15 +1,27 @@
 #![no_std]
 
 extern crate alloc;
-#[cfg(any(feature = "iroh", feature = "native-stage"))]
+#[cfg(any(
+    feature = "iroh",
+    all(
+        feature = "native-stage",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    )
+))]
 extern crate std;
 
 mod candidate;
 mod codec;
 mod direction;
-#[cfg(feature = "native-stage")]
+#[cfg(all(
+    feature = "native-stage",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 mod file_stage;
-#[cfg(feature = "native-stage")]
+#[cfg(all(
+    feature = "native-stage",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub use file_stage::{FileSyncStage, FileSyncStageFactory};
 #[cfg(feature = "iroh")]
 mod iroh_transport;

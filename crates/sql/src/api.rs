@@ -39,7 +39,10 @@ pub use sync::{
     apply_sync_state_batch_for, apply_sync_state_for, export_sync_state_for, synchronize,
     synchronize_with_stage_factory,
 };
-#[cfg(feature = "native-stage")]
+#[cfg(all(
+    feature = "native-stage",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub use sync::{FileSyncStage, FileSyncStageFactory};
 pub use uuid::Uuid;
 pub use value::{

@@ -16,7 +16,7 @@ Default features are empty. Remote-only builds do not include a local SQL engine
 
 ## Continuous synchronization
 
-With `sync`, `Database::sync_changes()` returns `std::io::Result<ChangeSubscription>` for both SQL memory and Redb backends. This opaque type belongs to the sync API: it exposes no Tokio receiver or revision bookkeeping. Obtain it before starting reconciliation, then await `changes.run(synchronize)`, where the callback implements `FnMut() -> Future<Output = Result<(), E>>` and supplies an authorized sync session. The sync library owns the initial pass, change coalescing, race-free rescheduling for commits during a pass, and retry of failed work without waiting for another commit. Retry backoff starts at 100 ms, doubles to a 30-second cap, and resets on success. The callback reports/logs its errors and must return `Err` when delivery is still pending, including unavailable peers.
+With `sync`, `Database::sync_changes()` returns `std::io::Result<ChangeSubscription>` for SQL memory, Redb and browser IndexedDB backends. This opaque type belongs to the sync API: it exposes no Tokio receiver or revision bookkeeping. Obtain it before starting reconciliation, then await `changes.run(synchronize)`, where the callback implements `FnMut() -> Future<Output = Result<(), E>>` and supplies an authorized sync session. The sync library owns the initial pass, change coalescing, race-free rescheduling for commits during a pass, and retry of failed work without waiting for another commit. Retry backoff starts at 100 ms, doubles to a 30-second cap, and resets on success. The callback reports/logs its errors and must return `Err` when delivery is still pending, including unavailable peers.
 
 ### Selected per-peer sessions
 
@@ -48,7 +48,7 @@ The engine owns `RowReconciler` history/state capabilities; SQL sync owns protoc
 
 SQL and KV re-export the **same** `ChangeSubscription`. Use `sql.sync_changes()?.merge(kv.sync_changes()?)` and one **broad** callback that exchanges SQL and KV to avoid duplicate runners. Merged subscriptions are not suitable for selective logical mapping. `changed().await -> std::io::Result<()>` remains available for admission invalidation, not for implementing another sync scheduler. Cloning creates an independent consumer requiring initial broad reconciliation.
 
-The library spawns no task. Poll `run` on a Tokio runtime with time enabled; dropping its future cancels the current callback or retry timer. A caller can select the runner against its shutdown/admission future, and create a fresh runner when its authorized peer scope changes. The runner also stops when all subscribed backends close, including retirement; `changed` returns `BrokenPipe` after closure and pending invalidations. A subscription alone does not retain storage, though its callback can. Existing clients can keep storage alive after `Database` is dropped.
+The library starts no runner automatically. Native callers poll `run` on a Tokio runtime with time enabled; browser callers use platform timers without a Tokio runtime; dropping its future cancels the current callback or retry timer. A caller can select the runner against its shutdown/admission future, and create a fresh runner when its authorized peer scope changes. The runner also stops when all subscribed backends close, including retirement; `changed` returns `BrokenPipe` after closure and pending invalidations. A subscription alone does not retain storage, though its callback can. Existing clients can keep storage alive after `Database` is dropped.
 
 The committed signal covers backend clones, hosted queries, explicit transactions, conflict resolution and incoming sync. Read-only commits, identical byte writes, failed/rolled-back transactions and replayed sync are silent. Touched-key tracking suppresses net byte no-ops, including index rebuilds; a successful table drop is conservatively dirty even if recreated in the same transaction, without scanning/copying the dropped table. Visible row equality does not imply equal replicated history. Notifications are process-local coalesced invalidations, not a durable log, and do not monitor writes outside the shared backend.
 
@@ -118,7 +118,37 @@ filesystem-equivalent durability or protection from eviction/power loss. See the
 Window and Dedicated Worker tests run in Chrome and Firefox without a Tokio
 runtime, native networking or Redb. Consumers must provision the documented
 [Wasm stack budget](../../tests/browser/README.md#stack-budget) (the harness uses
-16 MiB). No WebKit support or default-stack guarantee is claimed. SQL browser/native
-sync interoperability and facade committed subscriptions remain ticket 08 work;
-`sync_changes()` on IndexedDB currently returns Unsupported. Cross-tab wakeups are
-not provided; revision checks still prevent stale writes across independent opens.
+16 MiB). No WebKit support or default-stack guarantee is claimed.
+
+### Browser checked synchronization
+
+Add `sync` to `indexeddb` to use the existing checked broad, selected and fixed-schema
+scoped APIs, including historical-value and complete-candidate validation. The SQL
+wire protocol remains v7; native snapshots, incremental changes, UUID identities,
+Tombstones and catalog formats are unchanged. Natural and composite primary keys
+remain immutable and distinct from internal row identities; only a single UUID
+primary key supplies that identity.
+
+Sessions reuse bounded memory staging (`SessionConfig::max_session_bytes`, default
+64 MiB) and existing checked atomic apply. File stage types and stage-directory
+methods are native-only, even if `native-stage` is enabled for a browser build.
+Transports, peer selection, per-apply authorization/cancellation and remote wakeups
+remain caller-owned. An error or canceled session may leave earlier complete
+batches committed; discard its transport and reconcile again with a fresh session.
+The complete catalog is one atomic apply; data batches retain their existing
+atomicity, history checks and derived-index maintenance.
+
+`sync_changes()` includes shared clients, explicit transactions, conflict Resolution
+and incoming replication. Issued persistence completion publishes independently
+of the caller future, including query deadline expiry or session cancellation.
+Failed, rolled-back, read-only and net byte no-op commits remain silent. Keep one
+independent subscription per peer; select before reads and acknowledge only after
+successful reconciliation. Initial work, lagged history and overflow require All.
+
+These notifications do not observe independent opens, other tabs/workers or
+remote-only edits. Supply remote wakeups or periodically request All for broad
+recovery; revision checks still prevent stale writes across independent opens.
+Selected logical work does not make IndexedDB I/O selective: each engine transaction
+still materializes the entire physical database snapshot. Bounded sync staging is
+not a bound on that O(database-size) snapshot cost. Continuous browser runner
+acceptance is tracked separately in ticket 09.

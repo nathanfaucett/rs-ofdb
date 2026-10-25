@@ -3,9 +3,9 @@
 This isolated Rust consumer exercises public in-memory SQL/KV clients and durable
 IndexedDB SQL/KV storage in real browsers without a Tokio runtime. Its own workspace prevents native facade
 **development** dependencies (Redb, servers, native networking and temporary
-files) from entering browser builds. With `sync`, KV tests exercise checked
-broad/selected sessions and native protocol fixtures. SQL browser sync remains
-subsequent-ticket work.
+files) from entering browser builds. With `sync`, SQL and KV tests exercise checked
+broad/selected sessions and native protocol fixtures; SQL also exercises scoped
+history/candidate validation.
 
 ## Run
 
@@ -20,7 +20,7 @@ wasm-pack test --headless --firefox tests/browser --features worker,sync
 ```
 
 The default context is Window; `worker` selects Dedicated Worker. Tests assert the
-actual context. `sync` enables KV protocol and committed-subscription tests alongside
+actual context. `sync` enables SQL/KV protocol and committed-subscription tests alongside
 the facade sync/staging compile checks. Set `WASM_BINDGEN_TEST_TIMEOUT=120` for the
 full suite, including notification-retention overflow scenarios.
 `wasm-pack` obtains matching wasm-bindgen and WebDriver tools if absent (network
@@ -130,8 +130,7 @@ The Kernel seam additionally checks binary ranges, missing tables and stale
 read-only commits. `sql_indexeddb_helpers.js` restarts fresh worker/iframe Wasm
 instances through the test-only `sql_restart_probe` export; persisted indexed reads,
 unique constraints and UUID Tombstones must survive. These are execution-context
-restarts, not whole-browser/OS crash or power-loss tests. SQL browser sync remains
-separate follow-up work.
+restarts, not whole-browser/OS crash or power-loss tests. Checked SQL sync acceptance is described below.
 
 ## KV checked sync acceptance
 
@@ -207,8 +206,8 @@ observation forces public query/transaction timeouts without depending on disk s
 After the caller exits, the fixture releases observation and independently reopens
 SQL/KV to verify the complete persisted write. With `sync`, KV also verifies no early
 publication and an eventual committed wakeup without polling the original caller.
-SQL browser `sync_changes()` is unsupported at this base; SQL subscription integration
-belongs to ticket08, not these deadline tests. These tests do not simulate quota
+With `sync`, SQL likewise verifies no early publication and eventual committed
+wakeups after query/transaction timeout or cancellation. These tests do not simulate quota
 exhaustion or require changes to the persistence adapter's lifecycle API.
 
 `Client::with_deadline(Duration)` has no default deadline; clones copy settings
@@ -220,3 +219,42 @@ Timeout/cancellation does **not** prove rollback, undo completed writes, or guar
 hard interruption. Explicitly roll back or drop uncommitted staging when abandoning
 it; once native commit has been issued, independently observed completion may still
 persist it. Native configured deadlines continue to use Tokio time.
+
+
+## SQL checked sync acceptance
+
+With `sync`, `src/sql_sync.rs` uses the public Database → Client → Transaction
+and existing sync APIs with caller-owned in-process transports, including local
+`Rc` callback state. It covers checked broad bootstrap, independent selected work,
+later-commit retention, scoped directions/history/candidate policies, natural and
+composite keys, offline conflicts and explicit Resolution, Tombstones, catalog
+drop/recreation, native dependency recovery, replay silence, bounded session/stage
+failure, malformed catalog rejection, authorization revocation and cancellation.
+A denied later data apply leaves the earlier complete catalog intact; retry
+converges. Native abort and injected quota errors leave no partial catalog/index
+state. These are injected failures, not actual disk-quota exhaustion.
+
+The existing fixture-only `afterNextWrite` helper observes an issued incoming
+native data write so its caller can be abandoned before completion. Local and
+incoming committed state and independent subscription fan-out must survive.
+`deadlines.rs` additionally holds native completion observation while SQL query
+and explicit transaction callers time out/cancel; publication must not occur early.
+Overflow/lag require All. An independent open deliberately does not wake a local
+subscription; an explicit broad pass recovers its writes. No automatic cross-tab,
+remote-only wakeup, durable replay or selective physical I/O is claimed.
+
+`src/sql_native_fixture.json` contains native-generated current-v7 bootstrap and
+subsequent incremental/deletion/catalog transcripts, exact expected native replies,
+and complete retained history with deletion metadata. Both native and browser
+responders verify this committed fixture, without regenerating expected results:
+
+```sh
+RUST_MIN_STACK=16777216 cargo test --manifest-path tests/browser/Cargo.toml --features sync --test sql_protocol
+# Explicit regeneration only when intentionally updating the fixture:
+RUST_MIN_STACK=16777216 OFDB_REGENERATE_SQL_FIXTURE=1 cargo test --manifest-path tests/browser/Cargo.toml --features sync --test sql_protocol
+```
+
+Run Window `--features sync` and Dedicated Worker `--features worker,sync` in both
+Chrome and Firefox. Native stage-directory APIs/types and tempfile remain absent
+from the browser target even with `ofdb-sql/native-stage` explicitly enabled.
+Continuous browser runner acceptance remains ticket 09, not these one-shot tests.

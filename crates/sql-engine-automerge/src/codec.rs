@@ -1275,9 +1275,15 @@ where
                         } else {
                             let index = column.expect("known column checked before decoding");
                             let decoded: Value = Self::scoped_decode(&bytes)?;
-                            if columns[index].3 && decoded != Value::Uuid(row) {
+                            if columns[index].3
+                                && (decoded == Value::Null
+                                    || decoded != value.values[index]
+                                    || (columns.iter().filter(|column| column.3).count() == 1
+                                        && columns[index].1 == ValueType::Uuid
+                                        && decoded != Value::Uuid(row)))
+                            {
                                 return Err(EngineError::custom(
-                                    "Historical scoped primary key differs from row identity",
+                                    "Historical scoped primary key is not immutable or differs from row identity",
                                 ));
                             }
                             let expected = columns[index].1;
