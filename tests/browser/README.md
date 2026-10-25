@@ -159,3 +159,16 @@ These are logical native/browser interoperability checks without bundled network
 transport. Local subscriptions do not monitor other tabs/opens or remote-only
 writes: external-write gaps require broad recovery. Selected logical inventories
 do not avoid the IndexedDB backend's whole-database physical snapshots.
+
+## SQL transaction and reconciliation semantics
+
+`src/sql_semantics.rs` adds public-facade transaction/aborted-state, defaults,
+natural/composite key, unique constraint, index, multi-table failure and separate
+worker commit-race checks. With `sync`, it builds concurrent causal-history
+fixtures through public sync, then checks losing values, partial/invalid explicit
+Resolution, stale replay, permanent unique-key losers and drop/recreation. Fresh
+workers and (in Window mode) iframe pages compare complete exported native history
+before/after context destruction, including catalog, indexes and Tombstones.
+These fixture-setup sync calls do not replace ticket 08's checked-sync acceptance.
+Run both Window `--features sync` and Dedicated Worker `--features worker,sync`
+in Chrome and Firefox using the commands above.
