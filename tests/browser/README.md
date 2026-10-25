@@ -186,3 +186,37 @@ and releasing the peer must not let the late request create an empty database.
 The same tests run under both Window and Dedicated Worker runners. Injected
 quota failures are not evidence of real storage exhaustion; see the
 [storage policy](../../crates/btree-indexeddb/README.md#lifecycle-and-browser-failures).
+
+## Browser query deadlines
+
+`src/deadlines.rs` exercises both public IndexedDB clients without a Tokio runtime:
+all query entry points time out on pending snapshots, cloned clients keep independent
+settings, transaction creation is bounded, and transaction operations get fresh
+budgets after caller awaits. It covers typed SQL, SQL-text and generic translation,
+including CPU work before translation's first yield, pending translation inside an
+explicit transaction, and one budget shared by translation and commit observation.
+Platform edge checks cover zero/ready work, sub-millisecond waits and delays beyond
+the browser's signed 32-bit timer range.
+
+`deadline_helpers.js` is fixture-only fault injection. It temporarily holds the
+adapter's native completion callback, while a separate native event listener
+observes the real IndexedDB transaction completing. Pending readonly snapshots let
+tests time out or cancel **before** persistence. For issued commits, the existing
+`afterNextWrite` helper cancels while a real native write is queued; held completion
+observation forces public query/transaction timeouts without depending on disk speed.
+After the caller exits, the fixture releases observation and independently reopens
+SQL/KV to verify the complete persisted write. With `sync`, KV also verifies no early
+publication and an eventual committed wakeup without polling the original caller.
+SQL browser `sync_changes()` is unsupported at this base; SQL subscription integration
+belongs to ticket08, not these deadline tests. These tests do not simulate quota
+exhaustion or require changes to the persistence adapter's lifecycle API.
+
+`Client::with_deadline(Duration)` has no default deadline; clones copy settings
+independently. Each query, transaction creation and transaction operation gets its
+own budget, excluding connection setup and caller idle time. SQL translation and
+execution share one budget. Browser timers are cooperative: background throttling
+or synchronous computation can delay delivery, and already-ready work may win.
+Timeout/cancellation does **not** prove rollback, undo completed writes, or guarantee
+hard interruption. Explicitly roll back or drop uncommitted staging when abandoning
+it; once native commit has been issued, independently observed completion may still
+persist it. Native configured deadlines continue to use Tokio time.

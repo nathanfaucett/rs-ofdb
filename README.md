@@ -223,6 +223,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
+## Query deadlines
+
+Both SQL and KV `Client::with_deadline(Duration)` configure an optional per-operation
+budget, with no fixed default and independent settings on cloned clients. SQL
+translation and execution share one budget. Transactions inherit the setting and
+start a fresh budget for each operation; time between calls is not charged.
+Browser Wasm uses platform timers without a Tokio runtime; native configured
+deadlines require Tokio time. Browser timers cannot hard-interrupt computation and
+may be delayed by event-loop scheduling or background throttling. Timeout or
+cancellation does not prove rollback or undo a completed write: an issued IndexedDB
+commit remains observed and can finish after its caller stops waiting. See the
+[browser deadline harness](tests/browser/README.md#browser-query-deadlines) for the
+real-browser cancellation and timeout checks and their limits.
+
+---
+
 ## Database Server Images
 
 `compose.yaml` runs the persistent KV and SQL gRPC servers. It stores database files in separate named volumes:
