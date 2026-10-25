@@ -25,8 +25,11 @@ pub struct SyncCandidateView {
 
 pub use engine::{RowStateView as SyncRowView, TableStateView as SyncTableView};
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) type CandidateValidator<'a> =
     dyn Fn(&SyncCandidateView) -> Result<(), String> + Send + Sync + 'a;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) type CandidateValidator<'a> = dyn Fn(&SyncCandidateView) -> Result<(), String> + 'a;
 
 pub(crate) async fn read_candidate_view<T, R>(
     codec: &R,

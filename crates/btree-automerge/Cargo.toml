@@ -17,6 +17,9 @@ wasm = ["automerge/wasm"]
 default = []
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+
 # internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"] }
 
@@ -37,3 +40,7 @@ btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-fe
   "in-memory",
   "std",
 ] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser actor randomness
+automerge = { version = "0.10", default-features = false, features = ["wasm"] }

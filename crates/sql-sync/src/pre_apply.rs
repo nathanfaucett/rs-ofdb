@@ -1,11 +1,13 @@
-use alloc::{boxed::Box, string::String};
-use core::{future::Future, pin::Pin};
+use alloc::string::String;
 
 use engine::EngineError;
 use thiserror::Error;
 
-pub(crate) type CheckFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub(crate) type CheckFuture<'a> = platform::BoxFuture<'a, Result<(), String>>;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) type Check<'a> = dyn FnMut() -> CheckFuture<'a> + Send + 'a;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) type Check<'a> = dyn FnMut() -> CheckFuture<'a> + 'a;
 
 #[derive(Debug, Error)]
 pub(crate) enum ApplyError {

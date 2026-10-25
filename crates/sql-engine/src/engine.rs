@@ -12,6 +12,8 @@ use value::{FromRow, Row, Value};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
+use platform::{MaybeSend, MaybeSync};
+
 use thiserror::Error;
 
 use query::{QueryParams, QueryResult, Statement, TranslateError, Translator};
@@ -119,7 +121,7 @@ impl<K, R> Engine<K, R> {
 pub struct EngineTransaction<K, R>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     engine: Engine<K, R>,
     transaction: Option<K::Transaction>,
@@ -130,7 +132,7 @@ where
 impl<K, R> EngineTransaction<K, R>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     /// Uses the same user primary-key tuple as [`Engine::row_conflicts`].
     pub async fn row_conflicts(&self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
@@ -235,7 +237,7 @@ where
 impl<K, R> Engine<K, R>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     #[cfg(feature = "std")]
     pub fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {

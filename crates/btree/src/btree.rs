@@ -5,6 +5,8 @@ use futures::{Stream, StreamExt, pin_mut};
 
 use core::ops::RangeBounds;
 
+use platform::{MaybeSend, MaybeSync};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -50,16 +52,16 @@ pub trait BTreeKey: BTreeValue + Ord {}
 
 impl<T> BTreeKey for T where T: BTreeValue + Ord {}
 
-pub trait BTreeRead<K, V>: Send + Sync
+pub trait BTreeRead<K, V>: MaybeSend + MaybeSync
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
 {
-    fn get(&self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + Send;
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn get(&self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + MaybeSend;
+    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Clone + Send;
-    fn is_empty(&self) -> impl Future<Output = BTreeResult<bool>> + Send {
+        R: RangeBounds<K> + Clone + MaybeSend;
+    fn is_empty(&self) -> impl Future<Output = BTreeResult<bool>> + MaybeSend {
         async move {
             let s = self.range(..);
             pin_mut!(s);
@@ -68,35 +70,35 @@ where
     }
 }
 
-pub trait BTreeTransaction<K, V>: BTreeRead<K, V> + Send + Sync
+pub trait BTreeTransaction<K, V>: BTreeRead<K, V> + MaybeSend + MaybeSync
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
 {
-    fn insert(&mut self, key: K, value: V) -> impl Future<Output = BTreeResult<()>> + Send;
+    fn insert(&mut self, key: K, value: V) -> impl Future<Output = BTreeResult<()>> + MaybeSend;
     fn update<F>(
         &mut self,
         key: K,
         update_fn: F,
-    ) -> impl Future<Output = BTreeResult<Option<()>>> + Send
+    ) -> impl Future<Output = BTreeResult<Option<()>>> + MaybeSend
     where
-        F: FnOnce(&mut V) -> BTreeResult<()> + Send;
+        F: FnOnce(&mut V) -> BTreeResult<()> + MaybeSend;
 
-    fn remove(&mut self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + Send;
-    fn remove_range<R>(&mut self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn remove(&mut self, key: &K) -> impl Future<Output = BTreeResult<Option<V>>> + MaybeSend;
+    fn remove_range<R>(&mut self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Clone + Send;
+        R: RangeBounds<K> + Clone + MaybeSend;
 
-    fn commit(self) -> impl Future<Output = BTreeResult<()>> + Send;
-    fn rollback(self) -> impl Future<Output = BTreeResult<()>> + Send;
+    fn commit(self) -> impl Future<Output = BTreeResult<()>> + MaybeSend;
+    fn rollback(self) -> impl Future<Output = BTreeResult<()>> + MaybeSend;
 }
 
 pub trait BTree<K, V>: BTreeRead<K, V>
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
 {
     type Transaction: BTreeTransaction<K, V>;
 
-    fn transaction(&self) -> impl Future<Output = BTreeResult<Self::Transaction>> + Send;
+    fn transaction(&self) -> impl Future<Output = BTreeResult<Self::Transaction>> + MaybeSend;
 }

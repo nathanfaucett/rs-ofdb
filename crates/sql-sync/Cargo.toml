@@ -18,6 +18,9 @@ native-stage = ["dep:tempfile"]
 iroh = ["dep:iroh"]
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+
 # internal dependencies
 engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine", default-features = false, features = [] }
 sync-runtime = { version = "0.1", path = "../sync-runtime", package = "ofdb-sync-runtime", default-features = false, features = [], optional = true }

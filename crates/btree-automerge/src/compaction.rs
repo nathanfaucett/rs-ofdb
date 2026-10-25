@@ -1,3 +1,5 @@
+use platform::{MaybeSend, MaybeSync};
+
 use automerge::{AutoCommit, ChangeHash};
 use btree::{BTreeResult, BTreeTransaction};
 use futures::{StreamExt, pin_mut};
@@ -26,7 +28,7 @@ where
     hash_hashes(heads.into_iter().map(|head| head.0))
 }
 
-pub trait CompactionPolicy: Send + Sync {
+pub trait CompactionPolicy: MaybeSend + MaybeSync {
     fn should_compact(&self, delta_count: usize, delta_bytes: usize) -> bool;
 }
 

@@ -24,6 +24,9 @@ sharded = ["dep:dashmap"]
 in-memory = ["dep:async-stream", "dep:async-lock"]
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+
 # Change notifications
 tokio = { version = "1.0", default-features = false, features = ["sync"], optional = true }
 

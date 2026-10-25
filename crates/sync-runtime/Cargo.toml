@@ -9,6 +9,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Platform timers
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = ["time"] }
+
 # Backend notifications
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["changes"] }
 

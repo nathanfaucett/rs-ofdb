@@ -2,6 +2,8 @@ use std::{borrow::Cow, string::String, vec::Vec};
 
 use core::ops::Bound;
 
+use platform::MaybeSend;
+
 use async_stream::stream;
 use automerge::legacy::{Key, ObjectId, OpType};
 use automerge::transaction::Transactable;
@@ -81,7 +83,7 @@ impl AutomergeRowCodec {
     fn catalog_states<'a, T>(
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + MaybeSend + 'a
     where
         T: KernelTransaction,
     {
@@ -92,7 +94,7 @@ impl AutomergeRowCodec {
         transaction: &'a T,
         table: &'a str,
         range: (Bound<DocumentChangeKey>, Bound<DocumentChangeKey>),
-    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + MaybeSend + 'a
     where
         T: KernelTransaction,
     {
@@ -124,7 +126,7 @@ impl AutomergeRowCodec {
         table: &'a str,
         fallback_count: usize,
         catalog: Option<RowCatalog<'a>>,
-    ) -> impl core::future::Future<Output = EngineResult<Vec<Column>>> + Send + 'a
+    ) -> impl core::future::Future<Output = EngineResult<Vec<Column>>> + MaybeSend + 'a
     where
         T: KernelTransaction,
     {
@@ -141,11 +143,13 @@ impl AutomergeRowCodec {
             }
 
             let tables = match catalog {
-                Some((tables, _)) => futures::stream::iter(
+                Some((tables, _)) => futures::future::Either::Left(futures::stream::iter(
                     tables.iter().map(|(id, row)| Ok((*id, row.clone(), false))),
-                )
-                .boxed(),
-                None => Self::catalog_states(transaction, engine::ENGINE_TABLES_STORAGE).boxed(),
+                )),
+                None => futures::future::Either::Right(Self::catalog_states(
+                    transaction,
+                    engine::ENGINE_TABLES_STORAGE,
+                )),
             };
             pin_mut!(tables);
             let mut table_id = None;
@@ -161,13 +165,15 @@ impl AutomergeRowCodec {
             let mut columns = Vec::new();
             if let Some(table_id) = table_id {
                 let fields = match catalog {
-                    Some((_, fields)) => futures::stream::iter(
+                    Some((_, fields)) => futures::future::Either::Left(futures::stream::iter(
                         fields
                             .iter()
                             .map(|field| Ok((Uuid::nil(), field.clone(), false))),
-                    )
-                    .boxed(),
-                    None => Self::catalog_states(transaction, ENGINE_TABLE_FIELDS_STORAGE).boxed(),
+                    )),
+                    None => futures::future::Either::Right(Self::catalog_states(
+                        transaction,
+                        ENGINE_TABLE_FIELDS_STORAGE,
+                    )),
                 };
                 pin_mut!(fields);
                 while let Some(field) = fields.next().await {
@@ -216,7 +222,7 @@ impl AutomergeRowCodec {
         transaction: &'a T,
         table: &'a str,
         id: &'a DocumentId,
-    ) -> impl core::future::Future<Output = EngineResult<Option<AutoCommit>>> + Send + 'a
+    ) -> impl core::future::Future<Output = EngineResult<Option<AutoCommit>>> + MaybeSend + 'a
     where
         T: KernelTransaction,
     {
@@ -247,7 +253,7 @@ impl AutomergeRowCodec {
         table: &str,
     ) -> AutomergeBTreeTransaction<AutomergeChangeStore<BytesTableTransaction<'a, T>>>
     where
-        T: KernelTransaction + Send,
+        T: KernelTransaction + MaybeSend,
     {
         AutomergeBTreeTransaction::new(
             AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table)),
@@ -645,7 +651,7 @@ impl AutomergeRowCodec {
         value: &Row,
     ) -> EngineResult<()>
     where
-        T: KernelTransaction + Send,
+        T: KernelTransaction + MaybeSend,
     {
         let schema_id = if catalog_table_for_storage(table).is_none() {
             Self::table_definition_id(transaction, table).await?
@@ -703,7 +709,7 @@ impl AutomergeRowCodec {
 
 impl<T> RowCodec<T> for AutomergeRowCodec
 where
-    T: KernelTransaction + Send,
+    T: KernelTransaction + MaybeSend,
 {
     async fn ensure_table(&self, transaction: &mut T, table: &str) -> EngineResult<()> {
         transaction.ensure_table(table).await
@@ -732,7 +738,7 @@ where
         transaction: &'a T,
         table: &'a str,
         catalog: Option<RowCatalog<'a>>,
-    ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row)>> + MaybeSend + 'a {
         stream! {
             let storage = table;
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, storage));
@@ -768,7 +774,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Uuid, Row, bool)>> + MaybeSend + 'a {
         stream! {
             if catalog_table_for_storage(table).is_some() {
                 let states = Self::catalog_states(transaction, table);
@@ -1119,7 +1125,7 @@ where
 
 impl<T> RowReconciler<T> for AutomergeRowCodec
 where
-    T: KernelTransaction + Send,
+    T: KernelTransaction + MaybeSend,
 {
     async fn observe_table_state(
         &self,
@@ -1313,7 +1319,7 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<Uuid>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<Uuid>> + MaybeSend + 'a {
         stream! {
             let changes = AutomergeChangeStore::new(BytesTable::new(transaction, table));
             let entries = changes.range(..);

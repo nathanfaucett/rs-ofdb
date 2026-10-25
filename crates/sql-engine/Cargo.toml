@@ -30,6 +30,9 @@ in-memory = []
 wasm = ["dep:tsify", "dep:serde-wasm-bindgen", "dep:wasm-bindgen", "value/wasm", "query/wasm", "schema/wasm"]
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+
 # internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [] }
 query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }

@@ -1,5 +1,6 @@
-use alloc::{boxed::Box, collections::BTreeSet, string::String, vec::Vec};
-use core::{future::Future, pin::Pin};
+use alloc::{collections::BTreeSet, string::String, vec::Vec};
+
+use platform::{MaybeSend, MaybeSync};
 
 use value::Row;
 
@@ -35,14 +36,11 @@ pub struct RowMutation {
 impl<K, R> Engine<K, R>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     pub async fn read_transaction<F, O>(&self, operation: F) -> EngineResult<O>
     where
-        F: for<'a> FnOnce(
-            &'a R,
-            &'a K::Transaction,
-        ) -> Pin<Box<dyn Future<Output = EngineResult<O>> + Send + 'a>>,
+        F: for<'a> FnOnce(&'a R, &'a K::Transaction) -> platform::BoxFuture<'a, EngineResult<O>>,
     {
         let mut transaction = self.kernel.transaction().await?;
         ensure(&mut transaction, self.reconciler.as_ref()).await?;
@@ -62,9 +60,7 @@ where
             &'a R,
             &'a mut K::Transaction,
             Option<Row>,
-        ) -> Pin<
-            Box<dyn Future<Output = EngineResult<(O, Option<Row>)>> + Send + 'a>,
-        >,
+        ) -> platform::BoxFuture<'a, EngineResult<(O, Option<Row>)>>,
     {
         crate::schema::validate_row_id(table, &row)?;
         let mut transaction = self.kernel.transaction().await?;
@@ -123,9 +119,7 @@ where
         F: for<'a> FnOnce(
             &'a R,
             &'a mut K::Transaction,
-        ) -> Pin<
-            Box<dyn Future<Output = EngineResult<(O, MutationSummary)>> + Send + 'a>,
-        >,
+        ) -> platform::BoxFuture<'a, EngineResult<(O, MutationSummary)>>,
     {
         self.mutate_tables_validated(tables, operation, |_| Ok(()))
             .await
@@ -143,9 +137,7 @@ where
         F: for<'a> FnOnce(
             &'a R,
             &'a mut K::Transaction,
-        ) -> Pin<
-            Box<dyn Future<Output = EngineResult<(O, MutationSummary)>> + Send + 'a>,
-        >,
+        ) -> platform::BoxFuture<'a, EngineResult<(O, MutationSummary)>>,
         V: FnOnce(&O) -> EngineResult<()>,
     {
         let mut transaction = self.kernel.transaction().await?;
@@ -198,9 +190,7 @@ where
         F: for<'a> FnOnce(
             &'a R,
             &'a mut K::Transaction,
-        ) -> Pin<
-            Box<dyn Future<Output = EngineResult<(O, Vec<RowMutation>)>> + Send + 'a>,
-        >,
+        ) -> platform::BoxFuture<'a, EngineResult<(O, Vec<RowMutation>)>>,
     {
         for (table, row) in rows {
             crate::schema::validate_row_id(table, row)?;

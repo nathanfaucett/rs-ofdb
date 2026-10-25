@@ -1,6 +1,8 @@
 use alloc::{string::String, vec::Vec};
 use core::future::Future;
 
+use platform::MaybeSend;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use value::{Row, Value, ValueType};
@@ -67,7 +69,7 @@ where
         &self,
         transaction: &T,
         table: &str,
-    ) -> impl Future<Output = EngineResult<TableStateView>> + Send {
+    ) -> impl Future<Output = EngineResult<TableStateView>> + MaybeSend {
         let _ = (transaction, table);
         async {
             Err(crate::EngineError::Unsupported(
@@ -88,7 +90,7 @@ where
         payload: &[u8],
         metadata: &[u8],
         columns: &[(String, ValueType, Value, bool)],
-    ) -> impl Future<Output = EngineResult<InspectedHistory>> + Send {
+    ) -> impl Future<Output = EngineResult<InspectedHistory>> + MaybeSend {
         let _ = (transaction, table, row, payload, metadata, columns);
         async {
             Err(crate::EngineError::Unsupported(
@@ -105,7 +107,7 @@ where
         table: &str,
         row: Uuid,
         max_bytes: usize,
-    ) -> impl Future<Output = EngineResult<Option<DocumentSummary>>> + Send {
+    ) -> impl Future<Output = EngineResult<Option<DocumentSummary>>> + MaybeSend {
         async move {
             let state = self
                 .export_state(transaction, table, row, max_bytes)
@@ -135,14 +137,14 @@ where
         &'a self,
         transaction: &'a T,
         table: &'a str,
-    ) -> impl futures::Stream<Item = EngineResult<Uuid>> + Send + 'a;
+    ) -> impl futures::Stream<Item = EngineResult<Uuid>> + MaybeSend + 'a;
     fn export_state(
         &self,
         transaction: &T,
         table: &str,
         row: Uuid,
         max_bytes: usize,
-    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
+    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + MaybeSend;
     fn manifest_digest(&self, state: &[u8], metadata: &[u8]) -> EngineResult<DocumentDigest> {
         Ok(DocumentDigest::from_parts(state, metadata))
     }
@@ -152,20 +154,20 @@ where
         table: &str,
         row: Uuid,
         state: &[u8],
-    ) -> impl Future<Output = EngineResult<Option<Row>>> + Send;
+    ) -> impl Future<Output = EngineResult<Option<Row>>> + MaybeSend;
     fn export_metadata(
         &self,
         transaction: &T,
         table: &str,
         row: Uuid,
-    ) -> impl Future<Output = EngineResult<Vec<u8>>> + Send;
+    ) -> impl Future<Output = EngineResult<Vec<u8>>> + MaybeSend;
     fn merge_metadata(
         &self,
         transaction: &mut T,
         table: &str,
         row: Uuid,
         metadata: &[u8],
-    ) -> impl Future<Output = EngineResult<()>> + Send;
+    ) -> impl Future<Output = EngineResult<()>> + MaybeSend;
     /// Returns all known change IDs in dependency order, including snapshot-contained
     /// history, not just separately exportable deltas. Snapshot-only IDs may require
     /// full-state fallback from `Self::export_change`.
@@ -175,7 +177,7 @@ where
         table: &str,
         row: Uuid,
         max_bytes: usize,
-    ) -> impl Future<Output = EngineResult<Vec<DocumentChangeId>>> + Send;
+    ) -> impl Future<Output = EngineResult<Vec<DocumentChangeId>>> + MaybeSend;
     /// Exports one native change by its actual identity, including snapshot-contained history.
     /// Returns `None` when unavailable; the caller may recover with full state.
     fn export_change(
@@ -185,7 +187,7 @@ where
         row: Uuid,
         id: &DocumentChangeId,
         max_bytes: usize,
-    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
+    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + MaybeSend;
     /// Validates the advertised identity and every payload dependency before writing.
     /// Native payloads may contain several changes. Known history is an idempotent no-op;
     /// unresolved dependencies return `EngineError::SyncDependencyUnavailable`.
@@ -197,5 +199,5 @@ where
         row: Uuid,
         id: &DocumentChangeId,
         payload: &[u8],
-    ) -> impl Future<Output = EngineResult<()>> + Send;
+    ) -> impl Future<Output = EngineResult<()>> + MaybeSend;
 }

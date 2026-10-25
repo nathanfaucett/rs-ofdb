@@ -2,45 +2,47 @@ use alloc::vec::Vec;
 
 use core::ops::Bound;
 
+use platform::{MaybeSend, MaybeSync};
+
 use futures::Stream;
 
 use crate::EngineResult;
 
-pub trait KernelTransaction: Send + Sync {
-    fn ensure_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + Send;
-    fn drop_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + Send;
+pub trait KernelTransaction: MaybeSend + MaybeSync {
+    fn ensure_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
+    fn drop_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
 
     fn get_bytes(
         &self,
         table: &str,
         key: &[u8],
-    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
+    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + MaybeSend;
     fn scan_bytes<'a>(
         &'a self,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a;
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a;
     fn scan_bytes_range<'a>(
         &'a self,
         table: &'a str,
         range: (Bound<Vec<u8>>, Bound<Vec<u8>>),
-    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a;
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a;
     fn put_bytes(
         &mut self,
         table: &str,
         key: Vec<u8>,
         value: Vec<u8>,
-    ) -> impl Future<Output = EngineResult<()>> + Send;
+    ) -> impl Future<Output = EngineResult<()>> + MaybeSend;
     fn remove_bytes(
         &mut self,
         table: &str,
         key: &[u8],
-    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + Send;
+    ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + MaybeSend;
 
-    fn commit(self) -> impl Future<Output = EngineResult<()>> + Send;
-    fn rollback(self) -> impl Future<Output = EngineResult<()>> + Send;
+    fn commit(self) -> impl Future<Output = EngineResult<()>> + MaybeSend;
+    fn rollback(self) -> impl Future<Output = EngineResult<()>> + MaybeSend;
 }
 
-pub trait Kernel: Send + Sync {
+pub trait Kernel: MaybeSend + MaybeSync {
     type Transaction: KernelTransaction;
 
     /// Unsupported backends require caller-driven broad reconciliation.
@@ -49,5 +51,5 @@ pub trait Kernel: Send + Sync {
         None
     }
 
-    fn transaction(&self) -> impl Future<Output = EngineResult<Self::Transaction>> + Send;
+    fn transaction(&self) -> impl Future<Output = EngineResult<Self::Transaction>> + MaybeSend;
 }

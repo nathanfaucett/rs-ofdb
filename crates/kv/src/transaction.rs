@@ -250,7 +250,7 @@ impl Transaction {
         F: Future<Output = Result<T, Error>>,
     {
         match deadline {
-            Some(deadline) => tokio::time::timeout(deadline, operation)
+            Some(deadline) => platform::timeout(deadline, operation)
                 .await
                 .map_err(|_| Error::Timeout)?,
             None => operation.await,
@@ -403,12 +403,7 @@ fn protocol_error(message: &str) -> Error {
 
 #[cfg(any(feature = "in-memory", feature = "redb"))]
 fn current_time_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().min(i64::MAX as u128) as i64
-        })
+    platform::unix_millis()
 }
 
 #[cfg(feature = "redb")]

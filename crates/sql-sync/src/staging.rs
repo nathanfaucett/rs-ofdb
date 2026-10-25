@@ -1,25 +1,32 @@
 use alloc::{format, string::String, vec::Vec};
 use core::{fmt::Display, future::Future};
 
+use platform::{MaybeSend, MaybeSync};
+
 /// A sequential record sink and single-pass source for one sync phase.
 ///
 /// Implementations must reject writes after `finish` and return records in append order.
-pub trait SyncStage: Send {
-    type Error: Display + Send;
+pub trait SyncStage: MaybeSend {
+    type Error: Display + MaybeSend;
 
-    fn append(&mut self, record: Vec<u8>) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn append(
+        &mut self,
+        record: Vec<u8>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 
-    fn finish(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn finish(&mut self) -> impl Future<Output = Result<(), Self::Error>> + MaybeSend;
 
-    fn next_record(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>, Self::Error>> + Send;
+    fn next_record(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, Self::Error>> + MaybeSend;
 }
 
 /// Creates independent stages for catalog, data, and recovery records.
-pub trait SyncStageFactory: Send + Sync {
+pub trait SyncStageFactory: MaybeSend + MaybeSync {
     type Stage: SyncStage;
-    type Error: Display + Send;
+    type Error: Display + MaybeSend;
 
-    fn create(&self) -> impl Future<Output = Result<Self::Stage, Self::Error>> + Send;
+    fn create(&self) -> impl Future<Output = Result<Self::Stage, Self::Error>> + MaybeSend;
 }
 
 #[derive(Clone, Copy)]

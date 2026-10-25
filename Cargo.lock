@@ -2600,6 +2600,7 @@ dependencies = [
  "async-stream",
  "dashmap",
  "futures",
+ "ofdb-platform",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -2614,6 +2615,7 @@ dependencies = [
  "base64 0.21.7",
  "futures",
  "ofdb-btree",
+ "ofdb-platform",
  "serde",
  "sha2 0.10.9",
  "uuid",
@@ -2650,6 +2652,7 @@ dependencies = [
  "ofdb-kv-server",
  "ofdb-kv-store",
  "ofdb-kv-sync",
+ "ofdb-platform",
  "ofdb-value",
  "redb",
  "serde_json",
@@ -2757,12 +2760,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-platform"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "gloo-timers",
+ "js-sys",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ofdb-sql"
 version = "0.1.0"
 dependencies = [
  "futures",
  "ofdb-btree",
  "ofdb-btree-redb",
+ "ofdb-platform",
  "ofdb-sql-client",
  "ofdb-sql-engine",
  "ofdb-sql-engine-automerge",
@@ -2815,6 +2830,7 @@ dependencies = [
  "async-stream",
  "futures",
  "ofdb-btree",
+ "ofdb-platform",
  "ofdb-sql-query",
  "ofdb-sql-schema",
  "ofdb-value",
@@ -2838,6 +2854,7 @@ dependencies = [
  "futures",
  "ofdb-btree",
  "ofdb-btree-automerge",
+ "ofdb-platform",
  "ofdb-sql-engine",
  "ofdb-sql-engine-redb",
  "ofdb-sql-query",
@@ -2958,6 +2975,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "iroh",
+ "ofdb-platform",
  "ofdb-sql-engine",
  "ofdb-sql-engine-redb",
  "ofdb-sql-schema",
@@ -3013,6 +3031,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "ofdb-btree",
+ "ofdb-platform",
  "tokio",
 ]
 

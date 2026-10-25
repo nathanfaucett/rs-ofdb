@@ -1,6 +1,6 @@
 use std::{future::Future, io, time::Duration};
 
-use tokio::time::sleep;
+use platform::sleep;
 
 #[inline(never)]
 fn sync_stage<F: Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
@@ -53,7 +53,7 @@ impl ChangeSubscription {
     /// exponential backoff from 100 ms to 30 s, retaining pending work without another
     /// commit. The callback supplies authorized transport and reports/logs errors.
     /// Dropping this future cancels its callback or retry timer; no task is spawned.
-    /// All backends closing also cancels in-flight work. Requires a Tokio time runtime.
+    /// All backends closing also cancels in-flight work. Uses browser timers on Wasm; native callers require a Tokio time runtime.
     pub async fn run<F, Fut, E>(mut self, mut synchronize: F)
     where
         F: FnMut() -> Fut,

@@ -15,16 +15,19 @@ std = ["value/std", "uuid/std", "engine?/std"]
 macros = ["dep:macros"]
 sql = ["dep:sql-translator", "sql-translator/std"]
 native-stage = ["sync", "sync/native-stage"]
-sync = ["dep:sync", "sync/continuous", "dep:engine", "dep:engine-automerge", "std"]
-redb = ["dep:engine", "dep:engine-redb", "dep:engine-automerge", "dep:tokio", "std"]
-in-memory = ["engine/in-memory", "dep:engine-automerge", "dep:tokio", "std"]
-remote = ["dep:client", "client/unix", "dep:tokio", "std"]
+sync = ["dep:platform", "dep:sync", "sync/continuous", "dep:engine", "dep:engine-automerge", "std"]
+redb = ["dep:platform", "dep:engine", "dep:engine-redb", "dep:engine-automerge", "std"]
+in-memory = ["dep:platform", "engine/in-memory", "dep:engine-automerge", "std"]
+remote = ["dep:platform", "dep:client", "client/unix", "dep:tokio", "std"]
 server = ["dep:sql-server", "std"]
 
 [lib]
 name = "ofdb_sql"
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = ["time"], optional = true }
+
 # Internal SQL dependencies
 client = { version = "0.1", package = "ofdb-sql-client", path = "../sql-client", default-features = false, features = [], optional = true }
 engine = { version = "0.1", package = "ofdb-sql-engine", path = "../sql-engine", default-features = false, features = [], optional = true }

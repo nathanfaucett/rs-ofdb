@@ -9,7 +9,9 @@ use core::{
     borrow::Borrow,
     ops::{Bound, RangeBounds},
 };
+
 use futures::Stream;
+use platform::{MaybeSend, MaybeSync};
 
 use crate::{BTree, BTreeKey, BTreeRead, BTreeResult, BTreeTransaction, BTreeValue};
 
@@ -40,17 +42,17 @@ impl<K, V> Default for InMemoryBTree<K, V> {
 
 impl<K, V> BTreeRead<K, V> for InMemoryBTree<K, V>
 where
-    K: BTreeKey + Clone + Send + Sync,
-    V: BTreeValue + Clone + Send + Sync,
+    K: BTreeKey + Clone + MaybeSend + MaybeSync,
+    V: BTreeValue + Clone + MaybeSend + MaybeSync,
 {
     async fn get(&self, key: &K) -> BTreeResult<Option<V>> {
         let guard = self.inner.read().await;
         Ok(guard.get(key).cloned())
     }
 
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Send,
+        R: RangeBounds<K> + MaybeSend,
     {
         stream!({
             for (key, value) in self.inner.read().await.range(range) {
@@ -102,9 +104,9 @@ pub struct InMemoryBTreeShardFactory<K, V> {
 impl<K, V, Key> crate::sharded_btree::BTreeShardFactory<K, V, Key>
     for InMemoryBTreeShardFactory<K, V>
 where
-    K: BTreeKey + Clone + Send + Sync,
-    V: BTreeValue + Clone + Send + Sync,
-    Key: Clone + Eq + core::hash::Hash + Send + Sync,
+    K: BTreeKey + Clone + MaybeSend + MaybeSync,
+    V: BTreeValue + Clone + MaybeSend + MaybeSync,
+    Key: Clone + Eq + core::hash::Hash + MaybeSend + MaybeSync,
 {
     type BTree = InMemoryBTree<K, V>;
 
@@ -256,22 +258,18 @@ pub struct InMemoryBTreeTransaction<K, V> {
     patch: InMemoryTransactionPatch<K, V>,
 }
 
-unsafe impl<K, V> Send for InMemoryBTreeTransaction<K, V> {}
-
-unsafe impl<K, V> Sync for InMemoryBTreeTransaction<K, V> {}
-
 impl<K, V> BTreeRead<K, V> for InMemoryBTreeTransaction<K, V>
 where
-    K: BTreeKey + Clone + Send + Sync,
-    V: BTreeValue + Clone + Send + Sync,
+    K: BTreeKey + Clone + MaybeSend + MaybeSync,
+    V: BTreeValue + Clone + MaybeSend + MaybeSync,
 {
     async fn get(&self, key: &K) -> BTreeResult<Option<V>> {
         Ok(self.patch.get(&*self.inner.read().await, key))
     }
 
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Send,
+        R: RangeBounds<K> + MaybeSend,
     {
         stream!({
             let merged = self.patch.range(&*self.inner.read().await, range);
@@ -285,8 +283,8 @@ where
 
 impl<K, V> BTreeTransaction<K, V> for InMemoryBTreeTransaction<K, V>
 where
-    K: BTreeKey + Clone + Send + Sync,
-    V: BTreeValue + Clone + Send + Sync,
+    K: BTreeKey + Clone + MaybeSend + MaybeSync,
+    V: BTreeValue + Clone + MaybeSend + MaybeSync,
 {
     async fn insert(&mut self, key: K, value: V) -> BTreeResult<()>
     where
@@ -315,9 +313,9 @@ where
         Ok(self.patch.remove(&*self.inner.read().await, key))
     }
 
-    fn remove_range<R>(&mut self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn remove_range<R>(&mut self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Send,
+        R: RangeBounds<K> + MaybeSend,
     {
         stream!({
             let merged = self.patch.range(&*self.inner.read().await, range);
@@ -342,8 +340,8 @@ where
 
 impl<K, V> BTree<K, V> for InMemoryBTree<K, V>
 where
-    K: BTreeKey + Clone + Send + Sync,
-    V: BTreeValue + Clone + Send + Sync,
+    K: BTreeKey + Clone + MaybeSend + MaybeSync,
+    V: BTreeValue + Clone + MaybeSend + MaybeSync,
 {
     type Transaction = InMemoryBTreeTransaction<K, V>;
 

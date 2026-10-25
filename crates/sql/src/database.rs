@@ -33,8 +33,12 @@ fn conflict_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pi
 }
 
 #[cfg(feature = "sync")]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 type CandidateValidator<'a> =
     dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
+#[cfg(all(feature = "sync", target_arch = "wasm32", target_os = "unknown"))]
+type CandidateValidator<'a> =
+    dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + 'a;
 
 #[cfg(any(feature = "redb", feature = "in-memory", feature = "sync"))]
 use engine_automerge::AutomergeRowCodec;
@@ -664,8 +668,8 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
         self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
@@ -687,8 +691,8 @@ impl Database {
         T::Error: core::fmt::Display,
         F: SyncStageFactory,
         F::Stage: 'static,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         match &self.backend {
             #[cfg(feature = "redb")]
@@ -733,8 +737,8 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
         self.synchronize_selected_with_stage_factory_checked(
@@ -764,8 +768,8 @@ impl Database {
         T::Error: core::fmt::Display,
         F: SyncStageFactory,
         F::Stage: 'static,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let selection = if invalidations.contains(&engine_automerge::SqlInvalidation::All) {
             sync::SyncSelection::All
@@ -826,8 +830,8 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = self.native_stage_factory(directory);
         self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
@@ -856,8 +860,8 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         self.synchronize_tables_validated_checked(
             transport,
@@ -887,8 +891,8 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         self.synchronize_tables_with_stage_directory_validated_checked(
             transport,
@@ -926,9 +930,11 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
         self.synchronize_tables_staged_checked(
@@ -954,9 +960,11 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = self.native_stage_factory(directory);
         self.synchronize_tables_staged_checked(
@@ -991,10 +999,14 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
-        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
         self.synchronize_tables_staged_checked(
@@ -1035,10 +1047,14 @@ impl Database {
     where
         T: SyncTransport,
         T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
-        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         let factory = self.native_stage_factory(directory);
         self.synchronize_tables_staged_checked(
@@ -1072,9 +1088,11 @@ impl Database {
         T::Error: core::fmt::Display,
         F: SyncStageFactory,
         F::Stage: 'static,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String> + Send + Sync,
-        Q: FnMut() -> U + Send,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + Send,
+        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
+            + platform::MaybeSend
+            + platform::MaybeSync,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
     {
         match &self.backend {
             #[cfg(feature = "redb")]

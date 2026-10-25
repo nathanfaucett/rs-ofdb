@@ -1,6 +1,8 @@
-use core::{future::Future, pin::Pin};
+use core::future::Future;
 
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+
+use platform::{MaybeSend, MaybeSync};
 
 use futures::{StreamExt, pin_mut};
 use query::{
@@ -17,9 +19,9 @@ use value::{Row, Value, ValueType};
 #[inline(never)]
 pub(crate) fn execution_stage<'a, T: 'a, F>(
     make: impl FnOnce() -> F,
-) -> Pin<Box<dyn Future<Output = EngineResult<T>> + Send + 'a>>
+) -> platform::BoxFuture<'a, EngineResult<T>>
 where
-    F: Future<Output = EngineResult<T>> + Send + 'a,
+    F: Future<Output = EngineResult<T>> + MaybeSend + 'a,
 {
     Box::pin(make())
 }
@@ -49,7 +51,7 @@ pub async fn execute_statement<K, R>(
 ) -> EngineResult<Vec<QueryResult>>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     let mut transaction = engine.kernel.transaction().await?;
     let mut changes = Vec::new();
@@ -80,7 +82,7 @@ pub(crate) async fn execute_in_transaction<K, R>(
 ) -> EngineResult<Vec<QueryResult>>
 where
     K: Kernel,
-    R: RowCodec<K::Transaction> + Send + Sync,
+    R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     ensure_schema(transaction, engine.reconciler.as_ref()).await?;
     let read_only = statements

@@ -14,13 +14,16 @@ name = "ofdb_kv"
 [features]
 default = []
 std = []
-remote = ["std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "tokio/sync", "dep:tokio-stream", "dep:tower", "dep:hyper-util"]
-in-memory = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "btree/in-memory"]
-redb = ["std", "dep:btree", "dep:kv-store", "dep:tokio", "dep:uuid", "dep:btree-redb", "dep:redb"]
+remote = ["dep:platform", "std", "dep:kv-proto", "dep:tonic", "dep:tokio", "tokio/net", "tokio/sync", "dep:tokio-stream", "dep:tower", "dep:hyper-util"]
+in-memory = ["dep:platform", "std", "dep:btree", "dep:kv-store", "dep:uuid", "btree/in-memory"]
+redb = ["dep:platform", "std", "dep:btree", "dep:kv-store", "dep:uuid", "dep:btree-redb", "dep:redb"]
 server = ["remote", "dep:kv-server"]
-sync = ["std", "dep:btree", "dep:kv-sync", "kv-sync/continuous", "dep:kv-store", "dep:uuid"]
+sync = ["dep:platform", "std", "dep:btree", "dep:kv-sync", "kv-sync/continuous", "dep:kv-store", "dep:uuid"]
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = ["time"], optional = true }
+
 # Internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = ["std"], optional = true }
 btree-redb = { version = "0.1", path = "../btree-redb", package = "ofdb-btree-redb", default-features = false, features = [], optional = true }

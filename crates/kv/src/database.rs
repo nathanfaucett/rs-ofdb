@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 #[cfg(feature = "redb")]
 use std::{path::Path, sync::Arc};
 
@@ -647,11 +645,7 @@ fn uuid_timestamp() -> uuid::Timestamp {
 }
 
 fn current_time_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().min(i64::MAX as u128) as i64
-        })
+    platform::unix_millis()
 }
 
 #[cfg(all(test, feature = "in-memory"))]

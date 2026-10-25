@@ -1,0 +1,34 @@
+[package]
+name = "ofdb-browser-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+worker = []
+sync = ["ofdb-sql/sync", "ofdb-kv/sync"]
+
+[dependencies]
+ofdb-kv = { path = "../../crates/kv", default-features = false, features = ["in-memory"] }
+ofdb-sql = { path = "../../crates/sql", default-features = false, features = ["in-memory", "sql"] }
+wasm-bindgen-test = { version = "0.3", default-features = false, features = ["std"] }
+js-sys = { version = "0.3", default-features = false, features = ["std"] }
+uuid = { version = "1.23", default-features = false, features = ["v7", "std"] }
+
+# Public storage seams under test
+automerge = { version = "0.10", default-features = false, features = [] }
+btree = { version = "0.1", package = "ofdb-btree", path = "../../crates/btree", default-features = false, features = ["in-memory", "std"] }
+engine = { version = "0.1", package = "ofdb-sql-engine", path = "../../crates/sql-engine", default-features = false, features = ["in-memory", "std"] }
+engine-automerge = { version = "0.1", package = "ofdb-sql-engine-automerge", path = "../../crates/sql-engine-automerge", default-features = false, features = [] }
+value = { version = "0.1", package = "ofdb-value", path = "../../crates/value", default-features = false, features = [] }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+platform = { version = "0.1", package = "ofdb-platform", path = "../../crates/platform", default-features = false, features = ["time"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+
+[profile.dev]
+opt-level = 1
+debug = 0

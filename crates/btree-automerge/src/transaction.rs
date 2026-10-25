@@ -1,5 +1,7 @@
 use core::ops::RangeBounds;
 
+use platform::MaybeSend;
+
 use async_stream::stream;
 use automerge::AutoCommit;
 use futures::{Stream, StreamExt, pin_mut};
@@ -30,16 +32,6 @@ where
     policy: ThresholdPolicy,
 }
 
-unsafe impl<T> Send for AutomergeBTreeTransaction<T> where
-    T: BTreeTransaction<DocumentChangeKey, Vec<u8>>
-{
-}
-
-unsafe impl<T> Sync for AutomergeBTreeTransaction<T> where
-    T: BTreeTransaction<DocumentChangeKey, Vec<u8>>
-{
-}
-
 impl<T> AutomergeBTreeTransaction<T>
 where
     T: BTreeTransaction<DocumentChangeKey, Vec<u8>>,
@@ -57,9 +49,12 @@ where
         get_document(&self.inner_tx, key).await
     }
 
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(DocumentId, AutoCommit)>> + Send
+    fn range<R>(
+        &self,
+        range: R,
+    ) -> impl Stream<Item = BTreeResult<(DocumentId, AutoCommit)>> + MaybeSend
     where
-        R: RangeBounds<DocumentId> + Send,
+        R: RangeBounds<DocumentId> + MaybeSend,
     {
         stream!({
             let inner_range = DocumentChangeKey::map_document_id_range(range);
@@ -93,7 +88,7 @@ where
 
     async fn update<F>(&mut self, key: DocumentId, update_fn: F) -> BTreeResult<Option<()>>
     where
-        F: FnOnce(&mut AutoCommit) -> BTreeResult<()> + Send,
+        F: FnOnce(&mut AutoCommit) -> BTreeResult<()> + MaybeSend,
     {
         tx_update(&mut self.inner_tx, key, update_fn, &self.policy).await?;
         Ok(Some(()))
@@ -106,9 +101,9 @@ where
     fn remove_range<R>(
         &mut self,
         range: R,
-    ) -> impl Stream<Item = BTreeResult<(DocumentId, AutoCommit)>> + Send
+    ) -> impl Stream<Item = BTreeResult<(DocumentId, AutoCommit)>> + MaybeSend
     where
-        R: RangeBounds<DocumentId> + Send,
+        R: RangeBounds<DocumentId> + MaybeSend,
     {
         stream!({
             let keys_to_remove = {

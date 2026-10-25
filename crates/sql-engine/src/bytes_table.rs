@@ -2,6 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::{Bound, RangeBounds};
 
+use platform::{MaybeSend, MaybeSync};
+
 use async_stream::stream;
 use btree::{BTreeError, BTreeRead, BTreeResult, BTreeTransaction};
 use futures::{Stream, StreamExt, pin_mut};
@@ -50,11 +52,11 @@ where
 
 macro_rules! read {
     ($type:ty) => {
-        impl<T: KernelTransaction + Send + Sync> BTreeRead<Vec<u8>, Vec<u8>> for $type {
+        impl<T: KernelTransaction + MaybeSend + MaybeSync> BTreeRead<Vec<u8>, Vec<u8>> for $type {
             fn get(
                 &self,
                 key: &Vec<u8>,
-            ) -> impl Future<Output = BTreeResult<Option<Vec<u8>>>> + Send {
+            ) -> impl Future<Output = BTreeResult<Option<Vec<u8>>>> + MaybeSend {
                 async move {
                     self.transaction
                         .get_bytes(&self.table, key)
@@ -66,9 +68,9 @@ macro_rules! read {
             fn range<R>(
                 &self,
                 range: R,
-            ) -> impl Stream<Item = BTreeResult<(Vec<u8>, Vec<u8>)>> + Send
+            ) -> impl Stream<Item = BTreeResult<(Vec<u8>, Vec<u8>)>> + MaybeSend
             where
-                R: RangeBounds<Vec<u8>> + Send,
+                R: RangeBounds<Vec<u8>> + MaybeSend,
             {
                 let entries = self
                     .transaction
@@ -87,7 +89,7 @@ macro_rules! read {
 read!(BytesTable<'_, T>);
 read!(BytesTableTransaction<'_, T>);
 
-impl<T: KernelTransaction + Send + Sync> BTreeTransaction<Vec<u8>, Vec<u8>>
+impl<T: KernelTransaction + MaybeSend + MaybeSync> BTreeTransaction<Vec<u8>, Vec<u8>>
     for BytesTableTransaction<'_, T>
 {
     async fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) -> BTreeResult<()> {
@@ -99,7 +101,7 @@ impl<T: KernelTransaction + Send + Sync> BTreeTransaction<Vec<u8>, Vec<u8>>
 
     async fn update<F>(&mut self, key: Vec<u8>, update_fn: F) -> BTreeResult<Option<()>>
     where
-        F: FnOnce(&mut Vec<u8>) -> BTreeResult<()> + Send,
+        F: FnOnce(&mut Vec<u8>) -> BTreeResult<()> + MaybeSend,
     {
         let Some(mut value) = self.get(&key).await? else {
             return Ok(None);
@@ -119,9 +121,9 @@ impl<T: KernelTransaction + Send + Sync> BTreeTransaction<Vec<u8>, Vec<u8>>
     fn remove_range<R>(
         &mut self,
         _: R,
-    ) -> impl Stream<Item = BTreeResult<(Vec<u8>, Vec<u8>)>> + Send
+    ) -> impl Stream<Item = BTreeResult<(Vec<u8>, Vec<u8>)>> + MaybeSend
     where
-        R: RangeBounds<Vec<u8>> + Send,
+        R: RangeBounds<Vec<u8>> + MaybeSend,
     {
         stream! { yield Err(BTreeError::UnsupportedOperation); }
     }

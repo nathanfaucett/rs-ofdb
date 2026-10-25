@@ -1,4 +1,4 @@
-use core::{future::Future, pin::Pin};
+use core::future::Future;
 use std::{fmt, time::Duration, vec::Vec};
 
 #[cfg(feature = "remote")]
@@ -9,8 +9,8 @@ use value::{FromRow, Row, Value};
 /// A query client for embedded or remote databases.
 ///
 /// Use [`Client::transaction`] for a transaction on either backend. A configured deadline
-/// requires a Tokio runtime with time enabled. Without a deadline, embedded queries do not need
-/// a Tokio runtime. A timeout does not guarantee rollback.
+/// uses browser timers on Wasm and requires a Tokio time runtime on native targets.
+/// Without a deadline, embedded queries do not need a Tokio runtime. A timeout does not guarantee rollback.
 ///
 /// `Database` is not a query or transaction handle:
 /// ```compile_fail
@@ -89,7 +89,7 @@ impl Transaction {
         &'a self,
         table: &'a str,
         key: &'a Row,
-    ) -> impl Future<Output = Result<Vec<String>, QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<String>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, key);
@@ -106,7 +106,7 @@ impl Transaction {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     /// Returns concurrent values from this transaction's snapshot.
@@ -116,7 +116,8 @@ impl Transaction {
         &'a self,
         table: &'a str,
         key: &'a Row,
-    ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + platform::MaybeSend + 'a
+    {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, key);
@@ -137,7 +138,7 @@ impl Transaction {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     async fn run<F, T>(deadline: Option<Duration>, operation: F) -> Result<T, QueryError>
@@ -145,11 +146,9 @@ impl Transaction {
         F: Future<Output = Result<T, QueryError>>,
     {
         match deadline {
-            Some(deadline) => tokio::time::timeout(deadline, operation)
-                .await
-                .map_err(|_| {
-                    QueryError::new(QueryErrorKind::Timeout, "request deadline exceeded")
-                })?,
+            Some(deadline) => platform::timeout(deadline, operation).await.map_err(|_| {
+                QueryError::new(QueryErrorKind::Timeout, "request deadline exceeded")
+            })?,
             None => operation.await,
         }
     }
@@ -299,7 +298,7 @@ impl Client {
         &'a self,
         table: &'a str,
         key: &'a Row,
-    ) -> impl Future<Output = Result<Vec<String>, QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<String>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, key);
@@ -312,7 +311,7 @@ impl Client {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     /// Returns conflicted column names for each key, in input order (including duplicates).
@@ -326,7 +325,7 @@ impl Client {
         &'a self,
         table: &'a str,
         keys: &'a [Row],
-    ) -> impl Future<Output = Result<Vec<Vec<String>>, QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<Vec<String>>, QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, keys);
@@ -341,7 +340,7 @@ impl Client {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     /// Returns all concurrent values for each conflicted column, not just its projection.
@@ -351,7 +350,8 @@ impl Client {
         &'a self,
         table: &'a str,
         key: &'a Row,
-    ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Vec<(String, Vec<Value>)>, QueryError>> + platform::MaybeSend + 'a
+    {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, key);
@@ -366,7 +366,7 @@ impl Client {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     /// Resolves only the specified conflicted columns in one atomic operation.
@@ -378,7 +378,7 @@ impl Client {
         table: &'a str,
         key: &'a Row,
         values: Vec<(String, Value)>,
-    ) -> impl Future<Output = Result<(), QueryError>> + Send + 'a {
+    ) -> impl Future<Output = Result<(), QueryError>> + platform::MaybeSend + 'a {
         Box::pin(async move {
             #[cfg(not(any(feature = "redb", feature = "in-memory")))]
             let _ = (table, key, &values);
@@ -393,7 +393,7 @@ impl Client {
                 }
             })
             .await
-        }) as Pin<Box<dyn Future<Output = _> + Send + 'a>>
+        }) as platform::BoxFuture<'a, _>
     }
 
     pub async fn transaction(&self) -> Result<Transaction, QueryError> {
@@ -476,11 +476,9 @@ impl Client {
         F: Future<Output = Result<T, QueryError>>,
     {
         match self.request_deadline {
-            Some(deadline) => tokio::time::timeout(deadline, operation)
-                .await
-                .map_err(|_| {
-                    QueryError::new(QueryErrorKind::Timeout, "request deadline exceeded")
-                })?,
+            Some(deadline) => platform::timeout(deadline, operation).await.map_err(|_| {
+                QueryError::new(QueryErrorKind::Timeout, "request deadline exceeded")
+            })?,
             None => operation.await,
         }
     }

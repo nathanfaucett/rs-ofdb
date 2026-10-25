@@ -19,9 +19,14 @@ use crate::{SyncCandidateView, SyncDirection, SyncKey, SyncRowCodec, SyncStateUn
 type Columns = Vec<(String, ValueType, Value, bool)>;
 type Index = (String, bool, Vec<String>);
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+type ValueValidator<'a> = dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync + 'a;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+type ValueValidator<'a> = dyn Fn(&str, &str, &Value) -> Result<(), String> + 'a;
+
 #[derive(Clone)]
 pub(crate) struct TableScope<'a> {
-    validate_value: &'a (dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync),
+    validate_value: &'a ValueValidator<'a>,
     pub validate_candidate: Option<&'a CandidateValidator<'a>>,
     pub direction: SyncDirection,
     pub names: Vec<String>,
@@ -53,7 +58,7 @@ impl<'a> TableScope<'a> {
     pub async fn new<K, R>(
         engine: &Engine<K, R>,
         names: &[&str],
-        validate_value: &'a (dyn Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync),
+        validate_value: &'a ValueValidator<'a>,
     ) -> EngineResult<Self>
     where
         K: Kernel,

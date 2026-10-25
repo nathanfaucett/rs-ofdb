@@ -1,5 +1,7 @@
 use core::ops::{Bound, RangeBounds};
 
+use platform::MaybeSend;
+
 use async_stream::stream;
 use btree::{BTreeRead, BTreeResult, BTreeTransaction};
 use futures::{Stream, StreamExt, pin_mut};
@@ -62,7 +64,7 @@ where
 
     async fn update<F>(&mut self, key: DocumentChangeKey, update_fn: F) -> BTreeResult<Option<()>>
     where
-        F: FnOnce(&mut Vec<u8>) -> BTreeResult<()> + Send,
+        F: FnOnce(&mut Vec<u8>) -> BTreeResult<()> + MaybeSend,
     {
         self.inner.update(key.encode_ordered(), update_fn).await
     }

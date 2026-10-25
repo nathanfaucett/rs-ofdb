@@ -4,6 +4,8 @@ use alloc::{
     vec::Vec,
 };
 
+use platform::MaybeSend;
+
 use futures::{StreamExt, pin_mut};
 use schema::{ColumnSchema, ColumnSchemaIndex, IndexSchema, TableSchema};
 use uuid::Uuid;
@@ -628,7 +630,7 @@ async fn read_table_id<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
-    mut observe: impl FnMut(Uuid, &Row) + Send,
+    mut observe: impl FnMut(Uuid, &Row) + MaybeSend,
 ) -> EngineResult<Uuid> {
     let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
     pin_mut!(rows);
@@ -907,7 +909,7 @@ async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(
     codec: &R,
     table: &str,
     table_id: Uuid,
-    mut observe: impl FnMut(&Row) + Send,
+    mut observe: impl FnMut(&Row) + MaybeSend,
 ) -> EngineResult<Vec<(String, ColumnSchema)>> {
     let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
     pin_mut!(rows);

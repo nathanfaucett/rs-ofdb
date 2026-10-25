@@ -1,0 +1,24 @@
+[package]
+name = "ofdb-platform"
+description = "Target-aware execution bounds and browser platform capabilities for ofdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+std = ["dep:js-sys"]
+time = ["std", "dep:tokio", "dep:futures", "dep:gloo-timers"]
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+# Native timers
+tokio = { version = "1.0", default-features = false, features = ["time"], optional = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Browser capabilities
+futures = { version = "0.3", default-features = false, features = ["async-await"], optional = true }
+gloo-timers = { version = "0.3", default-features = false, features = ["futures"], optional = true }
+js-sys = { version = "0.3", default-features = false, features = ["std"], optional = true }
+uuid = { version = "1.23", default-features = false, features = ["js"] }

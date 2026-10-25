@@ -13,6 +13,9 @@ name = "engine_automerge"
 path = "src/lib.rs"
 
 [dependencies]
+# Platform execution
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+
 # internal dependencies
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
 ] }

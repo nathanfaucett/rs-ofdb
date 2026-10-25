@@ -6,6 +6,8 @@ use alloc::{
     vec::Vec,
 };
 
+use platform::MaybeSend;
+
 use async_lock::RwLock;
 
 use futures::{Stream, stream};
@@ -133,7 +135,7 @@ impl KernelTransaction for InMemoryKernelTransaction {
     fn scan_bytes<'a>(
         &'a self,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a {
         stream::iter(self.scan(table))
     }
 
@@ -141,7 +143,7 @@ impl KernelTransaction for InMemoryKernelTransaction {
         &'a self,
         table: &'a str,
         range: (core::ops::Bound<Vec<u8>>, core::ops::Bound<Vec<u8>>),
-    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a {
         async_stream::stream! {
             match self.table(table) {
                 Ok(rows) => {

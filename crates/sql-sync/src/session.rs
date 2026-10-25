@@ -7,6 +7,8 @@ use alloc::{
     vec::Vec,
 };
 
+use platform::{MaybeSend, MaybeSync};
+
 use engine::{
     DocumentSummary, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
     ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, Engine, EngineError, Kernel,
@@ -156,8 +158,8 @@ pub async fn synchronize_with_stage_factory_checked<K, R, T, F, Q, U>(
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -195,8 +197,8 @@ pub async fn synchronize_selected_with_stage_factory_checked<K, R, T, F, Q, U>(
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -262,8 +264,8 @@ pub async fn synchronize_tables_with_stage_factory_checked<K, R, T, F, Q, U>(
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -296,9 +298,9 @@ pub async fn synchronize_tables_with_stage_factory_validated_checked<K, R, T, F,
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    V: Fn(&str, &str, &Value) -> Result<(), String> + MaybeSend + MaybeSync,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -344,10 +346,10 @@ pub async fn synchronize_tables_with_stage_factory_candidate_validated_checked<
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
-    C: Fn(&crate::SyncCandidateView) -> Result<(), String> + Send + Sync,
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    V: Fn(&str, &str, &Value) -> Result<(), String> + MaybeSend + MaybeSync,
+    C: Fn(&crate::SyncCandidateView) -> Result<(), String> + MaybeSend + MaybeSync,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -384,9 +386,9 @@ async fn synchronize_tables_validators_checked<K, R, T, F, V, Q, U>(
     check: Q,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    V: Fn(&str, &str, &Value) -> Result<(), String> + Send + Sync,
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    V: Fn(&str, &str, &Value) -> Result<(), String> + MaybeSend + MaybeSync,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -461,8 +463,8 @@ async fn synchronize_scoped<K, R, T, F, Q, U>(
     selection: Option<crate::SyncSelection>,
 ) -> Result<SyncResult, SyncError<T::Error>>
 where
-    Q: FnMut() -> U + Send,
-    U: core::future::Future<Output = Result<(), String>> + Send,
+    Q: FnMut() -> U + MaybeSend,
+    U: core::future::Future<Output = Result<(), String>> + MaybeSend,
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
     T: SyncTransport,
@@ -761,7 +763,7 @@ where
                         // Bound identity discovery even for absent-state/hostile codecs.
                         if keys.len() > max_bytes / 32 {
                             return Err(EngineError::InvalidQuery(
-                                "Sync discovery budget exceeded",
+                                "MaybeSync discovery budget exceeded",
                             ));
                         }
                     }
@@ -1091,7 +1093,7 @@ where
         for ((table, _), (snapshot_indices, change_indices, bytes)) in rows {
             if bytes > MAX_APPLY_BATCH_BYTES {
                 return Err(EngineError::custom(format!(
-                    "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                    "MaybeSync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
                 ))
                 .into());
             }
@@ -1234,7 +1236,7 @@ where
     };
     if new.is_none() && !codec.row_is_deleted(transaction, table, row).await? {
         return Err(EngineError::custom(format!(
-            "Sync state for {} row {} produced no row",
+            "MaybeSync state for {} row {} produced no row",
             table, row
         )));
     }
@@ -2241,7 +2243,7 @@ where
                     let bytes = sync_state_unit_estimate(&unit);
                     if bytes > MAX_APPLY_BATCH_BYTES {
                         return Err(EngineError::custom(format!(
-                            "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                            "MaybeSync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
                         ))
                         .into());
                     }
@@ -2281,7 +2283,7 @@ where
                 });
                 if bytes > MAX_APPLY_BATCH_BYTES {
                     return Err(EngineError::custom(format!(
-                        "Sync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
+                        "MaybeSync row batch is {bytes} bytes, exceeds {MAX_APPLY_BATCH_BYTES} bytes"
                     ))
                     .into());
                 }

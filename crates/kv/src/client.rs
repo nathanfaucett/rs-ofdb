@@ -327,7 +327,7 @@ impl Client {
         request: impl Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
         match self.request_deadline {
-            Some(deadline) => tokio::time::timeout(deadline, request)
+            Some(deadline) => platform::timeout(deadline, request)
                 .await
                 .map_err(|_| Error::Timeout)?,
             None => request.await,

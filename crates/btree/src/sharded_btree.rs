@@ -8,41 +8,43 @@ use std::collections::btree_map::BTreeMap;
 
 use core::{hash::Hash, marker::PhantomData, ops::RangeBounds};
 
+use platform::{MaybeSend, MaybeSync};
+
 use async_stream::stream;
 use futures::{Stream, StreamExt, pin_mut};
 
 use crate::{BTree, BTreeKey, BTreeRead, BTreeResult, BTreeTransaction, BTreeValue};
 
 /// A trait for extracting a stable routing token from a key.
-pub trait Sharder<K>: Sync + Send {
-    type Key: Eq + Hash + Sync + Send + Clone;
+pub trait Sharder<K>: MaybeSync + MaybeSend {
+    type Key: Eq + Hash + MaybeSync + MaybeSend + Clone;
 
     /// Extracts the stable routing token from the key.
     fn shard(&self, key: &K) -> Self::Key;
 }
 
 /// Creates a concrete BTree for a given routing token.
-pub trait BTreeShardFactory<K, V, Key>: Send + Sync
+pub trait BTreeShardFactory<K, V, Key>: MaybeSend + MaybeSync
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
-    Key: Clone + Eq + Hash + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
+    Key: Clone + Eq + Hash + MaybeSend + MaybeSync,
 {
     type BTree: BTree<K, V>;
 
     /// Build (or open) a shard for the given token.
     /// May be async if opening involves I/O.
-    fn create(&self, token: &Key) -> impl Future<Output = BTreeResult<Self::BTree>> + Send;
+    fn create(&self, token: &Key) -> impl Future<Output = BTreeResult<Self::BTree>> + MaybeSend;
     /// Delete a shard for the given token.
     /// May be async if deletion involves I/O.
-    fn delete(&self, token: &Key) -> impl Future<Output = BTreeResult<()>> + Send;
+    fn delete(&self, token: &Key) -> impl Future<Output = BTreeResult<()>> + MaybeSend;
 }
 
 /// A Sharded BTree that supports a dynamic number of shards.
 pub struct ShardedBTree<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
     F: BTreeShardFactory<K, V, S::Key>,
     S: Sharder<K>,
 {
@@ -54,8 +56,8 @@ where
 
 impl<K, V, F, S> ShardedBTree<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
     F: BTreeShardFactory<K, V, S::Key>,
     S: Sharder<K>,
 {
@@ -81,8 +83,8 @@ where
 
 impl<K, V, F, S> BTreeRead<K, V> for ShardedBTree<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync + 'static,
-    V: BTreeValue + Send + Sync + 'static,
+    K: BTreeKey + MaybeSend + MaybeSync + 'static,
+    V: BTreeValue + MaybeSend + MaybeSync + 'static,
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
@@ -98,9 +100,9 @@ where
         shard.get(key).await
     }
 
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Clone + Send,
+        R: RangeBounds<K> + Clone + MaybeSend,
     {
         let shards = self.shards.clone();
 
@@ -126,8 +128,8 @@ where
 
 impl<K, V, F, S> BTree<K, V> for ShardedBTree<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync + 'static,
-    V: BTreeValue + Send + Sync + 'static,
+    K: BTreeKey + MaybeSend + MaybeSync + 'static,
+    V: BTreeValue + MaybeSend + MaybeSync + 'static,
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
@@ -153,8 +155,8 @@ where
 
 pub struct ShardedBTreeTransaction<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync,
-    V: BTreeValue + Send + Sync,
+    K: BTreeKey + MaybeSend + MaybeSync,
+    V: BTreeValue + MaybeSend + MaybeSync,
     F: BTreeShardFactory<K, V, S::Key>,
     S: Sharder<K>,
 {
@@ -167,8 +169,8 @@ where
 
 impl<K, V, F, S> ShardedBTreeTransaction<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync + 'static,
-    V: BTreeValue + Send + Sync + 'static,
+    K: BTreeKey + MaybeSend + MaybeSync + 'static,
+    V: BTreeValue + MaybeSend + MaybeSync + 'static,
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
@@ -199,8 +201,8 @@ where
 
 impl<K, V, F, S> BTreeRead<K, V> for ShardedBTreeTransaction<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync + 'static,
-    V: BTreeValue + Send + Sync + 'static,
+    K: BTreeKey + MaybeSend + MaybeSync + 'static,
+    V: BTreeValue + MaybeSend + MaybeSync + 'static,
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
@@ -210,9 +212,9 @@ where
         tx.get(key).await
     }
 
-    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Clone + Send,
+        R: RangeBounds<K> + Clone + MaybeSend,
     {
         stream!({
             for entry in self.shards.iter() {
@@ -239,8 +241,8 @@ where
 
 impl<K, V, F, S> BTreeTransaction<K, V> for ShardedBTreeTransaction<K, V, F, S>
 where
-    K: BTreeKey + Send + Sync + 'static,
-    V: BTreeValue + Send + Sync + 'static,
+    K: BTreeKey + MaybeSend + MaybeSync + 'static,
+    V: BTreeValue + MaybeSend + MaybeSync + 'static,
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
@@ -252,7 +254,7 @@ where
 
     async fn update<U>(&mut self, key: K, update_fn: U) -> BTreeResult<Option<()>>
     where
-        U: FnOnce(&mut V) -> BTreeResult<()> + Send,
+        U: FnOnce(&mut V) -> BTreeResult<()> + MaybeSend,
     {
         let token = self.sharder.shard(&key);
         let mut tx = self.get_or_create_transaction(token).await?;
@@ -265,9 +267,9 @@ where
         tx.remove(key).await
     }
 
-    fn remove_range<R>(&mut self, _range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
+    fn remove_range<R>(&mut self, _range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + MaybeSend
     where
-        R: RangeBounds<K> + Clone + Send,
+        R: RangeBounds<K> + Clone + MaybeSend,
     {
         stream!({
             for entry in self.shards.iter() {
@@ -333,8 +335,8 @@ mod tests {
 
     impl<T, H> Sharder<T> for BooleanSharder<T, H>
     where
-        T: Hash + Send + Sync,
-        H: Hasher + Send + Sync,
+        T: Hash + MaybeSend + MaybeSync,
+        H: Hasher + MaybeSend + MaybeSync,
     {
         type Key = bool;
 

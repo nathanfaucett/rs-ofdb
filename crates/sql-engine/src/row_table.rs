@@ -1,5 +1,7 @@
 use alloc::{string::ToString, vec::Vec};
 
+use platform::MaybeSend;
+
 use async_stream::stream;
 use futures::{Stream, StreamExt, pin_mut};
 
@@ -12,7 +14,7 @@ pub trait RowTable: KernelTransaction {
         &self,
         table: &str,
         key: &Row,
-    ) -> impl Future<Output = EngineResult<Option<Row>>> + Send {
+    ) -> impl Future<Output = EngineResult<Option<Row>>> + MaybeSend {
         async move {
             self.get_bytes(table, &encode_key(key))
                 .await?
@@ -24,7 +26,7 @@ pub trait RowTable: KernelTransaction {
     fn scan_entries<'a>(
         &'a self,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + MaybeSend + 'a {
         self.scan_bytes(table).map(|entry| {
             let (key, value) = entry?;
             Ok((decode_key(&key)?, decode_value(value)?))
@@ -34,7 +36,7 @@ pub trait RowTable: KernelTransaction {
     fn scan_entries_owned<'a>(
         &'a self,
         table: &'a str,
-    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + Send + 'a {
+    ) -> impl Stream<Item = EngineResult<(Row, Row)>> + MaybeSend + 'a {
         stream! {
             let entries = self.scan_bytes(table);
             pin_mut!(entries);
@@ -50,7 +52,7 @@ pub trait RowTable: KernelTransaction {
         table: &str,
         key: Row,
         value: Row,
-    ) -> impl Future<Output = EngineResult<()>> + Send {
+    ) -> impl Future<Output = EngineResult<()>> + MaybeSend {
         self.put_bytes(table, encode_key(&key), encode_value(&value))
     }
 
@@ -58,7 +60,7 @@ pub trait RowTable: KernelTransaction {
         &mut self,
         table: &str,
         key: &Row,
-    ) -> impl Future<Output = EngineResult<Option<Row>>> + Send {
+    ) -> impl Future<Output = EngineResult<Option<Row>>> + MaybeSend {
         async move {
             self.remove_bytes(table, &encode_key(key))
                 .await?
