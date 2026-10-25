@@ -9,3 +9,4 @@ mod indexeddb;
 mod kv_sync;
 mod sql_indexeddb;
 mod sql_semantics;
+mod storage_lifecycle;

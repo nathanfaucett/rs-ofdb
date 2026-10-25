@@ -31,15 +31,13 @@ impl Database {
     /// Store kinds have disjoint physical namespaces. No fallback or implicit migration.
     pub async fn open(name: &str, kind: &str) -> BTreeResult<Self> {
         let physical = format!("ofdb:{}:{kind}:{name}", kind.len());
-        let handle = JsFuture::from(platform::open(&physical).map_err(error)?)
+        let handle = JsFuture::from(platform::open(&physical, kind).map_err(error)?)
             .await
             .map_err(error)?;
-        let database = Self {
+        Ok(Self {
             handle: Rc::new(Connection(handle)),
             changes: ChangeSignal::default(),
-        };
-        database.snapshot().await?;
-        Ok(database)
+        })
     }
 
     pub fn subscribe_changes(&self) -> ChangeSubscription {
@@ -132,6 +130,7 @@ impl Snapshot {
     pub fn rollback(self) {}
 
     pub async fn commit(self) -> BTreeResult<()> {
+        platform::ensure_open(&self.database.handle.0).map_err(error)?;
         if self.original == self.tables {
             return Ok(());
         }
@@ -219,5 +218,9 @@ fn error(value: JsValue) -> BTreeError {
     if value.as_string().as_deref() == Some("ofdb-revision-conflict") {
         return BTreeError::Conflict;
     }
-    BTreeError::custom(format!("IndexedDB: {value:?}"))
+    let message = value
+        .dyn_ref::<js_sys::Error>()
+        .map(|error| String::from(error.message()))
+        .unwrap_or_else(|| "Browser storage unavailable; check origin storage settings".to_owned());
+    BTreeError::custom(format!("IndexedDB: {message}"))
 }
