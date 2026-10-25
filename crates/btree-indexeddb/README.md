@@ -63,8 +63,8 @@ quota/access exceptions and version errors propagate without partial persistence
 
 Notifications are process-local to clones of one opened adapter. Independently
 opened tabs/handles are protected by the persisted revision but do not receive
-cross-context notifications. KV facade committed subscriptions and checked sync
-are supported; SQL browser sync is separate work. External-write gaps require
+cross-context notifications. Both SQL and KV facade committed subscriptions,
+checked sync and caller-polled continuous runners are supported. External-write gaps require
 broad reconciliation rather than relying only on local invalidation.
 
 ## Initial cost and limits
@@ -77,11 +77,11 @@ IndexedDB/JS materialization. Commits write only net differences, but building t
 diff also visits the snapshot. Selective sync does not imply selective physical
 reads. Incremental loading and finer conflict detection are deferred.
 
-A diagnostic Chrome 156 Dedicated Worker run with the optimized browser fixture
-and its documented 16 MiB Wasm stack measured **11 ms / 102,800 raw key+value bytes**
-for 100 records and **96 ms / 1,028,000 bytes** for 1,000 records (1 KiB values,
-4-byte keys). These are single samples, not latency guarantees, peak-heap
-measurements, a minimum stack claim, or a release-build benchmark.
+See the current [snapshot samples and reproduction](../../docs/browser-validation.md#snapshot-samples)
+for Chrome/Firefox in both contexts, raw payload sizes and measured Wasm linear
+memory capacity. Capacity is not live/peak heap; single-sample timings are not
+latency guarantees, a minimum-stack claim or release-build benchmarks. The public
+[browser guide](../../docs/browser.md) includes SQL/KV quickstarts and support limits.
 
 Persistence follows the browser's IndexedDB completion/durability and eviction
 policies. Completion is not a power-loss guarantee or protection against site-data
@@ -106,7 +106,6 @@ uses the already-resolved `wasm-bindgen`, `js-sys`, `wasm-bindgen-futures` and
 `futures` APIs; no additional binding, serializer framework, deprecated serde
 feature or executor package is introduced. JS callbacks are GC-owned, with no
 Rust closure-forgetting or unsafe Send/Sync assertions.
-
 
 ## Lifecycle and browser failures
 

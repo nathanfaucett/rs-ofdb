@@ -12,6 +12,11 @@ The breaking value-format change uses a new persisted-document version and a new
 
 ## Browser IndexedDB synchronization
 
+See the [browser quickstarts and support limits](../../docs/browser.md) for async
+construction, queries and explicit transactions, and the [release validation
+matrix](../../docs/browser-validation.md) for measured snapshot costs. Chrome/Firefox
+Window and Dedicated Worker are validated; WebKit remains unvalidated.
+
 With `indexeddb,sync` on `wasm32-unknown-unknown`, asynchronously construct
 `Database::open_indexeddb(name).await?` and use the same broad
 `synchronize_checked` or per-peer `synchronize_selected_checked` sessions. Transport

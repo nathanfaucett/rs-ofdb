@@ -626,6 +626,15 @@ async fn independent_worker_writers_reject_stale_revision_atomically() {
 
 #[wasm_bindgen_test]
 async fn snapshot_materialization_measurement() {
+    fn linear_memory_bytes() -> f64 {
+        let buffer = js_sys::Reflect::get(&wasm_bindgen::memory(), &"buffer".into())
+            .expect("Wasm memory buffer");
+        js_sys::Reflect::get(&buffer, &"byteLength".into())
+            .expect("buffer capacity")
+            .as_f64()
+            .expect("numeric capacity")
+    }
+
     for count in [100_u32, 1000] {
         let db = ByteDatabase::open(&name("measure"), "test")
             .await
@@ -638,9 +647,11 @@ async fn snapshot_materialization_measurement() {
                 .insert(key.to_be_bytes().to_vec(), vec![7; 1024]);
         }
         tx.commit().await.expect("seed commit");
+        let memory_before = linear_memory_bytes();
         let started = js_sys::Date::now();
         let snapshot = db.snapshot().await.expect("measured snapshot");
         let elapsed = js_sys::Date::now() - started;
+        let memory_after = linear_memory_bytes();
         let data = snapshot.table("data").expect("data");
         assert_eq!(data.len(), count as usize);
         assert_eq!(
@@ -648,10 +659,12 @@ async fn snapshot_materialization_measurement() {
             count as usize * 1024
         );
         wasm_bindgen_test::console_log!(
-            "snapshot: {} records, {} key+value bytes, {} ms, two Rust-owned copies plus IDB/JS materialization",
+            "snapshot: {} records, {} key+value bytes, {} ms, Wasm linear capacity {} -> {} bytes (not live/peak heap); two Rust-owned copies plus IDB/JS materialization",
             count,
             count * 1028,
-            elapsed
+            elapsed,
+            memory_before,
+            memory_after
         );
     }
 }

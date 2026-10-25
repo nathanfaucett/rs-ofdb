@@ -1,6 +1,11 @@
 # Browser Wasm persistence with IndexedDB
 
-Status: ready-for-agent
+Status: implemented; focused browser/native validation complete; broad native feature/CRAP gates incomplete
+
+Current support and release evidence: [browser guide](../../docs/browser.md),
+[validation report](../../docs/browser-validation.md), and [ticket 10](issues/10-browser-release-validation.md).
+The requirements below retain the original design scope; they are not a claim
+that the unrelated broad gates or WebKit validation passed.
 
 ## Problem Statement
 

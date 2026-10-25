@@ -7,6 +7,11 @@ It provides two distinct, self-contained database models:
 - [**`ofdb-sql`**](crates/sql/README.md): A relational SQL database engine with schema catalogs, typed statement execution, secondary indexes, and row-level CRDT synchronization.
 - [**`ofdb-kv`**](crates/kv/README.md): A key-value store for shared typed values, with Automerge-backed history, UUIDv7 key generations, and millisecond expiry.
 
+Browser Rust applications can asynchronously open persistent SQL and KV databases
+with `indexeddb`. Start with the [browser quickstarts and support limits](docs/browser.md)
+and [reproducible validation matrix](docs/browser-validation.md). Chrome and Firefox
+Window/Dedicated Worker are validated; Safari/WebKit remains unvalidated.
+
 ---
 
 ## What It Is & Why It Exists
@@ -15,7 +20,7 @@ In traditional client-server architectures, applications require continuous inte
 
 `ofdb` is built around the **Local-First principle**. KV currently supports the shared value model, including nested JSON objects and arrays. It does not expose every native Automerge object type, such as collaborative text or counters:
 
-1. **Zero-Latency Local Operations**: All reads and writes hit local embedded storage ([Redb](crates/btree-redb) or in-memory) with ACID guarantees. Applications remain fully functional offline.
+1. **Local Embedded Operations**: Reads and writes use local storage ([Redb](crates/btree-redb), in-memory, or browser [IndexedDB](docs/browser.md)) with backend-specific transaction and durability guarantees. Applications remain fully functional offline.
 2. **Conflict-Free Convergence**: Individual rows (in SQL) and key generations (in KV) are tracked using [Automerge](https://automerge.org/) CRDT documents. Concurrent offline edits merge deterministically without requiring a central coordinator.
 3. **Transport-Neutral Synchronization**: Replication protocols do not assume a specific network stack, server daemon, or discovery system. Sync operates over any byte-stream or framing abstraction implementing [`SyncTransport`](crates/sql-sync/src/transport.rs) (TCP, Unix sockets, Bluetooth, WebSockets, or P2P meshes like [Iroh](https://iroh.computer/)).
 4. **Clean Decoupling of Engine and Network**: Network transport, endpoint identities, authentication, and scheduling belong to the application; `ofdb` strictly governs storage, transactions, and state reconciliation.
@@ -52,6 +57,7 @@ Crates in this workspace use empty default features (`default-features = false`)
 ### `ofdb-sql`
 
 - `in-memory`: In-memory embedded SQL engine.
+- `indexeddb`: Browser SQL persistence with async `Database::open_indexeddb(name)`. Typed statements work without `sql`; see the [browser guide](docs/browser.md).
 - `redb`: On-disk persistent embedded SQL engine using Redb.
 - `sql`: Enables SQL string translation (`execute_sql`, `SqlTranslator`).
 - `remote`: Enables the gRPC client to query remote SQL database hosts.
@@ -202,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 4. Replicating Between Nodes (Sync Sessions)
 
-Replication setup is explicit. With `sync`, `Database::sync_changes()` returns the sync-owned continuous lifecycle: `ChangeSubscription::run` performs the initial pass, coalesces committed changes, retries failed work with bounded exponential backoff, and cancels on future drop. SQL and KV subscriptions can be merged into one runner. Callers supply authorized transports and the runner's lifetime, not an idle polling loop. In-memory subscriptions currently return `Unsupported`.
+Replication setup is explicit. With `sync`, `Database::sync_changes()` returns the sync-owned continuous lifecycle: `ChangeSubscription::run` performs the initial pass, coalesces committed changes, retries failed work with bounded exponential backoff, and cancels on future drop. SQL and KV subscriptions can be merged into one runner. Callers supply authorized transports and the runner's lifetime, not an idle polling loop. KV in-memory subscriptions return `Unsupported`; SQL in-memory and both IndexedDB backends support them.
 
 For one-shot sessions, `Database::synchronize` accepts any transport implementing `SyncTransport`:
 

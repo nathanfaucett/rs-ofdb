@@ -80,6 +80,11 @@ database
 
 ## Browser SQL persistence
 
+See the [browser quickstarts and support limits](../../docs/browser.md) for explicit
+transactions, typed statements, stack configuration and caller-owned sync, and the
+[release validation matrix](../../docs/browser-validation.md) for measured costs.
+Chrome/Firefox Window and Dedicated Worker are validated; WebKit is unvalidated.
+
 Enable `indexeddb` for typed statements, and add `sql` only for SQL-text translation:
 
 ```toml

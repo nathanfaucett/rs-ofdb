@@ -7,16 +7,26 @@ files) from entering browser builds. With `sync`, SQL and KV tests exercise chec
 broad/selected sessions and native protocol fixtures; SQL also exercises scoped
 history/candidate validation.
 
+## Release matrix automation
+
+Use `python3 scripts/browser_matrix.py check`, `browser`, `measure`, `native`, and
+`final` from the repository root. The [reproduction guide](../../docs/browser-validation.md)
+details prerequisites, driver selection, bounds, logs/JSON, measurements and known
+broad-gate failures. The dedicated [browser workflow](../../.github/workflows/browser.yml)
+runs the four full acceptance cells independently, not a native workspace Wasm
+all-features build. The [public guide](../../docs/browser.md) documents supported
+feature sets and user-facing quickstarts.
+
 ## Run
 
 From the repository root, with `wasm32-unknown-unknown`, `wasm-pack`, Chrome and
 Firefox installed:
 
 ```sh
-wasm-pack test --headless --chrome tests/browser
-wasm-pack test --headless --chrome tests/browser --features worker,sync
-wasm-pack test --headless --firefox tests/browser
-wasm-pack test --headless --firefox tests/browser --features worker,sync
+WASM_BINDGEN_TEST_TIMEOUT=240 wasm-pack test --headless --chrome tests/browser --features sync --lib
+WASM_BINDGEN_TEST_TIMEOUT=240 wasm-pack test --headless --chrome tests/browser --features worker,sync --lib
+WASM_BINDGEN_TEST_TIMEOUT=240 wasm-pack test --headless --firefox tests/browser --features sync --lib
+WASM_BINDGEN_TEST_TIMEOUT=240 wasm-pack test --headless --firefox tests/browser --features worker,sync --lib
 ```
 
 The default context is Window; `worker` selects Dedicated Worker. Tests assert the
@@ -115,7 +125,10 @@ commit, independent completion invalidation, rollback/drop, read-only and net
 byte no-op behavior are covered. Actual disk quota exhaustion is not claimed.
 
 The measurement test loads 100 and 1,000 records with 1 KiB values and logs elapsed
-snapshot time and raw key+value bytes. For visible samples, run a built test
+snapshot time, raw key+value bytes and Wasm linear capacity before/after snapshot.
+Capacity is not live or peak heap and does not measure transient JS/IDB memory.
+`python3 scripts/browser_matrix.py measure --runner PATH` reproduces all four
+browser/context samples with explicit drivers; see the reproduction guide. For visible samples, run a built test
 module with `wasm-bindgen-test-runner MODULE snapshot_materialization_measurement
 --nocapture` and the same WebDriver environment. No timing threshold is asserted.
 Snapshots read the entire database, reconstruct ordered maps and retain **two
@@ -221,7 +234,6 @@ Timeout/cancellation does **not** prove rollback, undo completed writes, or guar
 hard interruption. Explicitly roll back or drop uncommitted staging when abandoning
 it; once native commit has been issued, independently observed completion may still
 persist it. Native configured deadlines continue to use Tokio time.
-
 
 ## SQL checked sync acceptance
 
