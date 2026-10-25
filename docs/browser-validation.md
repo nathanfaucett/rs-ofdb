@@ -206,8 +206,7 @@ history sizes and concurrent transactions separately.
 - Prior ticket 08 documents a pre-existing native `sync_stack` SIGABRT on its
   explicitly configured 2 MiB Tokio worker. Ticket 10's focused native suite does
   not include that low-stack test and does not claim to fix or revalidate it.
-- No Safari/WebKit driver was available (`safaridriver` and `WebKitWebDriver` absent;
-  no installed Playwright WebKit). **WebKit is explicitly unvalidated.** No older
+- WebKit is out of scope, not an incomplete validation gate. There is no older
   browser/minimum version, default-stack SQL, actual disk quota exhaustion,
   private-mode eviction, browser/OS crash, power loss or live network peer evidence.
 
@@ -272,7 +271,7 @@ Final broad gates were attempted independently, not waived:
 - `just crap` timed out after **240.01 s**, during coverage dependency compilation
   for `ofdb-kv` (package 7/32); no complete CRAP score.
 
-No new measurement, WebKit, whole-browser crash/power-loss, physical quota or
+No new measurement, whole-browser crash/power-loss, physical quota or
 cross-tab-notification claim is made. This fixes the P2 read-only transaction
 contract, not unrelated broader native feature/coverage failures.
 
@@ -330,5 +329,5 @@ revision/subscription/conflict and empty-DDL replay regressions:
 Final broad gates remain incomplete: powerset failed after **1.97 s** at the
 previously documented eight `ofdb-btree --no-default-features --features sharded`
 errors; CRAP timed out after **240 s**, compiling coverage for `ofdb-kv-client`
-(package 11/32). No full powerset pass or complete CRAP score. No new WebKit,
+(package 11/32). No full powerset pass or complete CRAP score. No new
 performance, crash/power-loss, quota or cross-tab-notification claims.

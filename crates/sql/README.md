@@ -83,7 +83,7 @@ database
 See the [browser quickstarts and support limits](../../docs/browser.md) for explicit
 transactions, typed statements, stack configuration and caller-owned sync, and the
 [release validation matrix](../../docs/browser-validation.md) for measured costs.
-Chrome/Firefox Window and Dedicated Worker are validated; WebKit is unvalidated.
+Chrome/Firefox Window and Dedicated Worker are validated.
 
 Enable `indexeddb` for typed statements, and add `sql` only for SQL-text translation:
 
@@ -123,7 +123,7 @@ filesystem-equivalent durability or protection from eviction/power loss. See the
 Window and Dedicated Worker tests run in Chrome and Firefox without a Tokio
 runtime, native networking or Redb. Consumers must provision the documented
 [Wasm stack budget](../../tests/browser/README.md#stack-budget) (the harness uses
-16 MiB). No WebKit support or default-stack guarantee is claimed.
+16 MiB). No default-stack guarantee is claimed.
 
 ### Browser checked synchronization
 

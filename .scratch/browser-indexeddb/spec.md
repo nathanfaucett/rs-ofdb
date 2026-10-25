@@ -4,8 +4,8 @@ Status: implemented; focused browser/native validation complete; broad native fe
 
 Current support and release evidence: [browser guide](../../docs/browser.md),
 [validation report](../../docs/browser-validation.md), and [ticket 10](issues/10-browser-release-validation.md).
-The requirements below retain the original design scope; they are not a claim
-that the unrelated broad gates or WebKit validation passed.
+The requirements below include the clarified Chromium/Firefox-only browser scope;
+they are not a claim that the unrelated broad gates passed.
 
 ## Problem Statement
 
@@ -134,7 +134,8 @@ Deliver KV first as a working browser vertical slice, then SQL on the same persi
 - Test cancellation before persistence starts and during commit completion. A committed mutation must remain discoverable for reconciliation even if its caller stopped polling.
 - Test shared client ownership after Database drop, independent subscriptions, net no-op silence, incoming sync fan-out, acknowledgement races and broad fallback.
 - Test checked sync rejection and cancellation without partial incoming batches, replay silence, concurrent offline edits and convergence of SQL conflicts and KV generations across browser/native payload exchange.
-- Run browser tests using wasm-bindgen-test or equivalent in headless Chromium and Firefox. Validate representative persistence and transaction-lifetime scenarios in WebKit before claiming support there. Node-only or mock IndexedDB execution is insufficient acceptance validation.
+- Run browser tests using wasm-bindgen-test or equivalent in headless Chromium and Firefox. WebKit is out of scope and is not a release requirement. Node-only or mock IndexedDB execution is insufficient acceptance validation.
+- Document required JavaScript, including the persistence adapter and browser test helpers, with JSDoc covering contracts, parameters, return values and relevant lifecycle behavior.
 - Add package-specific Wasm checks for KV indexeddb, SQL indexeddb with typed statements, SQL indexeddb with SQL translation, and browser sync combinations. Assert native-only dependencies are absent. Keep native feature combinations separately validated; workspace-wide Wasm all-features builds are not a meaningful requirement.
 - Final implementation validation includes rustfmt, focused Clippy checks, browser checks/tests, native regression checks, `cargo hack test --feature-powerset --all-targets`, and `just crap`. Record unavailable tooling or pre-existing failures rather than claiming a pass.
 

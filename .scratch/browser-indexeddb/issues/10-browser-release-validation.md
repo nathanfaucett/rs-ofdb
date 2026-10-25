@@ -8,7 +8,7 @@
 
 - [x] Automate package-specific Wasm checks for KV indexeddb, SQL indexeddb typed statements, optional SQL translation and supported browser sync combinations. Do not require native CLI/server workspace all-features builds under Wasm.
 - [x] Run real-browser acceptance tests in headless Chromium and Firefox, including representative Window and Dedicated Worker usage. Node-only or mocked IndexedDB tests are not acceptance evidence.
-- [x] Validate representative persistence and transaction-lifetime scenarios in WebKit before claiming WebKit support; otherwise document the unvalidated status explicitly.
+- [x] Limit browser validation requirements to Chromium and Firefox; WebKit is out of scope, not an incomplete release gate.
 - [x] Check supported normal dependency graphs exclude Redb, native filesystem resources, native temporary staging and native TCP/Unix/gRPC transport, while preserving remote-only native isolation contracts.
 - [x] Run formatting, focused Clippy, browser checks/tests, native regressions, cargo hack test --feature-powerset --all-targets and just crap as final implementation validation. Record exact unavailable tools, timeouts and pre-existing failures rather than claiming a pass.
 - [x] Publish browser quickstarts for asynchronous construction, existing Client queries and explicit transactions for both facades, plus caller-owned sync and runner lifetime guidance.

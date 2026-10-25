@@ -86,8 +86,8 @@ latency guarantees, a minimum-stack claim or release-build benchmarks. The publi
 Persistence follows the browser's IndexedDB completion/durability and eviction
 policies. Completion is not a power-loss guarantee or protection against site-data
 clearing. There is no automatic migration, quota reservation, memory fallback,
-keepalive loop or background retry. Safari/WebKit and browser-process/OS crash
-recovery are not validated. See the [real-browser harness](../../tests/browser/README.md).
+keepalive loop or background retry. Browser-process/OS crash recovery is not
+validated. See the [real-browser harness](../../tests/browser/README.md).
 
 ## Binding choice
 
@@ -159,4 +159,4 @@ quota/access errors and keep an application-appropriate backup or replica.
 IndexedDB completion is browser transaction completion, not native filesystem
 fsync durability, an eviction guarantee or a native retirement fence. No native
 retirement emulation is provided. Browser-process crashes, OS/power failure and
-WebKit/private-mode/quota-exhaustion behavior have not been validated here.
+private-mode/quota-exhaustion behavior have not been validated here.

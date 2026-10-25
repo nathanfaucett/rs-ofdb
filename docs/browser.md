@@ -10,13 +10,13 @@ isolation is required. The adapter uses `std`; this is not a `no_std` I/O backen
 
 Defaults are empty. Select a backend explicitly; browser construction is async.
 
-| Facade | Browser features | Capability |
-| --- | --- | --- |
-| `ofdb-kv` | `indexeddb` | Typed values, scans, expiry and explicit transactions |
-| `ofdb-kv` | `indexeddb,sync` | Also checked broad/selected sessions and caller-polled continuous sync |
-| `ofdb-sql` | `indexeddb` | Typed statements and explicit transactions, without the text translator |
-| `ofdb-sql` | `indexeddb,sql` | Also SQL-text translation |
-| `ofdb-sql` | `indexeddb,sync` or `indexeddb,sql,sync` | Also checked broad/selected/scoped sessions and continuous sync |
+| Facade     | Browser features                         | Capability                                                              |
+| ---------- | ---------------------------------------- | ----------------------------------------------------------------------- |
+| `ofdb-kv`  | `indexeddb`                              | Typed values, scans, expiry and explicit transactions                   |
+| `ofdb-kv`  | `indexeddb,sync`                         | Also checked broad/selected sessions and caller-polled continuous sync  |
+| `ofdb-sql` | `indexeddb`                              | Typed statements and explicit transactions, without the text translator |
+| `ofdb-sql` | `indexeddb,sql`                          | Also SQL-text translation                                               |
+| `ofdb-sql` | `indexeddb,sync` or `indexeddb,sql,sync` | Also checked broad/selected/scoped sessions and continuous sync         |
 
 `native-stage` is unnecessary in a browser. Even if explicitly enabled with SQL
 sync, file staging APIs and dependencies remain absent on this target. Sync's
@@ -28,8 +28,8 @@ CLI/server workspace with Wasm `--all-features`.
 The release validation baseline is **Chrome/Chromium engine 156 (tested using
 Google Chrome 156.0.8078.47) and Firefox 158.0.1**, in both contexts, on Linux.
 These are tested configurations, not established minimum versions or a claim for
-all later browsers. **Safari/WebKit is unvalidated and not claimed supported**:
-no `safaridriver` or `WebKitWebDriver` was available for this release validation.
+all later browsers. The supported validation scope is Chromium and Firefox;
+WebKit is out of scope and is not a release requirement.
 Mobile, private-mode storage behavior and older engines are also unvalidated.
 See [validation evidence and reproduction](browser-validation.md).
 

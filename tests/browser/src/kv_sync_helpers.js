@@ -1,3 +1,14 @@
+/**
+ * @module kv_sync_helpers
+ * Test-only observation of incoming IndexedDB writes during sync cancellation.
+ */
+
+/**
+ * Observe the next successfully issued put request to the records store.
+ * Restores the put prototype on observation or timeout; does not await commit.
+ * @returns {Promise<void>} Resolves when the request is issued, or rejects after
+ * ten seconds if no matching write is observed.
+ */
 export function afterNextWrite() {
     return new Promise((resolve, reject) => {
         const original = IDBObjectStore.prototype.put;

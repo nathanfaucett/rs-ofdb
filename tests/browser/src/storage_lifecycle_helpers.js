@@ -1,3 +1,15 @@
+/**
+ * @module storage_lifecycle_helpers
+ * IndexedDB schema fixtures, peer contexts, and lifecycle fault injection for browser tests.
+ */
+
+/**
+ * Create an incompatible schema or metadata fixture containing a preservation sentinel.
+ * @param {string} name - Fresh logical database name.
+ * @param {string} kind - Storage kind used in the physical name and metadata.
+ * @param {'version'|'missing'|'keypath'|'autoincrement'|'index'|'extra'|'format'|'missing-kind'|'kind'|'revision'} mode - Incompatibility to create.
+ * @returns {Promise<void>} Resolves after the fixture connection is closed.
+ */
 export async function malformed(name, kind, mode) {
     const db = await new Promise((resolve, reject) => {
         const request = indexedDB.open(`ofdb:${kind.length}:${kind}:${name}`, mode === 'version' ? 2 : 1);
@@ -22,6 +34,12 @@ export async function malformed(name, kind, mode) {
     db.close();
 }
 
+/**
+ * Read the sentinel to verify a rejected open preserved the fixture's metadata.
+ * @param {string} name - Logical fixture database name.
+ * @param {string} kind - Storage kind used in the physical database name.
+ * @returns {Promise<string|undefined>} Stored sentinel, or undefined if absent.
+ */
 export async function sentinel(name, kind) {
     const request = indexedDB.open(`ofdb:${kind.length}:${kind}:${name}`);
     const db = await new Promise((resolve, reject) => {
@@ -38,10 +56,21 @@ export async function sentinel(name, kind) {
     return value;
 }
 
-// The other connection lives in a separate execution context, including when
-// the test runner is itself a Dedicated Worker.
+/**
+ * Install the peer worker's lifecycle command handler; serialized into worker source.
+ * Commands contain physical and action ('upgrade' or 'block'), or action 'release'.
+ * Replies are 'upgraded', 'blocked', 'deleted', or an object with an error string.
+ * Blocking peers hold an uncooperative connection until release closes it.
+ * This separate context also works when the test runner is itself a worker.
+ * @returns {void}
+ */
 function remote() {
     let db;
+    /**
+     * Upgrade a database, block its deletion, or release the blocking connection.
+     * @param {MessageEvent<{physical: string, action: 'upgrade'|'block'}|{action: 'release'}>} event - Peer command.
+     * @returns {void}
+     */
     self.onmessage = event => {
         const {physical, action} = event.data;
         if (action === 'release') {
@@ -66,6 +95,14 @@ function remote() {
     };
 }
 
+/**
+ * Start a peer context that upgrades storage or holds a connection blocking deletion.
+ * @param {string} name - Logical database name.
+ * @param {string} kind - Storage kind used in the physical database name.
+ * @param {'upgrade'|'block'} action - Peer operation to perform.
+ * @returns {Promise<Worker|undefined>} Live worker once deletion is blocked, or
+ * undefined after upgrade and termination. Rejects on failure or a fifteen-second timeout.
+ */
 export function context(name, kind, action) {
     const url = URL.createObjectURL(new Blob([`(${remote.toString()})()`], {type: 'text/javascript'}));
     const worker = new Worker(url);
@@ -83,6 +120,12 @@ export function context(name, kind, action) {
     });
 }
 
+/**
+ * Close the blocking peer's connection and terminate it after its deletion reply.
+ * @param {Worker} worker - Live blocking worker returned by context.
+ * @returns {Promise<void>} Resolves after deletion; rejects on a peer-reported
+ * error or a fifteen-second timeout.
+ */
 export function release(worker) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { worker.terminate(); reject(new Error('release timed out')); }, 15000);
@@ -94,6 +137,13 @@ export function release(worker) {
     });
 }
 
+/**
+ * Check database absence, aborting initial creation so the check leaves no database.
+ * @param {string} name - Logical database name.
+ * @param {string} kind - Storage kind used in the physical database name.
+ * @returns {Promise<boolean>} True for a missing database, false for an existing one;
+ * rejects if opening fails for a reason other than the aborted initial creation.
+ */
 export function absent(name, kind) {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(`ofdb:${kind.length}:${kind}:${name}`);
@@ -104,6 +154,11 @@ export function absent(name, kind) {
     });
 }
 
+/**
+ * Make the next native open throw SecurityError containing a test secret.
+ * Restores open before throwing so tests can check error redaction without a lasting hook.
+ * @returns {void}
+ */
 export function denyOpen() {
     const original = IDBFactory.prototype.open;
     IDBFactory.prototype.open = function() {
@@ -112,6 +167,11 @@ export function denyOpen() {
     };
 }
 
+/**
+ * Set an existing test-kind database's revision metadata to the maximum u64 value.
+ * @param {string} name - Logical database name under the test storage kind.
+ * @returns {Promise<void>} Resolves after the metadata commit and connection close.
+ */
 export async function exhaust(name) {
     const request = indexedDB.open(`ofdb:4:test:${name}`);
     const db = await new Promise((resolve, reject) => {

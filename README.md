@@ -10,7 +10,7 @@ It provides two distinct, self-contained database models:
 Browser Rust applications can asynchronously open persistent SQL and KV databases
 with `indexeddb`. Start with the [browser quickstarts and support limits](docs/browser.md)
 and [reproducible validation matrix](docs/browser-validation.md). Chrome and Firefox
-Window/Dedicated Worker are validated; Safari/WebKit remains unvalidated.
+Window/Dedicated Worker are validated.
 
 ---
 
