@@ -15,7 +15,6 @@
 - [x] Exercise multi-table failure and concurrent commit scenarios to prove catalog and index state cannot be partially persisted.
 - [x] Reuse existing SQL acceptance scenarios where possible without porting filesystem or multi-thread test-harness assumptions into browser tests.
 
-
 ## Comments
 
 ### Implementation and validation — 2026-10-25
@@ -164,3 +163,49 @@ After committing implementation, ran `git merge --no-edit browser-indexeddb`:
 `633634785aaa528e435e85da89cb02324b0b3a50`; `git merge-base --is-ancestor
 browser-indexeddb HEAD` succeeded. Worktree was clean on `browser-indexeddb-04`.
 No parallel implementation commits were overwritten or excluded by this handoff.
+
+### P2 review fix: cold SELECT must remain read-only — 2026-10-25
+
+Review branch `browser-indexeddb-review`, worktree `.scratch/worktrees/review`,
+started clean at integration base `3fbd651`. Read repository rules, glossary,
+specification and relevant implementation/validation notes; loaded TDD and
+ponytail. Used the preapproved facade/subscription and public storage snapshot
+seams. Complexity: low; risk: shared executor transaction semantics; priority: P2.
+
+Root cause: shared `execute_in_transaction` ensured persistent catalogs before
+classifying SELECT-only batches. On a fresh IndexedDB database this staged four
+empty logical tables, advancing revision 0 to 1 and publishing invalidation;
+a cold explicit reader then incorrectly competed with independent DDL.
+
+The shared executor now classifies first and initializes catalogs only for
+mutating batches. Missing catalogs are already readable as empty by the
+IndexedDB Kernel, so no virtual-table layer or open-time writes are needed.
+Normal and explicit execution use the same fix. Kernel `ensure_table` and shared
+snapshot commits retain intentional empty-table persistence; no blanket removal
+of empty tables, format migration, dependencies or unrelated review fixes.
+
+Three real-browser tests in `tests/browser/src/sql_sync.rs` cover:
+
+- Acknowledged initial subscription work followed by ordinary and explicit cold
+  catalog SELECTs: no work published, persisted revision stays zero, including open.
+- Cold SELECT-only transaction, independent handle DDL, stable old snapshot and
+  successful reader commit: only DDL advances the revision, with no reader signal.
+- Ordinary and explicit empty table/index DDL: physical logical tables survive
+  closing all owners/reopen, both definitions replicate, and settled replay is
+  silent with identical exported state and queryable empty tables/index catalogs.
+
+Red/green: the silence test failed on the original executor, passed after the
+fix; the conflict test was separately run against the restored original executor
+and failed, then passed with the fix restored. The initial direct wasm-pack test
+filter was rejected by cargo build; focused runs instead used Cargo with the
+matching wasm-bindgen 0.2.128 runner. The first complete matrix found a test-only
+expected-index-list omission (implicit primary-key indexes); corrected the
+expectation, ran the focused empty-DDL test successfully, then reran all four cells.
+
+Final evidence and commands are appended to `docs/browser-validation.md` under
+“P2 cold-read review fix”. Full rerun: **90 passed** per Chrome/Firefox Window,
+**87 passed** per Dedicated Worker. Seven Wasm feature checks/graphs, browser
+Clippy/quickstarts, native SQL **70**, KV **19**, protocol/ownership **5** and runtime
+**10** tests, native Clippy and formatting passed. Powerset again failed on the
+previously documented eight `ofdb-btree --features sharded` errors; `just crap`
+timed out at 240 seconds during coverage compilation. Neither broad gate is green.

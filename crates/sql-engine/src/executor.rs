@@ -84,10 +84,12 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
-    ensure_schema(transaction, engine.reconciler.as_ref()).await?;
     let read_only = statements
         .iter()
         .all(|statement| matches!(statement, query::Statement::Query(Query::Select(_))));
+    if !read_only {
+        ensure_schema(transaction, engine.reconciler.as_ref()).await?;
+    }
     let mut catalog = None;
     let mut results = Vec::with_capacity(statements.len());
     for statement in statements {

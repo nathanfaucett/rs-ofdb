@@ -214,3 +214,64 @@ history sizes and concurrent transactions separately.
 These broader gates are not waived or marked green. Ticket 10 delivers the
 requested reproducible validation and accurate support documentation; it does not
 make the unrelated full native matrix or complexity gate release-ready.
+
+## P2 cold-read review fix — 2026-10-25
+
+Branch `browser-indexeddb-review`, based on integration `3fbd651`, fixes only the
+cold SELECT finding. The shared SQL executor now classifies SELECT-only batches
+before initializing catalogs, and does not initialize catalogs for reads. The
+IndexedDB Kernel already reads missing catalogs as empty. No open-time commit or
+storage-format change was introduced; intentional empty logical-table DDL still
+persists. Both ordinary and explicit facade transactions use this path.
+
+Three new public-interface browser tests verify cold-read revision/subscription
+silence, stale cold reader commit after independent DDL, and ordinary/explicit
+empty-table/index reopen plus checked sync replay silence. Both cold-read tests
+were observed failing against the original executor and passing with the fix.
+The first full matrix failed only the new empty-DDL test's expected index list,
+which omitted implicit primary-key indexes; the corrected focused test and all
+four complete reruns passed. Initial failures are not counted as acceptance.
+
+Reproduction uses the commands and prerequisites above, with existing ignored
+local WebDriver capabilities and matching ticket-01 ChromeDriver. Build artifacts
+were reused from the ticket-10 worktree via `CARGO_TARGET_DIR`; no source edits
+were made there. From the review worktree:
+
+```sh
+python3 scripts/browser_matrix.py browser --timeout 600 --chromedriver /home/nathan/code/rust/aicacia/ofdb-browser-01/tests/browser/target/chromedriver-linux64/chromedriver --output target/review-validation/browser-rerun
+python3 scripts/browser_matrix.py native --timeout 600 --output target/review-validation/native
+python3 scripts/browser_matrix.py check --timeout 600 --output target/review-validation/check
+python3 scripts/browser_matrix.py final --timeout 240 --output target/review-validation/final
+```
+
+The browser command additionally set `WASM_BINDGEN_TEST_WEBDRIVER_JSON` to the
+existing ticket-01 `tests/browser/webdriver.local.json`; it used the ticket-10
+`tests/browser/target` build directory. The other suites used ticket-10 `target`.
+The script supplied two build jobs, 16 MiB native stack and 240-second browser
+budget; fixture Wasm stack remains 16 MiB. Exact commands, logs, statuses and
+elapsed times are in the ignored output directories above.
+
+| Browser/context          | Complete suite with sync | Wall time including build/startup |
+| ------------------------ | -----------------------: | --------------------------------: |
+| Chrome Window            |            **90 passed** |                          217.05 s |
+| Chrome Dedicated Worker  |            **87 passed** |                          211.12 s |
+| Firefox Window           |            **90 passed** |                          168.11 s |
+| Firefox Dedicated Worker |            **87 passed** |                          165.91 s |
+
+Also passed: all seven standalone Wasm feature checks and graph guards, native
+remote-only and combined native-stage graph guards, Window/Worker Clippy, public
+quickstart compilation; native SQL **70**, KV **19**, protocol/ownership **5**, and
+runtime **10** tests; native Clippy; workspace/fixture formatting and diff checks.
+
+Final broad gates were attempted independently, not waived:
+
+- `cargo hack test --feature-powerset --all-targets` failed after **19.22 s** on
+  `ofdb-btree --no-default-features --features sharded`, the same eight previously
+  documented missing `std`/`async_stream`/in-memory-export/`ToString` errors.
+  Remaining feature combinations did not complete.
+- `just crap` timed out after **240.01 s**, during coverage dependency compilation
+  for `ofdb-kv` (package 7/32); no complete CRAP score.
+
+No new measurement, WebKit, whole-browser crash/power-loss, physical quota or
+cross-tab-notification claim is made. This fixes the P2 read-only transaction
+contract, not unrelated broader native feature/coverage failures.

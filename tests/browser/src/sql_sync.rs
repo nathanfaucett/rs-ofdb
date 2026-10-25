@@ -13,6 +13,192 @@ use wasm_bindgen_test::wasm_bindgen_test;
 use crate::sql_sync_support::{broad, channels, transcript, verify_fixture};
 
 #[wasm_bindgen_test]
+async fn sql_cold_select_preserves_revision_and_subscription_silence() {
+    let name = format!("sql-cold-read-{}", uuid::Uuid::now_v7());
+    let db = Database::open_indexeddb(&name)
+        .await
+        .expect("open cold SQL");
+    let storage = btree_indexeddb::Database::open(&name, "sql")
+        .await
+        .expect("observe persisted revision");
+    let revision = storage.snapshot().await.expect("cold snapshot").revision();
+    assert_eq!(revision, 0, "opening SQL must not commit catalogs");
+    let mut changes = db.sync_changes().expect("subscription");
+    acknowledge(&mut changes);
+    let client = db.client();
+    assert!(
+        client
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("cold catalog select")[0]
+            .rows
+            .is_empty()
+    );
+    assert!(changes.select().is_none(), "cold SELECT must stay silent");
+    assert_eq!(
+        storage.snapshot().await.expect("after SELECT").revision(),
+        revision
+    );
+    let mut reader = client.transaction().await.expect("cold reader");
+    assert!(
+        reader
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("explicit cold SELECT")[0]
+            .rows
+            .is_empty()
+    );
+    assert!(
+        reader
+            .execute_sql("SELECT name FROM indices", None)
+            .await
+            .expect("explicit cold index SELECT")[0]
+            .rows
+            .is_empty()
+    );
+    reader.commit().await.expect("read-only commit");
+    assert!(
+        changes.select().is_none(),
+        "explicit SELECT must stay silent"
+    );
+    assert_eq!(
+        storage.snapshot().await.expect("after reader").revision(),
+        revision
+    );
+}
+
+#[wasm_bindgen_test]
+async fn sql_cold_select_transaction_commits_after_independent_ddl() {
+    let name = format!("sql-cold-reader-{}", uuid::Uuid::now_v7());
+    let db = Database::open_indexeddb(&name).await.expect("cold open");
+    let client = db.client();
+    let mut changes = db.sync_changes().expect("reader subscription");
+    acknowledge(&mut changes);
+    let mut reader = client.transaction().await.expect("cold snapshot");
+    assert!(
+        reader
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("cold SELECT")[0]
+            .rows
+            .is_empty()
+    );
+    let other = Database::open_indexeddb(&name)
+        .await
+        .expect("independent open");
+    other
+        .client()
+        .execute_sql("CREATE TABLE empty (id TEXT PRIMARY KEY)", None)
+        .await
+        .expect("independent DDL");
+    assert!(
+        reader
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("stable cold snapshot")[0]
+            .rows
+            .is_empty()
+    );
+    reader
+        .commit()
+        .await
+        .expect("stale read-only commit succeeds");
+    assert!(
+        changes.select().is_none(),
+        "reader must not publish changes"
+    );
+    assert_eq!(
+        client
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("new snapshot sees DDL")[0]
+            .rows,
+        vec![Row::from(["empty"])]
+    );
+    let storage = btree_indexeddb::Database::open(&name, "sql")
+        .await
+        .expect("observe revision");
+    assert_eq!(
+        storage
+            .snapshot()
+            .await
+            .expect("committed snapshot")
+            .revision(),
+        1,
+        "only DDL commits a revision"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn sql_empty_ddl_persists_and_sync_replay_stays_silent() {
+    let name = format!("sql-empty-ddl-{}", uuid::Uuid::now_v7());
+    let db = Database::open_indexeddb(&name).await.expect("open");
+    let client = db.client();
+    client.execute_sql("CREATE TABLE ordinary_empty (id TEXT PRIMARY KEY); CREATE INDEX ordinary_index ON ordinary_empty (id)", None).await.expect("ordinary empty DDL");
+    let mut tx = client.transaction().await.expect("explicit DDL");
+    tx.execute_sql("CREATE TABLE explicit_empty (id TEXT PRIMARY KEY); CREATE INDEX explicit_index ON explicit_empty (id)", None).await.expect("stage empty DDL");
+    tx.commit().await.expect("commit empty DDL");
+    drop(client);
+    drop(db);
+    let storage = btree_indexeddb::Database::open(&name, "sql")
+        .await
+        .expect("inspect persisted logical tables");
+    let snapshot = storage.snapshot().await.expect("persisted snapshot");
+    assert_eq!(snapshot.revision(), 2);
+    for name in [
+        "ordinary_empty",
+        "ordinary_index",
+        "explicit_empty",
+        "explicit_index",
+    ] {
+        assert!(
+            snapshot
+                .table(name)
+                .expect("empty DDL storage survives reopen")
+                .is_empty()
+        );
+    }
+    drop(snapshot);
+    drop(storage);
+    let db = Database::open_indexeddb(&name).await.expect("reopen");
+    let peer = database().await;
+    broad(&db, &peer).await;
+    let mut changes = peer.sync_changes().expect("peer subscription");
+    acknowledge(&mut changes);
+    broad(&db, &peer).await;
+    assert!(changes.select().is_none(), "empty DDL replay is silent");
+    assert_eq!(
+        db.export_sync_state().await.expect("source state"),
+        peer.export_sync_state().await.expect("replicated state")
+    );
+    for db in [&db, &peer] {
+        for table in ["ordinary_empty", "explicit_empty"] {
+            assert!(
+                db.client()
+                    .execute_sql(&format!("SELECT id FROM {table}"), None)
+                    .await
+                    .expect("empty table remains queryable")[0]
+                    .rows
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            db.client()
+                .execute_sql("SELECT name FROM indices ORDER BY name", None)
+                .await
+                .expect("empty index definitions")[0]
+                .rows,
+            vec![
+                Row::from(["explicit_index"]),
+                Row::from(["ordinary_index"]),
+                Row::from(["pk_explicit_empty"]),
+                Row::from(["pk_ordinary_empty"]),
+            ]
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 async fn sql_sync_committed_work_survives_shared_client_ownership() {
     let database = Database::open_indexeddb(&format!("sql-sync-{}", uuid::Uuid::now_v7()))
         .await
