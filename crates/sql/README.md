@@ -150,5 +150,13 @@ remote-only edits. Supply remote wakeups or periodically request All for broad
 recovery; revision checks still prevent stale writes across independent opens.
 Selected logical work does not make IndexedDB I/O selective: each engine transaction
 still materializes the entire physical database snapshot. Bounded sync staging is
-not a bound on that O(database-size) snapshot cost. Continuous browser runner
-acceptance is tracked separately in ticket 09.
+not a bound on that O(database-size) snapshot cost.
+
+`sync_changes().run(synchronize)` uses browser timers without a Tokio runtime and
+accepts local callback futures. The caller owns and polls the runner; dropping it
+cancels its callback or retry wait. Retry starts at 100 ms, doubles to 30 seconds
+and resets after success. SQL and KV share the same subscription type and can
+merge for one broad-session callback, not selective logical mapping. No task,
+transport, peer selection or authorization is started automatically. See the
+[browser harness](../../tests/browser/README.md#continuous-synchronization) for
+real Window/Worker lifecycle tests.

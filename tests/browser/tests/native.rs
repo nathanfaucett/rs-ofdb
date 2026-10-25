@@ -99,3 +99,59 @@ mod sync {
         .expect("native sync retains Send");
     }
 }
+
+#[cfg(feature = "sync")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_continuous_runner_retains_send_retry_and_shutdown() {
+    use std::{
+        future::pending,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use futures::{StreamExt, channel::mpsc};
+
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<ofdb_sql::ChangeSubscription>();
+    send_sync::<ofdb_kv::ChangeSubscription>();
+    let database = ofdb_sql::Database::in_memory();
+    let client = database.client();
+    let changes = database.sync_changes().expect("native SQL subscription");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (started, mut starts) = mpsc::unbounded();
+    let runner = tokio::spawn(changes.run(move || {
+        let attempt = count.fetch_add(1, Ordering::SeqCst);
+        started.unbounded_send(attempt).expect("notify caller");
+        async move {
+            match attempt {
+                0 => Err(()),
+                1 => Ok(()),
+                _ => pending::<Result<(), ()>>().await,
+            }
+        }
+    }));
+    assert_eq!(starts.next().await, Some(0));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), starts.next())
+            .await
+            .expect("native timer retry"),
+        Some(1)
+    );
+    client
+        .execute_sql("CREATE TABLE runner (name TEXT PRIMARY KEY)", None)
+        .await
+        .expect("commit");
+    assert_eq!(starts.next().await, Some(2));
+    drop(database);
+    assert!(!runner.is_finished(), "query handle keeps backend alive");
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(2), runner)
+        .await
+        .expect("backend close interrupts callback")
+        .expect("spawned runner remains Send");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}

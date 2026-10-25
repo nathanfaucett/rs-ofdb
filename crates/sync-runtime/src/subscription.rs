@@ -66,7 +66,7 @@ impl ChangeSubscription {
             let failed = tokio::select! {
                 biased;
                 () = self.changes.closed() => return,
-                result = sync_stage(&mut synchronize) => result.is_err(),
+                result = async { sync_stage(&mut synchronize).await } => result.is_err(),
             };
             if failed {
                 tokio::select! {

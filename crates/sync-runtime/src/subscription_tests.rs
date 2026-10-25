@@ -265,3 +265,18 @@ async fn invalidation_is_coalesced_cancel_safe_and_opaque() {
         std::io::ErrorKind::BrokenPipe
     );
 }
+
+#[tokio::test]
+async fn closed_backend_never_constructs_a_transport_callback() {
+    let signal = ChangeSignal::default();
+    let changes = subscribe(&signal);
+    drop(signal);
+    let mut calls = 0;
+    changes
+        .run(|| {
+            calls += 1;
+            async { Ok::<(), ()>(()) }
+        })
+        .await;
+    assert_eq!(calls, 0, "closed backend must not construct transport");
+}

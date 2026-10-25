@@ -275,7 +275,7 @@ fn channels() -> (Channel, Channel) {
         },
     )
 }
-async fn exchange(left: &Database, right: &Database) -> (Vec<Message>, Vec<Message>) {
+pub(super) async fn exchange(left: &Database, right: &Database) -> (Vec<Message>, Vec<Message>) {
     let (mut a, mut b) = channels();
     let (ar, br) = platform::timeout(
         Duration::from_secs(10),

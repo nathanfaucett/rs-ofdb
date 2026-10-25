@@ -17,3 +17,6 @@ mod sql_sync;
 
 #[cfg(feature = "sync")]
 mod sql_sync_support;
+
+#[cfg(feature = "sync")]
+mod continuous;

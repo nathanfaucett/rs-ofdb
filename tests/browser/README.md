@@ -21,8 +21,10 @@ wasm-pack test --headless --firefox tests/browser --features worker,sync
 
 The default context is Window; `worker` selects Dedicated Worker. Tests assert the
 actual context. `sync` enables SQL/KV protocol and committed-subscription tests alongside
-the facade sync/staging compile checks. Set `WASM_BINDGEN_TEST_TIMEOUT=120` for the
-full suite, including notification-retention overflow scenarios.
+the facade sync/staging compile checks. Set `WASM_BINDGEN_TEST_TIMEOUT=240` for the
+full sync suite. The continuous runner test uses real browser delays from 100 ms
+through two 30-second capped retries (about 112 seconds on its own), not a fake
+clock. This also accommodates notification-retention overflow scenarios.
 `wasm-pack` obtains matching wasm-bindgen and WebDriver tools if absent (network
 access required). `--chromedriver PATH` or `--geckodriver PATH` can select existing
 drivers; also supply `--chrome` or `--firefox` explicitly.
@@ -257,4 +259,23 @@ RUST_MIN_STACK=16777216 OFDB_REGENERATE_SQL_FIXTURE=1 cargo test --manifest-path
 Run Window `--features sync` and Dedicated Worker `--features worker,sync` in both
 Chrome and Firefox. Native stage-directory APIs/types and tempfile remain absent
 from the browser target even with `ofdb-sql/native-stage` explicitly enabled.
-Continuous browser runner acceptance remains ticket 09, not these one-shot tests.
+Continuous browser runner coverage is described below, separately from these one-shot tests.
+
+## Continuous synchronization
+
+With `sync`, `src/continuous.rs` exercises the public `Database::sync_changes()` →
+`ChangeSubscription::run` seam in both contexts. It covers initial reconciliation,
+idle silence, coalescing, commits after selected-work capture, independent consumers,
+real exponential retry delays and reset, local `Rc` callback futures, caller drop,
+last-backend closure during callbacks/retries and merged SQL/KV broad sessions.
+The merged test exchanges existing checked SQL and KV protocols over caller-owned
+in-memory channels and verifies peer state and settled replay, not bundled networking.
+Native regressions also spawn the same runner to verify `Send`, retry and shutdown.
+
+The caller owns and must poll the runner; constructing it starts no task. Merge
+subscriptions only for broad sessions, never for selective store mapping. Callbacks
+that retain Database/Client handles also keep their backends alive. Cancellation
+stops polling transport work, but cannot undo earlier completed persistence.
+Independent opens, other tabs and remote-only writes do not wake this runner;
+applications supply remote wakeups or explicit broad recovery. There is no automatic
+cross-tab coordination, transport/peer/authorization selection or durable replay.
