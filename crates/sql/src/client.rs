@@ -507,6 +507,14 @@ impl Client {
         }
     }
 
+    /// Sets the budget for each query, transaction creation and transaction operation.
+    /// No deadline is configured by default. Clones copy the setting independently;
+    /// caller idle time and connection setup are excluded. SQL translation and execution
+    /// share one budget. Each transaction operation starts a fresh budget.
+    /// Browser Wasm uses browser timers without Tokio; native timed queries require
+    /// a Tokio runtime with time enabled. Timeout or cancellation does not prove rollback,
+    /// undo a completed write or guarantee interruption of computation. An issued
+    /// IndexedDB commit remains observed independently of the caller.
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.request_deadline = Some(deadline);
         self

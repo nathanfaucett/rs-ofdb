@@ -152,8 +152,14 @@ impl Client {
         }
     }
 
-    /// Sets an optional deadline for each query. Timed embedded queries need a Tokio runtime
-    /// with time enabled. Untimed queries do not need a Tokio runtime.
+    /// Sets the budget for each query, transaction creation and transaction operation.
+    /// No deadline is configured by default. Clones copy the setting independently;
+    /// each operation gets a fresh budget, excluding caller idle time and connection setup.
+    /// Browser Wasm uses browser timers without Tokio; native timed queries require
+    /// a Tokio runtime with time enabled. Untimed embedded queries require neither.
+    /// Timeout or cancellation does not prove rollback, undo a completed write or
+    /// guarantee interruption of computation. An issued IndexedDB commit is observed
+    /// independently of the caller and may still persist and publish invalidations.
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.request_deadline = Some(deadline);
         self
