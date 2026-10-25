@@ -40,6 +40,54 @@ fn changed(changes: &mut ChangeSubscription) {
     );
 }
 
+#[cfg(feature = "in-memory")]
+#[test]
+fn cold_native_catalog_reads_do_not_persist_or_publish_catalogs() {
+    run_test(|| async {
+        use redb::ReadableDatabase;
+
+        let directory = tempfile::tempdir().expect("cold store directory");
+        let path = directory.path().join("cold.redb");
+        for database in [
+            Database::in_memory(),
+            Database::open(&path).expect("cold Redb"),
+        ] {
+            let mut changes = database.sync_changes().expect("subscription");
+            let initial = changes.select().expect("initial broad work");
+            assert!(changes.acknowledge(initial));
+            let client = database.client();
+            client
+                .execute_sql("SELECT name FROM tables", None)
+                .await
+                .expect("ordinary cold SELECT");
+            assert!(
+                changes.select().is_none(),
+                "ordinary cold read stays silent"
+            );
+            let mut tx = client.transaction().await.expect("cold transaction");
+            tx.execute_sql("SELECT name FROM indices", None)
+                .await
+                .expect("explicit cold SELECT");
+            tx.commit().await.expect("read-only commit");
+            assert!(
+                changes.select().is_none(),
+                "explicit cold read stays silent"
+            );
+        }
+        let storage = redb::Database::open(&path).expect("inspect closed Redb");
+        assert_eq!(
+            storage
+                .begin_read()
+                .expect("physical read")
+                .list_tables()
+                .expect("logical table list")
+                .count(),
+            0,
+            "cold SQL reads must not create physical catalogs"
+        );
+    });
+}
+
 #[test]
 fn commits_noops_and_rollbacks_across_clones() {
     run_test(|| async {

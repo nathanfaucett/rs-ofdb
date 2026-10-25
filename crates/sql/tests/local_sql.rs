@@ -24,6 +24,137 @@ test_case!(
 );
 
 #[test]
+fn cold_catalog_selects_are_empty_on_native_backends() {
+    futures::executor::block_on(async {
+        use ofdb_sql::Database;
+
+        let root = tempfile::tempdir().expect("isolated cold store");
+        for database in [
+            Database::in_memory(),
+            Database::open(root.path().join("cold.redb")).expect("open cold Redb"),
+        ] {
+            for table in ["tables", "table_fields", "indices", "index_fields"] {
+                assert!(
+                    database
+                        .client()
+                        .execute_sql(&format!("SELECT * FROM {table}"), None)
+                        .await
+                        .expect("cold catalogs are readable without DDL")[0]
+                        .rows
+                        .is_empty()
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn cold_missing_user_table_is_rejected_on_native_backends() {
+    futures::executor::block_on(async {
+        use ofdb_sql::{Database, ErrorKind};
+
+        let root = tempfile::tempdir().expect("isolated missing-table store");
+        for database in [
+            Database::in_memory(),
+            Database::open(root.path().join("missing.redb")).expect("open cold Redb"),
+        ] {
+            let error = database
+                .client()
+                .execute_sql("SELECT * FROM nonexistent", None)
+                .await
+                .expect_err("missing SQL table is rejected, not a storage failure");
+            assert_eq!(error.kind, ErrorKind::Rejected);
+            assert!(error.message.contains("Table not found"), "{error}");
+        }
+    });
+}
+
+#[test]
+fn cold_catalog_select_allows_ddl_in_explicit_native_transactions() {
+    futures::executor::block_on(async {
+        use ofdb_sql::{Database, Row};
+
+        let root = tempfile::tempdir().expect("isolated explicit store");
+        for database in [
+            Database::in_memory(),
+            Database::open(root.path().join("explicit.redb")).expect("open cold Redb"),
+        ] {
+            let client = database.client();
+            let mut tx = client.transaction().await.expect("cold transaction");
+            assert!(
+                tx.execute_sql("SELECT name FROM tables", None)
+                    .await
+                    .expect("cold read does not abort transaction")[0]
+                    .rows
+                    .is_empty()
+            );
+            tx.execute_sql("CREATE TABLE empty (id TEXT PRIMARY KEY)", None)
+                .await
+                .expect("DDL after cold read");
+            tx.commit().await.expect("commit DDL after cold read");
+            assert_eq!(
+                client
+                    .execute_sql("SELECT name FROM tables", None)
+                    .await
+                    .expect("committed catalog")[0]
+                    .rows,
+                vec![Row::from(["empty"])]
+            );
+            assert!(
+                client
+                    .execute_sql("SELECT * FROM empty", None)
+                    .await
+                    .expect("empty DDL persists")[0]
+                    .rows
+                    .is_empty()
+            );
+        }
+    });
+}
+
+#[test]
+fn cold_memory_reads_do_not_conflict_with_or_overwrite_ddl() {
+    futures::executor::block_on(async {
+        use ofdb_sql::{Database, Row};
+
+        let client = Database::in_memory().client();
+        let mut reader = client.transaction().await.expect("cold reader");
+        reader
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("cold reader SELECT");
+        let mut writer = client
+            .transaction()
+            .await
+            .expect("writer before ordinary read");
+        writer
+            .execute_sql("CREATE TABLE empty (id TEXT PRIMARY KEY)", None)
+            .await
+            .expect("staged DDL");
+        client
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect("ordinary cold read");
+        writer
+            .commit()
+            .await
+            .expect("ordinary read does not advance revision");
+        reader
+            .commit()
+            .await
+            .expect("stale untouched reader commits without overwriting DDL");
+        assert_eq!(
+            client
+                .execute_sql("SELECT name FROM tables", None)
+                .await
+                .expect("DDL retained")[0]
+                .rows,
+            vec![Row::from(["empty"])]
+        );
+    });
+}
+
+#[test]
 fn indexed_native_crud_on_bounded_stack() {
     std::thread::Builder::new()
         .name("indexed-native-crud".into())

@@ -61,6 +61,24 @@ impl NativeWriteTransaction {
         Ok(table)
     }
 
+    fn open_existing_table<K: RedbKey, V: RedbValue>(
+        &self,
+        name: &str,
+    ) -> BTreeResult<Option<Table<'_, Key<K>, Value<V>>>> {
+        if !self
+            .inner
+            .list_tables()
+            .map_err(BTreeError::custom)?
+            .any(|table| table.name() == name)
+        {
+            return Ok(None);
+        }
+        self.inner
+            .open_table(table_definition::<K, V>(name))
+            .map(Some)
+            .map_err(BTreeError::custom)
+    }
+
     pub(crate) fn record(
         &self,
         table: &str,
@@ -138,7 +156,9 @@ where
     V: RedbValue,
 {
     async fn get(&self, key: &K) -> BTreeResult<Option<V>> {
-        let table = self.tx.native().open_table::<K, V>(&self.name)?;
+        let Some(table) = self.tx.native().open_existing_table::<K, V>(&self.name)? else {
+            return Ok(None);
+        };
         Ok(table
             .get(Key::new(key.clone()))
             .map_err(BTreeError::custom)?
@@ -151,7 +171,9 @@ where
     {
         stream! {
             let entries = {
-                let table = self.tx.native().open_table::<K, V>(&self.name)?;
+                let Some(table) = self.tx.native().open_existing_table::<K, V>(&self.name)? else {
+                    return;
+                };
                 let results = table.range(Key::range(range)).map_err(BTreeError::custom)?;
                 let mut entries = Vec::new();
                 for result in results {

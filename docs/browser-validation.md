@@ -275,3 +275,60 @@ Final broad gates were attempted independently, not waived:
 No new measurement, WebKit, whole-browser crash/power-loss, physical quota or
 cross-tab-notification claim is made. This fixes the P2 read-only transaction
 contract, not unrelated broader native feature/coverage failures.
+
+## Native cold-read regression correction — 2026-10-25
+
+The first review fix at `90a47d7` missed backend differences: in-memory reads of
+absent catalogs returned Storage errors, while Redb transaction reads implicitly
+created physical tables. The earlier native tests passed but did not cover cold
+catalog reads; they were insufficient regression coverage, not proof of parity.
+
+The follow-up keeps catalog initialization out of SELECT-only batches and fixes
+the backend read contract. In-memory missing point/full/range reads return empty;
+untouched commits neither advance revision nor overwrite newer state. Redb
+transactional reads check for an existing table before opening it, without table
+creation or invalidation. Explicit DDL/write creation paths remain unchanged.
+SQL still validates user table existence and reports Rejected `Table not found`,
+rather than treating a missing SQL table as an empty user table.
+
+Five new native facade tests cover cold catalog reads on both native backends,
+missing-user-table errors, cold explicit SELECT followed by committed DDL,
+in-memory ordinary/stale-reader revision isolation, and subscription silence
+plus an empty physical Redb table list after reads. Two Kernel tests also cover
+missing point/full/range reads. Behavioral failures were observed before fixing
+in-memory cold reads, revision-changing read commits, and Redb cold-read signals.
+
+Passed before the browser rerun:
+
+```sh
+cargo test -p ofdb-sql-engine -p ofdb-sql-engine-automerge -p ofdb-sql-engine-redb -p ofdb-btree-redb --features ofdb-sql-engine/in-memory,ofdb-sql-engine/std --all-targets
+cargo clippy -p ofdb-sql-engine -p ofdb-sql-engine-automerge -p ofdb-sql-engine-redb -p ofdb-btree-redb --features ofdb-sql-engine/in-memory,ofdb-sql-engine/std --all-targets -- -D warnings
+cargo check -p ofdb-sql-engine --no-default-features --features in-memory
+python3 scripts/browser_matrix.py native --timeout 600 --output target/review-followup/native
+```
+
+Native regressions: **75 SQL**, **19 KV**, **5 protocol/ownership**, **10 runtime**
+tests passed, plus native facade/runtime Clippy. The backend test and native
+commands used two build jobs, 16 MiB native stack, and the same ticket-10 native
+build directory as the preceding review validation. Clippy and the no-default
+engine check also reused that build directory.
+
+Then reran the `browser`, `check`, and `final` script suites with the same driver,
+capabilities, target directories and timeouts as the preceding review section,
+with output under `target/review-followup/{browser,check,final}`. All seven Wasm
+feature checks, graph guards, Window/Worker Clippy, public quickstarts and
+formatting passed. Full browser acceptance, including the original read-only
+revision/subscription/conflict and empty-DDL replay regressions:
+
+| Browser/context          | Complete suite with sync | Wall time including build/startup |
+| ------------------------ | -----------------------: | --------------------------------: |
+| Chrome Window            |            **90 passed** |                          245.64 s |
+| Chrome Dedicated Worker  |            **87 passed** |                          235.13 s |
+| Firefox Window           |            **90 passed** |                          195.63 s |
+| Firefox Dedicated Worker |            **87 passed** |                          172.82 s |
+
+Final broad gates remain incomplete: powerset failed after **1.97 s** at the
+previously documented eight `ofdb-btree --no-default-features --features sharded`
+errors; CRAP timed out after **240 s**, compiling coverage for `ofdb-kv-client`
+(package 11/32). No full powerset pass or complete CRAP score. No new WebKit,
+performance, crash/power-loss, quota or cross-tab-notification claims.

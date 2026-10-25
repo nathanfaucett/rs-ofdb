@@ -209,3 +209,48 @@ Clippy/quickstarts, native SQL **70**, KV **19**, protocol/ownership **5** and r
 **10** tests, native Clippy and formatting passed. Powerset again failed on the
 previously documented eight `ofdb-btree --features sharded` errors; `just crap`
 timed out at 240 seconds during coverage compilation. Neither broad gate is green.
+
+### Review follow-up: native cold-read regression — 2026-10-25
+
+Base/integration `90a47d7`, same `browser-indexeddb-review` worktree. The first
+review fix was incomplete: skipping eager schema creation exposed the in-memory
+Kernel's missing-table storage errors. Previous native acceptance passes did not
+exercise cold catalog SELECTs, missing-user-table categorization or cold explicit
+SELECT followed by DDL. Redb also created physical catalog tables as a side effect
+of transactional reads. Those backend differences are now fixed rather than
+reintroducing eager catalog persistence or special-casing SELECT by backend.
+
+The Kernel read contract explicitly requires missing storage to read as empty,
+without creating it. In-memory get/full/range reads now meet that contract; its
+untouched transaction commits return without changing revision or replacing
+state, including after a writer commits. Redb transactional get/range reads open
+only existing tables, preserving genuine storage/type errors and leaving explicit
+create/write paths intact. The shared executor and IndexedDB adapter are unchanged.
+Complexity: low/moderate; risk: shared Redb reads and in-memory transaction commit;
+priority: regression correction. No dependencies, migrations or compatibility glue.
+
+Added five facade tests covering all four cold catalogs on both native backends,
+Rejected `Table not found` for missing SQL user tables, explicit cold SELECT →
+DDL → commit, in-memory read/write revision isolation and stale-reader commit,
+and acknowledged subscriptions plus absence of physical Redb catalogs after
+ordinary/explicit reads. Added Kernel tests for missing point/full/range reads
+and non-creating read commits. Tests use the same preapproved facade/Kernel seams.
+
+Observed red/green: original in-memory cold catalog test failed with Storage;
+after fixing reads, the new in-memory concurrency test failed with Transaction
+conflict until read-only commit was fixed; the native subscription test failed
+on Redb cold-read invalidation until non-creating Redb reads were implemented.
+The Redb inspection test initially needed its `ReadableDatabase` trait import;
+that compile issue was corrected before the behavioral red/green run. Missing
+user-table and explicit DDL tests passed after the read-contract fix; no separate
+pre-fix red runs are claimed for those two cases.
+
+Final validation (details/commands in `docs/browser-validation.md`): all-target
+tests and Clippy for SQL engine, Automerge engine, Redb engine and BTree Redb;
+no-default-feature in-memory engine check; native regression script (**75 SQL**,
+**19 KV**, **5 protocol/ownership**, **10 runtime**); seven standalone Wasm
+feature/graph checks, browser Clippy and quickstarts; full real-browser matrix
+(**90 Window**, **87 Worker** per Chrome/Firefox); formatting and diff checks.
+Powerset failed again on the known eight `ofdb-btree/sharded` compile errors
+(1.97 s). CRAP timed out at 240 s during `ofdb-kv-client` coverage compilation,
+package 11/32; no full powerset pass or complete complexity score is claimed.

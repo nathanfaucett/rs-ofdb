@@ -12,15 +12,18 @@ pub trait KernelTransaction: MaybeSend + MaybeSync {
     fn ensure_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
     fn drop_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
 
+    /// Reads never create storage; a missing logical table reads as empty.
     fn get_bytes(
         &self,
         table: &str,
         key: &[u8],
     ) -> impl Future<Output = EngineResult<Option<Vec<u8>>>> + MaybeSend;
+    /// Missing logical tables yield no entries without creating storage.
     fn scan_bytes<'a>(
         &'a self,
         table: &'a str,
     ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a;
+    /// Missing logical tables yield no entries without creating storage.
     fn scan_bytes_range<'a>(
         &'a self,
         table: &'a str,

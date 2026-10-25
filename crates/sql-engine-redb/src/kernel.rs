@@ -137,6 +137,68 @@ mod tests {
     use engine::{Kernel, KernelTransaction};
 
     #[test]
+    fn missing_table_reads_do_not_create_physical_tables() {
+        use std::ops::Bound;
+
+        use futures::StreamExt;
+        use redb::ReadableDatabase;
+
+        let database = Arc::new(
+            redb::Database::builder()
+                .create_with_backend(redb::backends::InMemoryBackend::new())
+                .expect("in-memory Redb backend"),
+        );
+        let kernel = RedbKernel::new(database.clone());
+        block_on(async {
+            let mut changes = kernel.subscribe_changes().expect("subscription");
+            let initial = changes.select().expect("initial work");
+            assert!(changes.acknowledge(initial));
+            let reader = kernel.transaction().await.expect("read transaction");
+            assert_eq!(
+                reader
+                    .get_bytes("missing", b"key")
+                    .await
+                    .expect("missing key"),
+                None
+            );
+            assert!(
+                reader
+                    .scan_bytes("missing")
+                    .collect::<Vec<_>>()
+                    .await
+                    .is_empty()
+            );
+            assert!(
+                reader
+                    .scan_bytes_range(
+                        "missing",
+                        (
+                            Bound::Included(b"a".to_vec()),
+                            Bound::Excluded(b"z".to_vec())
+                        )
+                    )
+                    .collect::<Vec<_>>()
+                    .await
+                    .is_empty()
+            );
+            reader.commit().await.expect("commit read-only transaction");
+            assert!(
+                changes.select().is_none(),
+                "reads do not publish table creation"
+            );
+        });
+        assert_eq!(
+            database
+                .begin_read()
+                .expect("physical snapshot")
+                .list_tables()
+                .expect("physical tables")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn logical_names_are_isolated_and_persisted() {
         let path = PathBuf::from(format!(
             "{}-engine-redb-names.redb",

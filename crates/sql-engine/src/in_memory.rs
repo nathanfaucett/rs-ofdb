@@ -2,7 +2,6 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     sync::Arc,
-    vec,
     vec::Vec,
 };
 
@@ -88,12 +87,6 @@ impl Kernel for InMemoryKernel {
 }
 
 impl InMemoryKernelTransaction {
-    fn table(&self, table: &str) -> EngineResult<&BTreeMap<Vec<u8>, Vec<u8>>> {
-        self.tables
-            .get(table)
-            .ok_or_else(|| EngineError::custom("Table not found"))
-    }
-
     fn table_mut(&mut self, table: &str) -> EngineResult<&mut BTreeMap<Vec<u8>, Vec<u8>>> {
         self.tables
             .get_mut(table)
@@ -101,13 +94,12 @@ impl InMemoryKernelTransaction {
     }
 
     fn scan(&self, table: &str) -> Vec<EngineResult<(Vec<u8>, Vec<u8>)>> {
-        match self.table(table) {
-            Ok(table) => table
-                .iter()
-                .map(|(key, value)| Ok((key.clone(), value.clone())))
-                .collect(),
-            Err(error) => vec![Err(error)],
-        }
+        self.tables
+            .get(table)
+            .into_iter()
+            .flatten()
+            .map(|(key, value)| Ok((key.clone(), value.clone())))
+            .collect()
     }
 }
 
@@ -129,7 +121,11 @@ impl KernelTransaction for InMemoryKernelTransaction {
     }
 
     async fn get_bytes(&self, table: &str, key: &[u8]) -> EngineResult<Option<Vec<u8>>> {
-        Ok(self.table(table)?.get(key).cloned())
+        Ok(self
+            .tables
+            .get(table)
+            .and_then(|rows| rows.get(key))
+            .cloned())
     }
 
     fn scan_bytes<'a>(
@@ -145,13 +141,10 @@ impl KernelTransaction for InMemoryKernelTransaction {
         range: (core::ops::Bound<Vec<u8>>, core::ops::Bound<Vec<u8>>),
     ) -> impl Stream<Item = EngineResult<(Vec<u8>, Vec<u8>)>> + MaybeSend + 'a {
         async_stream::stream! {
-            match self.table(table) {
-                Ok(rows) => {
-                    for (key, value) in rows.range(range) {
-                        yield Ok((key.clone(), value.clone()));
-                    }
+            if let Some(rows) = self.tables.get(table) {
+                for (key, value) in rows.range(range) {
+                    yield Ok((key.clone(), value.clone()));
                 }
-                Err(error) => yield Err(error),
             }
         }
     }
@@ -177,6 +170,9 @@ impl KernelTransaction for InMemoryKernelTransaction {
             #[cfg(feature = "std")]
             changes,
         } = self;
+        if touched_tables.is_empty() && touched_keys.is_empty() {
+            return Ok(());
+        }
         let mut state = state.write().await;
         if state.revision != revision {
             return Err(EngineError::custom("Transaction conflict"));
@@ -222,6 +218,48 @@ mod tests {
 
     use super::InMemoryKernel;
     use crate::{Kernel, KernelTransaction};
+
+    #[test]
+    fn missing_table_reads_are_empty_and_do_not_stage_creation() {
+        block_on(async {
+            let kernel = InMemoryKernel::new();
+            let reader = kernel.transaction().await.expect("read snapshot");
+            assert_eq!(
+                reader
+                    .get_bytes("missing", b"key")
+                    .await
+                    .expect("missing key"),
+                None
+            );
+            assert!(
+                reader
+                    .scan_bytes("missing")
+                    .collect::<Vec<_>>()
+                    .await
+                    .is_empty()
+            );
+            assert!(
+                reader
+                    .scan_bytes_range(
+                        "missing",
+                        (
+                            Bound::Included(b"a".to_vec()),
+                            Bound::Excluded(b"z".to_vec())
+                        )
+                    )
+                    .collect::<Vec<_>>()
+                    .await
+                    .is_empty()
+            );
+            let mut writer = kernel.transaction().await.expect("independent writer");
+            writer
+                .ensure_table("empty")
+                .await
+                .expect("intentional empty table");
+            writer.commit().await.expect("commit DDL");
+            reader.commit().await.expect("stale read-only commit");
+        });
+    }
 
     #[test]
     fn logical_names_are_isolated() {
