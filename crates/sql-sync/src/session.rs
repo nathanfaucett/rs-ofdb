@@ -1689,8 +1689,9 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    let mut used_bytes = 0;
+    let mut used_bytes = 0_usize;
     let mut outbound = Outbound::default();
+    let mut snapshot_requests = Vec::new();
     for (unit_key, summary) in summaries {
         let SyncKey::Row { table, row } = unit_key.clone();
         if remote_manifest.contains(&unit_key, summary.digest) {
@@ -1700,18 +1701,7 @@ where
         // Metadata is outside document history. Never select document-only deltas
         // when metadata must travel with them.
         if remote.is_none() || !summary.metadata.is_empty() {
-            for unit in recovery_snapshots(
-                engine,
-                Vec::from([SyncSnapshotRequest { table, row }]),
-                max_bytes.saturating_sub(used_bytes),
-                scope,
-            )
-            .await?
-            {
-                used_bytes =
-                    account_engine_payload(used_bytes, state_unit_payload_size(&unit), max_bytes)?;
-                outbound.snapshots.push(unit);
-            }
+            snapshot_requests.push(SyncSnapshotRequest { table, row });
             continue;
         }
         let remote = remote.expect("inventory checked above");
@@ -1808,23 +1798,16 @@ where
         if snapshot_required || outbound.changes.len() == row_changes_start {
             outbound.changes.truncate(row_changes_start);
             used_bytes = row_bytes_start;
-            let snapshots = recovery_snapshots(
-                engine,
-                Vec::from([SyncSnapshotRequest { table, row }]),
-                max_bytes.saturating_sub(used_bytes),
-                scope,
-            )
-            .await?;
-            for snapshot in snapshots {
-                used_bytes = account_engine_payload(
-                    used_bytes,
-                    state_unit_payload_size(&snapshot),
-                    max_bytes,
-                )?;
-                outbound.snapshots.push(snapshot);
-            }
+            snapshot_requests.push(SyncSnapshotRequest { table, row });
         }
     }
+    outbound.snapshots = recovery_snapshots(
+        engine,
+        snapshot_requests,
+        max_bytes.saturating_sub(used_bytes),
+        scope,
+    )
+    .await?;
     outbound.snapshots.sort_unstable_by(|left, right| {
         let (
             SyncKey::Row {
@@ -1916,9 +1899,10 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    let mut used_bytes = 0;
-    let mut snapshots = Vec::new();
-    for request in requests {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    for request in &requests {
         if scope.is_some_and(|scope| {
             !scope.permits(&SyncKey::Row {
                 table: request.table.clone(),
@@ -1929,53 +1913,60 @@ where
                 "Recovery request outside table scope",
             ));
         }
-        let state_budget = max_bytes.saturating_sub(used_bytes);
-        let candidate_tables = scope.and_then(TableScope::candidate_tables);
-        let (snapshot, view) = engine
-            .read_transaction(|codec, transaction| {
-                Box::pin(async move {
+    }
+    let candidate_tables = scope.and_then(TableScope::candidate_tables);
+    let (snapshots, view) = engine
+        .read_transaction(|codec, transaction| {
+            Box::pin(async move {
+                let mut used_bytes = 0;
+                let mut snapshots = Vec::new();
+                for request in requests {
                     let state = codec
-                        .export_state(transaction, &request.table, request.row, state_budget)
+                        .export_state(
+                            transaction,
+                            &request.table,
+                            request.row,
+                            max_bytes.saturating_sub(used_bytes),
+                        )
                         .await?
                         .unwrap_or_default();
                     let metadata = codec
                         .export_metadata(transaction, &request.table, request.row)
                         .await?;
-                    let snapshot = if state.is_empty() && metadata.is_empty() {
-                        None
-                    } else {
-                        Some(SyncStateUnit::new(
+                    if !state.is_empty() || !metadata.is_empty() {
+                        let snapshot = SyncStateUnit::new(
                             SyncKey::Row {
                                 table: request.table,
                                 row: request.row,
                             },
                             state,
                             metadata,
-                        ))
-                    };
-                    let candidates = snapshot.iter().map(|unit| unit.key.clone()).collect();
-                    let view = crate::candidate::read_candidate_view(
-                        codec,
-                        transaction,
-                        candidates,
-                        crate::SyncValidationDirection::Outgoing,
-                        candidate_tables,
-                    )
-                    .await?;
-                    Ok((snapshot, view))
-                })
+                        );
+                        used_bytes = account_engine_payload(
+                            used_bytes,
+                            state_unit_payload_size(&snapshot),
+                            max_bytes,
+                        )?;
+                        snapshots.push(snapshot);
+                    }
+                }
+                let candidates = snapshots.iter().map(|unit| unit.key.clone()).collect();
+                let view = crate::candidate::read_candidate_view(
+                    codec,
+                    transaction,
+                    candidates,
+                    crate::SyncValidationDirection::Outgoing,
+                    candidate_tables,
+                )
+                .await?;
+                Ok((snapshots, view))
             })
-            .await?;
-        if let Some(scope) = scope {
-            scope.validate_candidates(&view)?;
-        }
-        if let Some(snapshot) = snapshot {
-            if let Some(scope) = scope {
-                scope.clone().validate(engine, &snapshot).await?;
-            }
-            used_bytes =
-                account_engine_payload(used_bytes, state_unit_payload_size(&snapshot), max_bytes)?;
-            snapshots.push(snapshot);
+        })
+        .await?;
+    if let Some(scope) = scope {
+        scope.validate_candidates(&view)?;
+        for snapshot in &snapshots {
+            scope.clone().validate(engine, snapshot).await?;
         }
     }
     Ok(snapshots)

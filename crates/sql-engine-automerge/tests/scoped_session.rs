@@ -1,5 +1,12 @@
 use core::fmt;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use engine::{Engine, InMemoryKernel};
@@ -471,6 +478,132 @@ async fn exchange_with_directions(
         injected.get(),
     )
 }
+#[test]
+fn outgoing_snapshot_batch_observes_candidate_tables_once() {
+    block_on(async {
+        let source = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        let target = Engine::new(InMemoryKernel::new(), AutomergeRowCodec::new());
+        for database in [&source, &target] {
+            database
+                .translate_and_execute(
+                    "CREATE TABLE people (id UUID PRIMARY KEY, name TEXT); CREATE TABLE roles (id UUID PRIMARY KEY, name TEXT)",
+                    &SqlTranslator,
+                )
+                .await
+                .expect("matching public schemas");
+        }
+        for table in ["people", "roles"] {
+            for index in 0..3 {
+                source
+                    .translate_and_execute(
+                        &format!(
+                            "INSERT INTO {table} VALUES (CAST('{}' AS UUID), 'row-{index}')",
+                            uuid::Uuid::now_v7()
+                        ),
+                        &SqlTranslator,
+                    )
+                    .await
+                    .expect("source public rows");
+            }
+        }
+        let (send_left, receive_right) = mpsc::unbounded();
+        let (send_right, receive_left) = mpsc::unbounded();
+        let mut left = Channel {
+            sender: send_left,
+            receiver: receive_left,
+            attack: 255,
+            injected: Rc::new(Cell::new(false)),
+            mutation: None,
+            advertised_changes: Vec::new(),
+            receive_only: false,
+            done_count: 0,
+        };
+        let mut right = Channel {
+            sender: send_right,
+            receiver: receive_right,
+            attack: 255,
+            injected: Rc::new(Cell::new(false)),
+            mutation: None,
+            advertised_changes: Vec::new(),
+            receive_only: true,
+            done_count: 0,
+        };
+        let source_config = SessionConfig {
+            direction: SyncDirection::SendOnly,
+            ..SessionConfig::default()
+        };
+        let target_config = SessionConfig {
+            direction: SyncDirection::ReceiveOnly,
+            ..SessionConfig::default()
+        };
+        let stages = MemorySyncStageFactory::new(source_config.max_session_bytes);
+        let observations = Arc::new(AtomicUsize::new(0));
+        let counted = observations.clone();
+        let (sent, received) = futures::join!(
+            async {
+                let result = synchronize_tables_with_stage_factory_candidate_validated_checked(
+                    &source,
+                    &mut left,
+                    &source_config,
+                    SyncRole::Responder,
+                    &stages,
+                    &["people", "roles"],
+                    |_, _, _| Ok(()),
+                    move |view| {
+                        assert_eq!(view.direction, SyncValidationDirection::Outgoing);
+                        assert_eq!(
+                            view.tables.len(),
+                            2,
+                            "every observation retains full selected-table evidence"
+                        );
+                        assert!(view.tables.iter().all(|table| table.rows.len() == 3));
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                    || async { Ok(()) },
+                )
+                .await;
+                drop(left);
+                result
+            },
+            async {
+                let result = synchronize_tables_with_stage_factory_candidate_validated_checked(
+                    &target,
+                    &mut right,
+                    &target_config,
+                    SyncRole::Initiator,
+                    &stages,
+                    &["people", "roles"],
+                    |_, _, _| Ok(()),
+                    |_| Ok(()),
+                    || async { Ok(()) },
+                )
+                .await;
+                drop(right);
+                result
+            },
+        );
+        sent.expect("authorized source snapshot batch");
+        received.expect("validated destination import");
+        for table in ["people", "roles"] {
+            assert_eq!(
+                target
+                    .translate_and_execute(&format!("SELECT * FROM {table}"), &SqlTranslator)
+                    .await
+                    .expect("imported rows")[0]
+                    .rows
+                    .len(),
+                3
+            );
+        }
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            2,
+            "one outgoing preflight and one snapshot-batch candidate view, not one full view per row"
+        );
+    });
+}
+
 #[test]
 fn directional_reverse_payloads_requests_and_mismatches_fail_closed_in_both_roles() {
     block_on(async {
