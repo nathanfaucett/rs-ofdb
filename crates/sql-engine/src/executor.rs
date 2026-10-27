@@ -45,6 +45,12 @@ use crate::{
     },
 };
 
+fn is_read_only(statements: &[query::Statement]) -> bool {
+    statements
+        .iter()
+        .all(|statement| matches!(statement, query::Statement::Query(Query::Select(_))))
+}
+
 pub async fn execute_statement<K, R>(
     engine: &Engine<K, R>,
     statements: Vec<query::Statement>,
@@ -53,6 +59,7 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
+    let read_only = is_read_only(&statements);
     let mut transaction = engine.kernel.transaction().await?;
     let mut changes = Vec::new();
     match Box::pin(execute_in_transaction(
@@ -64,7 +71,11 @@ where
     .await
     {
         Ok(results) => {
-            transaction.commit().await?;
+            if read_only {
+                transaction.rollback().await?;
+            } else {
+                transaction.commit().await?;
+            }
             Ok(results)
         }
         Err(error) => {
@@ -84,9 +95,7 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
-    let read_only = statements
-        .iter()
-        .all(|statement| matches!(statement, query::Statement::Query(Query::Select(_))));
+    let read_only = is_read_only(&statements);
     if !read_only {
         ensure_schema(transaction, engine.reconciler.as_ref()).await?;
     }
