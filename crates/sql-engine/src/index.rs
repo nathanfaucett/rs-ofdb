@@ -5,7 +5,7 @@ use alloc::{
 };
 
 use futures::{StreamExt, pin_mut};
-use schema::IndexSchema;
+use schema::{IndexSchema, TableSchema};
 use value::{Row, Value};
 
 use crate::{
@@ -18,6 +18,7 @@ pub(crate) async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
+    validated_schema: Option<&TableSchema>,
 ) -> EngineResult<Vec<(String, IndexSchema)>> {
     let entries = codec.scan_rows(transaction, ENGINE_INDICES_STORAGE, None);
     pin_mut!(entries);
@@ -34,7 +35,7 @@ pub(crate) async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     names.dedup();
     let mut result = Vec::new();
     for name in names {
-        if let Some((_, schema)) = index_schema(transaction, codec, &name).await?
+        if let Some((_, schema)) = index_schema(transaction, codec, &name, validated_schema).await?
             && schema.table_name == table
         {
             result.push((index_storage(&schema.name).to_string(), schema));
@@ -70,7 +71,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     values: &Row,
 ) -> EngineResult<Option<(uuid::Uuid, Row)>> {
-    let (_, schema) = index_schema(transaction, codec, name)
+    let (_, schema) = index_schema(transaction, codec, name, None)
         .await?
         .ok_or(EngineError::InvalidQuery("Index not found"))?;
     if values.values.len() != schema.column_indices.len() {
@@ -105,7 +106,8 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     enforce_unique: bool,
 ) -> EngineResult<()> {
     let indexes =
-        crate::executor::execution_stage(|| indexes_for_table(transaction, codec, table)).await?;
+        crate::executor::execution_stage(|| indexes_for_table(transaction, codec, table, None))
+            .await?;
     for (name, _) in &indexes {
         transaction.ensure_table(name).await?;
         let stale = {
@@ -224,7 +226,7 @@ pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
             ));
         }
     }
-    for (name, index) in indexes_for_table(transaction, codec, table).await? {
+    for (name, index) in indexes_for_table(transaction, codec, table, Some(&schema)).await? {
         transaction.ensure_table(&name).await?;
         if let Some(row) = old {
             transaction
