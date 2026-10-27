@@ -901,6 +901,10 @@ impl CatalogSnapshot {
         if let Some(table) = catalog_table_for_storage(name) {
             return Ok(table.schema());
         }
+        self.user_table_schema(name)
+    }
+
+    fn user_table_schema(&self, name: &str) -> EngineResult<TableSchema> {
         let table_id = self.table_id(name)?;
         let fields = self
             .fields
@@ -915,6 +919,26 @@ impl CatalogSnapshot {
                 .collect(),
         })
     }
+}
+
+pub(crate) async fn cached_table_schema<'a, T: KernelTransaction, R: RowCodec<T>>(
+    transaction: &T,
+    codec: &R,
+    name: &str,
+    catalog: &'a mut Option<CatalogSnapshot>,
+) -> EngineResult<(TableSchema, &'a CatalogSnapshot)> {
+    let schema = if let Some(catalog) = catalog.as_ref() {
+        catalog.user_table_schema(name)?
+    } else {
+        let (table_id, tables) = lookup_table_id_with_rows(transaction, codec, name).await?;
+        let (schema, fields) = table_schema_with_fields(transaction, codec, name, table_id).await?;
+        *catalog = Some(CatalogSnapshot { tables, fields });
+        schema
+    };
+    Ok((
+        schema,
+        catalog.as_ref().expect("validated catalog was loaded"),
+    ))
 }
 
 async fn read_columns<T: KernelTransaction, R: RowCodec<T>>(

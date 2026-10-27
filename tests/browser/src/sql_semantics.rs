@@ -107,7 +107,7 @@ async fn sql_semantics_multicall_snapshots_rollback_drop_and_aborted_state() {
         tx.commit().await.expect_err("stale writer").kind,
         ErrorKind::Storage
     );
-    let snapshot = client.transaction().await.expect("read only snapshot");
+    let mut snapshot = client.transaction().await.expect("read only snapshot");
     other
         .execute_sql(
             "UPDATE items SET label = 'committed' WHERE id = 'one'",
@@ -494,7 +494,7 @@ async fn inspect_history(database: &Database, resolved: bool) {
             .1;
         assert_eq!(allowed.len(), 2);
         assert!(allowed.contains(&Value::Bool(true)) && allowed.contains(&Value::Bool(false)));
-        let tx = client
+        let mut tx = client
             .transaction()
             .await
             .expect("transaction history snapshot");

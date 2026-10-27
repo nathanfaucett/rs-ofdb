@@ -23,7 +23,7 @@ fn check_conflicts_on_two_mib_worker(left: Database, right: Database) {
         .build()
         .expect("two MiB worker runtime");
     // Sync fixture construction is separate from the two MiB conflict API worker under test.
-    let (runtime, left, transaction) = std::thread::Builder::new()
+    let (runtime, left, mut transaction) = std::thread::Builder::new()
         .name("conflict-fixture".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
@@ -41,10 +41,10 @@ fn check_conflicts_on_two_mib_worker(left: Database, right: Database) {
             let client = left.client();
             let row = key();
             let names = transaction.row_conflicts("security", &row);
-            let concurrent = transaction.row_conflict_values("security", &row);
             assert!(core::mem::size_of_val(&names) < 4096);
-            assert!(core::mem::size_of_val(&concurrent) < 4096);
             let snapshot_names = names.await.expect("snapshot names on worker");
+            let concurrent = transaction.row_conflict_values("security", &row);
+            assert!(core::mem::size_of_val(&concurrent) < 4096);
             let snapshot_values = concurrent.await.expect("snapshot values on worker");
             transaction.rollback().await.expect("snapshot rollback");
             let values = client
@@ -159,7 +159,7 @@ fn memory_conflict_operations_and_transaction_reads_work_without_runtime() {
                 "owner_subject"
             ]
         );
-        let transaction = client.transaction().await.expect("memory transaction");
+        let mut transaction = client.transaction().await.expect("memory transaction");
         assert_eq!(
             transaction
                 .row_conflict_values("security", &row)

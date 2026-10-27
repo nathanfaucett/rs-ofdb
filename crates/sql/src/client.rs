@@ -98,7 +98,7 @@ impl Transaction {
     /// Aborted transactions fail on either backend.
     #[inline(never)]
     pub fn row_conflicts<'a>(
-        &'a self,
+        &'a mut self,
         table: &'a str,
         key: &'a Row,
     ) -> impl Future<Output = Result<Vec<String>, QueryError>> + platform::MaybeSend + 'a {
@@ -110,7 +110,7 @@ impl Transaction {
             )))]
             let _ = (table, key);
             Self::run(self.request_deadline, async {
-                match &self.backend {
+                match &mut self.backend {
                     #[cfg(any(
                         feature = "redb",
                         feature = "in-memory",
