@@ -11,7 +11,7 @@ use schema::{ColumnSchema, ColumnSchemaIndex, IndexSchema, TableSchema};
 use uuid::Uuid;
 use value::{Row, Value, ValueType};
 
-use crate::{EngineError, EngineResult, KernelTransaction, RowCodec};
+use crate::{EngineError, EngineResult, KernelTransaction, RowCodec, executor::execution_stage};
 
 pub const ENGINE_TABLES_STORAGE: &str = "tables";
 pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "table_fields";
@@ -272,7 +272,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
     transaction: &mut T,
     codec: &R,
 ) -> EngineResult<()> {
-    validate_storage_namespace(transaction, codec).await?;
+    execution_stage(|| validate_storage_namespace(transaction, codec)).await?;
     let states = {
         let rows = codec.scan_row_states(transaction, ENGINE_TABLES_STORAGE);
         pin_mut!(rows);
@@ -306,7 +306,8 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
     }
     for (id, name, _) in &states {
         if codec.table_definition_was_dropped(transaction, id).await? {
-            delete_dropped_table_dependents(transaction, codec, name, id).await?;
+            execution_stage(|| delete_dropped_table_dependents(transaction, codec, name, id))
+                .await?;
         }
     }
     let mut winners: Vec<(String, Uuid)> = Vec::new();
@@ -344,14 +345,16 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
     let mut states = states;
     for (id, index, deleted) in &mut states {
         if *deleted {
-            delete_index_dependents(transaction, codec, id, &index.name, false).await?;
+            execution_stage(|| delete_index_dependents(transaction, codec, id, &index.name, false))
+                .await?;
             continue;
         }
         if codec
             .table_definition_was_dropped(transaction, &index.table_id)
             .await?
         {
-            delete_index_dependents(transaction, codec, id, &index.name, true).await?;
+            execution_stage(|| delete_index_dependents(transaction, codec, id, &index.name, true))
+                .await?;
             *deleted = true;
         }
     }
@@ -359,13 +362,17 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
         if *deleted {
             continue;
         }
-        let (winner, value) = active_index(transaction, codec, &index.name)
+        let (winner, value) = execution_stage(|| active_index(transaction, codec, &index.name))
             .await?
             .ok_or(EngineError::InvalidQuery("Index not found"))?;
         if winner != *id {
             continue;
         }
-        let invalid = match index_schema_for(transaction, codec, &index.name, winner, value).await {
+        let invalid = match execution_stage(|| {
+            index_schema_for(transaction, codec, &index.name, winner, value)
+        })
+        .await
+        {
             Ok(_) => false,
             Err(EngineError::InvalidQuery("Index column not found")) => true,
             Err(error) => return Err(error),
@@ -395,7 +402,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
                 .delete_row(transaction, ENGINE_INDEX_FIELDS_STORAGE, &field)
                 .await?;
         }
-        drop_inactive_index_storage(transaction, codec, &index.name).await?;
+        execution_stage(|| drop_inactive_index_storage(transaction, codec, &index.name)).await?;
         *deleted = true;
     }
     let mut winners: Vec<(String, Uuid)> = Vec::new();
@@ -415,16 +422,19 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
             .expect("index name has a winning row")
             .1;
         if id != winner {
-            delete_index_dependents(transaction, codec, &id, &index.name, !deleted).await?;
+            execution_stage(|| {
+                delete_index_dependents(transaction, codec, &id, &index.name, !deleted)
+            })
+            .await?;
         }
     }
-    for table in active_table_names(transaction, codec).await? {
-        let schema = table_schema(transaction, codec, &table).await?;
+    for table in execution_stage(|| active_table_names(transaction, codec)).await? {
+        let schema = execution_stage(|| table_schema(transaction, codec, &table)).await?;
         schema
             .validate_primary_key()
             .map_err(EngineError::InvalidQuery)?;
         if crate::executor::uuid_primary_key(&schema).is_none()
-            && !crate::index::indexes_for_table(transaction, codec, &table)
+            && !execution_stage(|| crate::index::indexes_for_table(transaction, codec, &table))
                 .await?
                 .iter()
                 .any(|(_, index)| crate::executor::is_primary_key_index(&schema, index))
@@ -1015,7 +1025,7 @@ pub(crate) async fn table_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     }
     Ok(TableSchema {
         name,
-        columns: columns(transaction, codec, table)
+        columns: execution_stage(|| columns(transaction, codec, table))
             .await?
             .into_iter()
             .map(|(_, column)| column)
