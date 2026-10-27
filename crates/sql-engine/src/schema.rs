@@ -1,4 +1,5 @@
 use alloc::{
+    borrow::Cow,
     collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
@@ -369,7 +370,7 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
             continue;
         }
         let invalid = match execution_stage(|| {
-            index_schema_for(transaction, codec, &index.name, winner, value)
+            index_schema_for(transaction, codec, &index.name, winner, value, None)
         })
         .await
         {
@@ -434,10 +435,12 @@ pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>
             .validate_primary_key()
             .map_err(EngineError::InvalidQuery)?;
         if crate::executor::uuid_primary_key(&schema).is_none()
-            && !execution_stage(|| crate::index::indexes_for_table(transaction, codec, &table))
-                .await?
-                .iter()
-                .any(|(_, index)| crate::executor::is_primary_key_index(&schema, index))
+            && !execution_stage(|| {
+                crate::index::indexes_for_table(transaction, codec, &table, None)
+            })
+            .await?
+            .iter()
+            .any(|(_, index)| crate::executor::is_primary_key_index(&schema, index))
         {
             return Err(EngineError::InvalidQuery(
                 "Table has no unique primary key index",
@@ -1054,11 +1057,12 @@ pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
+    validated_schema: Option<&TableSchema>,
 ) -> EngineResult<Option<(Uuid, IndexSchema)>> {
     let Some((id, value)) = active_index(transaction, codec, name).await? else {
         return Ok(None);
     };
-    let schema = index_schema_for(transaction, codec, name, id, value).await?;
+    let schema = index_schema_for(transaction, codec, name, id, value, validated_schema).await?;
     Ok(Some((id, schema)))
 }
 
@@ -1068,6 +1072,7 @@ async fn index_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     id: Uuid,
     value: Row,
+    validated_schema: Option<&TableSchema>,
 ) -> EngineResult<IndexSchema> {
     let index = IndexRow::try_from(&value)?;
     let table = index.table;
@@ -1100,13 +1105,23 @@ async fn index_schema_for<T: KernelTransaction, R: RowCodec<T>>(
         }
         active_fields.push((position, column));
     }
-    let schema_columns = columns(transaction, codec, &table).await?;
+    let schema_columns: Cow<'_, [ColumnSchema]> =
+        match validated_schema.filter(|schema| schema.name == table) {
+            Some(schema) => Cow::Borrowed(schema.columns.as_slice()),
+            None => Cow::Owned(
+                columns(transaction, codec, &table)
+                    .await?
+                    .into_iter()
+                    .map(|(_, column)| column)
+                    .collect(),
+            ),
+        };
     let column_indices = active_fields
         .into_iter()
         .map(|(_, column)| {
             schema_columns
                 .iter()
-                .position(|(name, _)| *name == column)
+                .position(|schema_column| schema_column.name == column)
                 .map(|position| position as ColumnSchemaIndex)
                 .ok_or(EngineError::InvalidQuery("Index column not found"))
         })

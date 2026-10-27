@@ -273,7 +273,7 @@ where
 
     pub async fn index_schema(&self, name: &str) -> EngineResult<IndexSchema> {
         let transaction = self.kernel.transaction().await?;
-        let schema = index_schema(&transaction, self.reconciler.as_ref(), name).await?;
+        let schema = index_schema(&transaction, self.reconciler.as_ref(), name, None).await?;
         transaction.rollback().await?;
         schema
             .map(|(_, schema)| schema)

@@ -339,7 +339,7 @@ where
             schema,
             if_not_exists,
         } => {
-            if crate::schema::index_schema(transaction, codec, &schema.name)
+            if crate::schema::index_schema(transaction, codec, &schema.name, None)
                 .await?
                 .is_some()
             {
@@ -408,7 +408,7 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    if crate::schema::index_schema(transaction, codec, &index_name)
+    if crate::schema::index_schema(transaction, codec, &index_name, None)
         .await?
         .is_some()
     {
@@ -656,7 +656,8 @@ where
     T: KernelTransaction,
     R: RowCodec<T>,
 {
-    let Some((id, index)) = crate::schema::index_schema(transaction, codec, name).await? else {
+    let Some((id, index)) = crate::schema::index_schema(transaction, codec, name, None).await?
+    else {
         return if if_exists {
             Ok(())
         } else {
@@ -666,7 +667,7 @@ where
     let table = table_schema(transaction, codec, &index.table_name).await?;
     if uuid_primary_key(&table).is_none()
         && is_primary_key_index(&table, &index)
-        && !crate::index::indexes_for_table(transaction, codec, &table.name)
+        && !crate::index::indexes_for_table(transaction, codec, &table.name, None)
             .await?
             .iter()
             .any(|(_, other)| other.name != index.name && is_primary_key_index(&table, other))
@@ -723,7 +724,7 @@ where
     R: RowCodec<T>,
 {
     let table_schema = table_schema(transaction, codec, &schema.table_name).await?;
-    if crate::schema::index_schema(transaction, codec, &schema.name)
+    if crate::schema::index_schema(transaction, codec, &schema.name, None)
         .await?
         .is_some()
     {
@@ -1180,7 +1181,7 @@ where
                     .map(|row| (id, row))
             } else {
                 let indexes =
-                    crate::index::indexes_for_table(transaction, reconciler, &table).await?;
+                    crate::index::indexes_for_table(transaction, reconciler, &table, None).await?;
                 let (_, index) = indexes
                     .iter()
                     .find(|(_, index)| is_primary_key_index(&schema, index))
@@ -2472,7 +2473,7 @@ async fn key_row_id<T: KernelTransaction, R: RowCodec<T>>(
             return Err(EngineError::InvalidQuery("Primary key has the wrong type"));
         }
     }
-    let indexes = crate::index::indexes_for_table(transaction, codec, &schema.name).await?;
+    let indexes = crate::index::indexes_for_table(transaction, codec, &schema.name, None).await?;
     let (_, index) = indexes
         .iter()
         .find(|(_, index)| is_primary_key_index(schema, index))

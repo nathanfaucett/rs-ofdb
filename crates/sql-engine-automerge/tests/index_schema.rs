@@ -4,11 +4,12 @@ use std::sync::{
 };
 
 use engine::{
-    ENGINE_INDEX_FIELDS_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, Engine, EngineError, EngineResult,
-    InMemoryKernel, Kernel, KernelTransaction, RowCatalog, RowCodec,
+    ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE, Engine,
+    EngineError, EngineResult, InMemoryKernel, Kernel, KernelTransaction, RowCatalog, RowCodec,
 };
 use engine_automerge::AutomergeRowCodec;
 use futures::{Stream, StreamExt, executor::block_on, pin_mut};
+use query::{Query, QueryInsert, Statement};
 use sql_translator::SqlTranslator;
 use uuid::Uuid;
 use value::{Row, Value};
@@ -147,6 +148,206 @@ fn index_schema_reads_known_field_ids_without_rescanning_the_catalog() {
 }
 
 #[test]
+fn insert_reuses_current_table_schema_for_each_additional_index() {
+    block_on(async {
+        let mut costs = Vec::new();
+        for indexed in [false, true] {
+            let (database, _, reads) = fixture().await;
+            if indexed {
+                database
+                    .translate_and_execute(
+                        "CREATE INDEX items_label ON items (label); \
+                         CREATE INDEX items_amount ON items (amount); \
+                         CREATE INDEX items_label_amount ON items (label, amount)",
+                        &SqlTranslator,
+                    )
+                    .await
+                    .expect("three additional non-unique indexes");
+            }
+            let row = Row::new(vec![
+                Value::Uuid(Uuid::now_v7()),
+                Value::from("inserted"),
+                Value::Integer(7),
+            ]);
+            reads.scans.store(0, Ordering::Relaxed);
+            database
+                .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                    table: "items".into(),
+                    row: row.clone(),
+                    returning: None,
+                }))])
+                .await
+                .expect("public INSERT maintains current indexes");
+            let scans = reads.scans.load(Ordering::Relaxed);
+            assert!(
+                scans > 0,
+                "INSERT still validates the complete current catalog"
+            );
+            costs.push(scans);
+            let mut lookups = vec![(
+                "items_order",
+                Row::new(vec![Value::Integer(7), Value::from("inserted")]),
+            )];
+            if indexed {
+                lookups.extend([
+                    ("items_label", Row::new(vec![Value::from("inserted")])),
+                    ("items_amount", Row::new(vec![Value::Integer(7)])),
+                    (
+                        "items_label_amount",
+                        Row::new(vec![Value::from("inserted"), Value::Integer(7)]),
+                    ),
+                ]);
+            }
+            for (name, key) in lookups {
+                assert_eq!(
+                    database
+                        .index_lookup(name, &key)
+                        .await
+                        .expect("current index lookup"),
+                    Some(row.clone()),
+                    "{name} points to the inserted row with the correct field order"
+                );
+            }
+        }
+        assert_eq!(
+            costs[1] - costs[0],
+            0,
+            "three additional indexes must not reconstruct the already-validated field catalog: {costs:?}"
+        );
+    });
+}
+
+#[test]
+fn index_updates_use_fresh_schema_after_ddl_in_the_same_batch() {
+    block_on(async {
+        let (database, _, _) = fixture().await;
+        let initial = Uuid::now_v7();
+        database
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "items".into(),
+                row: Row::new(vec![
+                    Value::Uuid(initial),
+                    Value::from("before"),
+                    Value::Integer(1),
+                ]),
+                returning: None,
+            }))])
+            .await
+            .expect("earlier operation uses its current schema");
+        let later = Uuid::now_v7();
+        database
+            .translate_and_execute(
+                &format!(
+                    "ALTER TABLE items ADD COLUMN fresh TEXT DEFAULT 'current'; \
+                     CREATE INDEX items_fresh ON items (fresh, label); \
+                     INSERT INTO items VALUES (CAST('{later}' AS UUID), 'after', 2, 'later')"
+                ),
+                &SqlTranslator,
+            )
+            .await
+            .expect("mixed DDL/write batch observes each operation's current schema");
+        for (id, label, amount, fresh) in [
+            (initial, "before", 1, "current"),
+            (later, "after", 2, "later"),
+        ] {
+            assert_eq!(
+                database
+                    .index_lookup(
+                        "items_fresh",
+                        &Row::new(vec![Value::from(fresh), Value::from(label)])
+                    )
+                    .await
+                    .expect("index uses fresh field positions and defaults"),
+                Some(Row::new(vec![
+                    Value::Uuid(id),
+                    Value::from(label),
+                    Value::Integer(amount),
+                    Value::from(fresh)
+                ]))
+            );
+        }
+    });
+}
+
+#[test]
+fn index_updates_validate_a_competing_winner_in_its_own_table() {
+    block_on(async {
+        let (database, kernel, _) = fixture().await;
+        let codec = AutomergeRowCodec::new();
+        let mut transaction = kernel.transaction().await.expect("competing index fixture");
+        let (column_id, table_id) = {
+            let fields = codec.scan_row_states(&transaction, ENGINE_TABLE_FIELDS_STORAGE);
+            pin_mut!(fields);
+            let mut selected = None;
+            while let Some(field) = fields.next().await {
+                let (id, row, _) = field.expect("live field");
+                if row.values[1] == Value::from("unrelated") && row.values[2] == Value::from("a") {
+                    selected = Some((id, row.values[0].clone()));
+                }
+            }
+            selected.expect("winner's exact field identity")
+        };
+        let winner = Uuid::now_v7();
+        codec
+            .put_row(
+                &mut transaction,
+                ENGINE_INDICES_STORAGE,
+                winner,
+                Row::new(vec![
+                    Value::from("items_order"),
+                    Value::from("unrelated"),
+                    Value::Bool(false),
+                    table_id,
+                ]),
+            )
+            .await
+            .expect("later same-name index belongs to a different table");
+        codec
+            .put_row(
+                &mut transaction,
+                ENGINE_INDEX_FIELDS_STORAGE,
+                Uuid::now_v7(),
+                Row::new(vec![
+                    Value::Uuid(winner),
+                    Value::Integer(0),
+                    Value::from("a"),
+                    Value::Uuid(column_id),
+                ]),
+            )
+            .await
+            .expect("winner refers to a column absent from items");
+        transaction
+            .commit()
+            .await
+            .expect("commit competing definition");
+        database
+            .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                table: "items".into(),
+                row: Row::new(vec![
+                    Value::Uuid(Uuid::now_v7()),
+                    Value::from("inserted"),
+                    Value::Integer(7),
+                ]),
+                returning: None,
+            }))])
+            .await
+            .expect("items schema must not be reused to validate the other table's winner");
+        let index = database
+            .index_schema("items_order")
+            .await
+            .expect("current winning index");
+        assert_eq!(index.table_name, "unrelated");
+        assert_eq!(index.column_indices, vec![1]);
+        assert!(!index.unique);
+        let rows = database
+            .translate_and_execute("SELECT * FROM items", &SqlTranslator)
+            .await
+            .expect("inserted item");
+        assert_eq!(rows[0].rows.len(), 1);
+    });
+}
+
+#[test]
 fn index_schema_rechecks_exact_field_identity_and_complete_current_catalog() {
     block_on(async {
         for mutation in [
@@ -242,6 +443,26 @@ fn index_schema_rechecks_exact_field_identity_and_complete_current_catalog() {
                 .index_schema("items_order")
                 .await
                 .expect_err("fresh index schema must reject changed field evidence");
+            let mut values = vec![Value::Uuid(Uuid::now_v7()), Value::from("new row")];
+            if !["deleted", "table"].contains(&mutation) {
+                values.push(Value::Integer(7));
+            }
+            let insertion_error = database
+                .execute(vec![Statement::Query(Query::Insert(QueryInsert {
+                    table: "items".into(),
+                    row: Row::new(values),
+                    returning: None,
+                }))])
+                .await
+                .expect_err("INSERT must retain current field identity and full catalog checks");
+            if mutation == "table" {
+                assert!(matches!(
+                    insertion_error,
+                    EngineError::InvalidQuery("Row has the wrong column count")
+                ));
+            } else {
+                assert_eq!(insertion_error.to_string(), error.to_string(), "{mutation}");
+            }
             if ["malformed", "unrelated"].contains(&mutation) {
                 assert!(
                     matches!(error, EngineError::Custom(message) if message == "Invalid column table identity"),
