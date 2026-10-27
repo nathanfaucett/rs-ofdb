@@ -631,7 +631,7 @@ fn conflict_apis_resolve_user_primary_keys_including_transaction_reads() {
             assert_eq!(values[0].1.len(), 2);
             assert!(values[0].1.contains(&Value::from("left")));
             assert!(values[0].1.contains(&Value::from("right")));
-            let transaction = left.transaction().await.expect("read transaction");
+            let mut transaction = left.transaction().await.expect("read transaction");
             assert_eq!(
                 transaction
                     .row_conflicts("items", &key)

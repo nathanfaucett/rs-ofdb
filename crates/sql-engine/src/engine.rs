@@ -27,7 +27,7 @@ use crate::{
     },
     index::lookup as index_lookup,
     kernel::{Kernel, KernelTransaction},
-    schema::index_schema,
+    schema::{CatalogSnapshot, index_schema},
 };
 
 #[derive(Error, Debug)]
@@ -126,6 +126,7 @@ where
     engine: Engine<K, R>,
     transaction: Option<K::Transaction>,
     changes: Vec<crate::Change>,
+    catalog: Option<CatalogSnapshot>,
     failed: bool,
 }
 
@@ -135,7 +136,7 @@ where
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     /// Uses the same user primary-key tuple as [`Engine::row_conflicts`].
-    pub async fn row_conflicts(&self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
+    pub async fn row_conflicts(&mut self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
         if self.failed {
             return Err(EngineError::InvalidQuery("Transaction is aborted"));
         }
@@ -143,7 +144,14 @@ where
             .transaction
             .as_ref()
             .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
-        conflicted_row_columns(transaction, self.engine.reconciler.as_ref(), table, key).await
+        conflicted_row_columns(
+            transaction,
+            self.engine.reconciler.as_ref(),
+            table,
+            key,
+            &mut self.catalog,
+        )
+        .await
     }
 
     /// Uses user primary-key values in table-column order, as in [`Engine::row_conflicts`].
@@ -175,6 +183,7 @@ where
             transaction,
             statements,
             &mut self.changes,
+            &mut self.catalog,
         ))
         .await
         {
@@ -249,6 +258,7 @@ where
             engine: self.clone(),
             transaction: Some(self.kernel.transaction().await?),
             changes: Vec::new(),
+            catalog: None,
             failed: false,
         })
     }
@@ -370,8 +380,14 @@ where
     /// Missing keys return no conflicts; internal row identities are not accepted as natural keys.
     pub async fn row_conflicts(&self, table_name: &str, key: &Row) -> EngineResult<Vec<String>> {
         let transaction = self.kernel.transaction().await?;
-        let result =
-            conflicted_row_columns(&transaction, self.reconciler.as_ref(), table_name, key).await?;
+        let result = conflicted_row_columns(
+            &transaction,
+            self.reconciler.as_ref(),
+            table_name,
+            key,
+            &mut None,
+        )
+        .await?;
         transaction.rollback().await?;
         Ok(result)
     }
@@ -384,9 +400,14 @@ where
         keys: &[Row],
     ) -> EngineResult<Vec<Vec<String>>> {
         let transaction = self.kernel.transaction().await?;
-        let result =
-            conflicted_rows_columns(&transaction, self.reconciler.as_ref(), table_name, keys)
-                .await?;
+        let result = conflicted_rows_columns(
+            &transaction,
+            self.reconciler.as_ref(),
+            table_name,
+            keys,
+            &mut None,
+        )
+        .await?;
         transaction.rollback().await?;
         Ok(result)
     }

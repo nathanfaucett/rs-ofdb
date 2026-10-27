@@ -100,11 +100,11 @@ pub(crate) enum EmbeddedTransaction {
 }
 
 impl EmbeddedTransaction {
-    pub(crate) async fn row_conflicts(&self, table: &str, key: &Row) -> SqlResult<Vec<String>> {
+    pub(crate) async fn row_conflicts(&mut self, table: &str, key: &Row) -> SqlResult<Vec<String>> {
         match self {
             #[cfg(feature = "redb")]
             Self::File(transaction) => {
-                let transaction = transaction.read().await.map_err(native_error)?;
+                let mut transaction = transaction.read().await.map_err(native_error)?;
                 conflict_stage(|| transaction.row_conflicts(table, key))
                     .await
                     .map_err(crate::error::from_engine)

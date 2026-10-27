@@ -38,10 +38,10 @@ use crate::{
     kernel::{Kernel, KernelTransaction},
     schema::{
         CatalogSnapshot, ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE,
-        ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, catalog_table_for_storage, column_id,
-        columns as schema_columns, ensure as ensure_schema, index_storage,
-        largest_schema_name_claim, lookup_table_id, lookup_table_id_with_rows, lookup_table_name,
-        table_schema as schema_table_schema, table_schema_with_fields,
+        ENGINE_TABLE_FIELDS_STORAGE, ENGINE_TABLES_STORAGE, cached_table_schema,
+        catalog_table_for_storage, column_id, columns as schema_columns, ensure as ensure_schema,
+        index_storage, largest_schema_name_claim, lookup_table_id, lookup_table_id_with_rows,
+        lookup_table_name, table_schema as schema_table_schema, table_schema_with_fields,
     },
 };
 
@@ -62,11 +62,13 @@ where
     let read_only = is_read_only(&statements);
     let mut transaction = engine.kernel.transaction().await?;
     let mut changes = Vec::new();
+    let mut catalog = None;
     match Box::pin(execute_in_transaction(
         engine,
         &mut transaction,
         statements,
         &mut changes,
+        &mut catalog,
     ))
     .await
     {
@@ -90,6 +92,7 @@ pub(crate) async fn execute_in_transaction<K, R>(
     transaction: &mut K::Transaction,
     statements: Vec<query::Statement>,
     changes: &mut Vec<Change>,
+    catalog: &mut Option<CatalogSnapshot>,
 ) -> EngineResult<Vec<QueryResult>>
 where
     K: Kernel,
@@ -97,13 +100,13 @@ where
 {
     let read_only = is_read_only(&statements);
     if !read_only {
+        *catalog = None;
         ensure_schema(transaction, engine.reconciler.as_ref()).await?;
     }
-    let mut catalog = None;
     let mut results = Vec::with_capacity(statements.len());
     for statement in statements {
         if !read_only {
-            catalog = None;
+            *catalog = None;
         }
         let result = match statement {
             query::Statement::Query(query) => {
@@ -113,7 +116,7 @@ where
                     engine.timestamp_provider,
                     changes,
                     query,
-                    &mut catalog,
+                    catalog,
                 )
                 .await
             }
@@ -1435,6 +1438,7 @@ pub(crate) async fn row_conflicts<T, R>(
     reconciler: &R,
     table_name: &str,
     key: &Row,
+    catalog: &mut Option<CatalogSnapshot>,
 ) -> EngineResult<Vec<String>>
 where
     T: KernelTransaction,
@@ -1445,6 +1449,7 @@ where
         reconciler,
         table_name,
         core::slice::from_ref(key),
+        catalog,
     )
     .await?
     .pop()
@@ -1456,6 +1461,7 @@ pub(crate) async fn row_conflicts_batch<T, R>(
     reconciler: &R,
     table_name: &str,
     keys: &[Row],
+    catalog: &mut Option<CatalogSnapshot>,
 ) -> EngineResult<Vec<Vec<String>>>
 where
     T: KernelTransaction,
@@ -1464,10 +1470,8 @@ where
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    let (table_id, table_rows) =
-        lookup_table_id_with_rows(transaction, reconciler, table_name).await?;
-    let (schema, table_fields) =
-        table_schema_with_fields(transaction, reconciler, table_name, table_id).await?;
+    let (schema, catalog) =
+        cached_table_schema(transaction, reconciler, table_name, catalog).await?;
     let mut results = Vec::with_capacity(keys.len());
     for key in keys {
         let Some(row) = key_row_id(transaction, reconciler, &schema, key).await? else {
@@ -1475,7 +1479,13 @@ where
             continue;
         };
         let conflicts = reconciler
-            .conflicted_columns(transaction, table_name, &row, &table_rows, &table_fields)
+            .conflicted_columns(
+                transaction,
+                table_name,
+                &row,
+                &catalog.tables,
+                &catalog.fields,
+            )
             .await?;
         results.push(
             conflicts
@@ -1717,15 +1727,10 @@ where
 
     let schema = if let Some(table) = catalog_table_for_storage(&select.from.table) {
         table.schema()
-    } else if let Some(catalog) = catalog.as_ref() {
-        catalog.table_schema(&select.from.table)?
     } else {
-        let (table_id, tables) =
-            lookup_table_id_with_rows(transaction, reconciler, &select.from.table).await?;
-        let (schema, fields) =
-            table_schema_with_fields(transaction, reconciler, &select.from.table, table_id).await?;
-        *catalog = Some(CatalogSnapshot { tables, fields });
-        schema
+        cached_table_schema(transaction, reconciler, &select.from.table, catalog)
+            .await?
+            .0
     };
     let mut projection = projection(&schema, &select.from.table, &select.projection)?;
     for (position, concat) in select.text_concats.iter().enumerate() {

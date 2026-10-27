@@ -97,7 +97,7 @@ async fn remote_client_executes_typed_queries_over_tcp() {
             .is_empty()
     );
 
-    let transaction = client.transaction().await.expect("remote transaction");
+    let mut transaction = client.transaction().await.expect("remote transaction");
     assert!(
         transaction
             .row_conflicts("items", &key)
