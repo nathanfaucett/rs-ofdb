@@ -1030,19 +1030,14 @@ async fn column_reference_is_active<T: KernelTransaction, R: RowCodec<T>>(
     name: &str,
     id: Uuid,
 ) -> EngineResult<bool> {
-    let rows = codec.scan_row_states(transaction, ENGINE_TABLE_FIELDS_STORAGE);
-    pin_mut!(rows);
-    while let Some(entry) = rows.next().await {
-        let (field_id, value, deleted) = entry?;
-        if field_id != id || deleted {
-            continue;
-        }
-        let field = TableFieldRow::try_from(&value)?;
-        if field.table == table && field.name == name {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let Some(value) = codec
+        .get_row(transaction, ENGINE_TABLE_FIELDS_STORAGE, &id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let field = TableFieldRow::try_from(&value)?;
+    Ok(field.table == table && field.name == name)
 }
 
 pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
