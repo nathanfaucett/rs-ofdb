@@ -75,10 +75,47 @@ sync suite includes real capped retry waits totaling about 112 seconds; do not
 replace it with a fake clock and call that browser acceptance.
 
 Each command has its own `timeout` bound, including compilation. GNU timeout sends
-TERM to the process group, escalates to KILL within five seconds, and the recipe
-kills any remaining group descendants after the leader exits. INT/TERM to the
-recipe (or terminal foreground process group) terminates its active group, escalates after one second, records interruption
-and exits nonzero. Children must retain the inherited process group; deliberately
+TERM to the command process group, escalates to KILL within five seconds, and the
+recipe kills any remaining group descendants after the leader exits.
+
+**Supported cancellation is INT or TERM to the process group containing `just`
+and its recipe Bash**, as with terminal foreground Ctrl-C. The recipe trap
+terminates its active command group, escalates to KILL after one second, records
+`interrupted` and exits nonzero. Controlled checks require completion in under
+five seconds, including cleanup of a TERM-resistant descendant. For programmatic
+cancellation, launch in a dedicated group from Bash with job control disabled
+and default signal dispositions restored (background shells can inherit ignored
+SIGINT):
+
+```bash
+set +m
+setsid env --default-signal=INT,TERM just browser-accept all all target/browser-validation/browser 600 &
+validation_pid=$!
+```
+
+Later, in the same shell, cancel the **group**, not only the public `just` PID:
+
+```bash
+kill -INT -- "-$validation_pid"  # or -TERM
+wait "$validation_pid"          # nonzero on cancellation
+```
+
+**PID-only SIGINT is not supported for prompt cancellation.**
+[`just` 1.49.0 deliberately does not relay SIGINT to its children](https://github.com/casey/just/blob/1.49.0/src/signal_handler.rs):
+it assumes the foreground process group also received it. `kill -INT "$validation_pid"`
+therefore does not reach the recipe trap; commands can continue and independent
+checks can still run. Each command's configured timeout and bounded cleanup still
+apply, but the run is not promptly cancelled. A successfully completed command can
+record `passed` even though `just` subsequently exits 130; a failed recipe can
+instead take precedence (the controlled hanging-cell timeout exits 1).
+No `interrupted` record is expected when the recipe never receives INT.
+**Require both a zero public `just` exit status and passing required check records
+for whole-run success**; JSONL records describe individual commands, not the outer
+`just` process. Do not use PID-only INT and infer cancellation or success from logs.
+This limitation is covered through the public recipe with both a hanging command
+and a controlled successful completion; no replacement public runner is installed.
+
+Children must retain the inherited command process group; deliberately
 daemonized/new-session processes and SIGKILL of the supervisor cannot be cleaned
 up by shell traps. Checks continue after failures to collect remaining
 evidence, but **any failure/unavailable tool/timeout exits nonzero**. Each output
@@ -88,7 +125,8 @@ command argv, working directory, UTC start time, status, exit code, log path and
 whole-second elapsed time. Toolchain versions and revision are recorded checks.
 For example, `jq -s . target/browser-validation/check/results.jsonl` reads a run.
 Completed records survive later failure/interruption; the active check records
-`interrupted` on INT/TERM. Statuses are `passed`, `failed`, `unavailable`, `timeout`,
+`interrupted` when INT/TERM reaches the recipe Bash under the cancellation contract
+above. Statuses are `passed`, `failed`, `unavailable`, `timeout`,
 and `interrupted`. Reserved timeout exit codes 124/137 denote timeout; 126/127 denote
 unavailable. A policy rejection retains Cargo exit 0 but has status `failed`.
 Use a different output directory to retain multiple invocations;

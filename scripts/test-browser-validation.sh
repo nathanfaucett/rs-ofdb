@@ -25,6 +25,9 @@ printf 'caps=%s\n' "${WASM_BINDGEN_TEST_WEBDRIVER_JSON:-}"
 case ${MODE:-} in
     fail) exit 7 ;;
     missing) exit 127 ;;
+    release)
+        echo "$BASHPID" > "$CHILD_PID"
+        until [[ -f $RELEASE ]]; do sleep 0.05; done ;;
     hang|stubborn)
         [[ $MODE != stubborn ]] || trap '' TERM
         bash -c 'trap "" TERM; echo "$BASHPID" > "$CHILD_PID"; exec sleep 90' &
@@ -124,7 +127,37 @@ for signal
     jq -se 'any(.[]; .name == "chrome-window" and .status == "interrupted")' "$tmp/interrupt-$signal/results.jsonl" >/dev/null
     not_live
 done
-echo 'PASS: timeout and INT/TERM kill TERM-resistant descendants; incremental interruption evidence'
+echo 'PASS: timeout and process-group INT/TERM kill TERM-resistant descendants; incremental interruption evidence'
+
+# Reset background-inherited signal dispositions before exercising the public just PID.
+export RELEASE="$tmp/release"
+for mode in hang release; do
+    rm -f "$CHILD_PID" "$RELEASE"
+    setsid env --default-signal=INT,TERM MODE=$mode "${recipe[@]}" browser-accept chrome window "$tmp/pid-int-$mode" 2 > "$tmp/run.log" 2>&1 &
+    parent=$!
+    for ((i=0; i<100; i++)); do [[ ! -s $CHILD_PID ]] || break; sleep 0.05; done
+    [[ -s $CHILD_PID ]]
+    jq -se 'length == 4 and all(.status == "passed")' "$tmp/pid-int-$mode/results.jsonl" >/dev/null
+    interrupted_at=$SECONDS
+    kill -INT "$parent"
+    sleep 0.2
+    kill -0 "$parent"
+    ! not_live
+    jq -se 'length == 4' "$tmp/pid-int-$mode/results.jsonl" >/dev/null
+    [[ $mode != release ]] || touch "$RELEASE"
+    result=0; wait "$parent" || result=$?
+    [[ $((SECONDS - interrupted_at)) -lt 8 ]]
+    parent=''
+    if [[ $mode == hang ]]; then
+        [[ $result == 1 ]]
+        jq -se '.[-1] | .name == "chrome-window" and .status == "timeout" and .exit_code == 124' "$tmp/pid-int-$mode/results.jsonl" >/dev/null
+    else
+        [[ $result == 130 ]]
+        jq -se '.[-1] | .name == "chrome-window" and .status == "passed" and .exit_code == 0' "$tmp/pid-int-$mode/results.jsonl" >/dev/null
+    fi
+    not_live
+    echo "PASS: PID-only INT is not relayed ($mode); public exit $result; bounded completion and cleanup"
+done
 
 cp "$tmp/bin/wasm-pack" "$tmp/bin/runner space"
 cp "$tmp/bin/wasm-pack" "$tmp/bin/chrome space"

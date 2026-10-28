@@ -9,7 +9,7 @@
 - [x] Discoverable, parameterized just recipes cover independent facade feature builds, browser and store-specific remote dependency isolation, browser Clippy, compiled public Rust quickstarts, browser acceptance, snapshot measurements, native regressions, and final validation gates.
 - [x] Browser acceptance continues to run the full Rust library tests through wasm-pack with sync enabled, covering Chromium and Firefox in Window and Dedicated Worker, with individual-cell and full-matrix selection. WebKit is not required.
 - [x] Existing driver/capabilities configuration, measurement runner selection, output selection, stack settings, and Cargo configuration behavior remain supported and documented. Arguments are handled safely, including paths containing spaces; invalid selections and nonpositive timeouts fail clearly.
-- [x] Commands have configurable finite timeouts covering compilation and execution. Timeouts and interruption clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success.
+- [x] Commands have configurable finite timeouts covering compilation and execution. Timeouts and supported process-group INT/TERM cancellation clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success. PID-only SIGINT is an explicit just limitation; require zero public exit status as well as passing required check records.
 - [x] Per-check logs, toolchain/revision context, elapsed time, exit status where available, and incremental machine-readable summaries remain available. Aggregate recipes exit nonzero when any required check fails, without a logging pipeline masking the command's status; safely independent checks retain useful evidence.
 - [x] Controlled checks through the public recipes verify matrix/feature selection, driver forwarding, safe argument handling, dependency rejection despite a successful Cargo exit, missing tooling, failure propagation, timeout descendant cleanup, and evidence output. Replace Python-specific tests without adding a testing runtime or generic runner framework.
 - [x] CI and current reproduction instructions invoke just and publish the replacement evidence. Historical execution records remain unchanged as historical evidence.
@@ -28,7 +28,7 @@
 - **Complexity/risk/priority:** moderate orchestration complexity; highest priority
   is avoiding false success and orphaned processes. No database behavior, Rust
   dependency, storage, protocol, or synchronization changes. `git diff --exit-code
-  -- Cargo.toml Cargo.lock crates tests/browser/src` passed against that base.
+-- Cargo.toml Cargo.lock crates tests/browser/src` passed against that base.
 - Recipes in `justfile` select all suites. A small sourced Bash helper owns only
   common process-group supervision, dependency policy and JSONL evidence; a bounded
   shell helper compiles the four current published Rust blocks. No competing public
@@ -86,16 +86,16 @@ select installed Flatpak Chrome **156.0.8078.73** and Firefox **159.0**. Matchin
 ChromeDriver downloaded into ignored `target/browser-tools/`; cached GeckoDriver
 and matching wasm-bindgen runner reused. No machine paths/binaries committed.
 
-| Public recipe/run | Result |
-| --- | --- |
-| `browser-check target/browser-validation/check 600` | **23/23 checks passed**, including seven independent facade builds, all graphs, Window/Worker Clippy and compiled current quickstarts |
-| `browser-accept all all target/browser-validation/browser 900` | **All four full-library sync cells passed**; Chrome Window **90 / 330 s**, Chrome Worker **87 / 236 s**, Firefox Window **90 / 170 s**, Firefox Worker **87 / 195 s** (seconds include compilation/startup) |
-| `browser-measure all all target/browser-validation/measure 600 RUNNER CHROME_DRIVER GECKO_DRIVER` | **1 filtered snapshot test passed in each cell**; explicit fixture Cargo config and opposite driver removed |
-| `browser-measure chrome window 'target/browser-validation/measure space' 600 '.../runner space' CHROME_DRIVER` | **Passed**, real executable and evidence paths containing spaces, 9 seconds |
-| `browser-native target/browser-validation/native 900` | **Nonzero**: protocols/ownership **5 passed**, KV **19 passed**, SQL **74 passed / 1 failed**, runtime **10 passed**, native Clippy passed |
-| `browser-native target/browser-validation/native-rerun 600` | **Same SQL failure reproduced**, other native checks still pass |
-| `browser-final target/browser-validation/final 240` | Workspace/fixture formatting passed; workspace Clippy timed out at **240 s**; powerset failed **exit 1 / 42 s** (underlying Cargo 101); CRAP timed out **240 s**; all independently attempted |
-| `timeout --kill-after=5 600 just clippy` | **Passed** on bounded warmed retry, **34.36 s** Cargo wall time; `workspace-clippy-extended.log` |
+| Public recipe/run                                                                                              | Result                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser-check target/browser-validation/check 600`                                                            | **23/23 checks passed**, including seven independent facade builds, all graphs, Window/Worker Clippy and compiled current quickstarts                                                                       |
+| `browser-accept all all target/browser-validation/browser 900`                                                 | **All four full-library sync cells passed**; Chrome Window **90 / 330 s**, Chrome Worker **87 / 236 s**, Firefox Window **90 / 170 s**, Firefox Worker **87 / 195 s** (seconds include compilation/startup) |
+| `browser-measure all all target/browser-validation/measure 600 RUNNER CHROME_DRIVER GECKO_DRIVER`              | **1 filtered snapshot test passed in each cell**; explicit fixture Cargo config and opposite driver removed                                                                                                 |
+| `browser-measure chrome window 'target/browser-validation/measure space' 600 '.../runner space' CHROME_DRIVER` | **Passed**, real executable and evidence paths containing spaces, 9 seconds                                                                                                                                 |
+| `browser-native target/browser-validation/native 900`                                                          | **Nonzero**: protocols/ownership **5 passed**, KV **19 passed**, SQL **74 passed / 1 failed**, runtime **10 passed**, native Clippy passed                                                                  |
+| `browser-native target/browser-validation/native-rerun 600`                                                    | **Same SQL failure reproduced**, other native checks still pass                                                                                                                                             |
+| `browser-final target/browser-validation/final 240`                                                            | Workspace/fixture formatting passed; workspace Clippy timed out at **240 s**; powerset failed **exit 1 / 42 s** (underlying Cargo 101); CRAP timed out **240 s**; all independently attempted               |
+| `timeout --kill-after=5 600 just clippy`                                                                       | **Passed** on bounded warmed retry, **34.36 s** Cargo wall time; `workspace-clippy-extended.log`                                                                                                            |
 
 Snapshot observations, one fresh filtered instance per cell, **not benchmarks or
 peak heap**: Chrome Window **3/33 ms**, Chrome Worker **5/41 ms**, Firefox Window
@@ -113,7 +113,7 @@ maximum size. The extra path-space run is separate from these four samples.
   and manifests. No runtime fix or weakened assertion. Native recipe correctly
   returns 1, records Cargo **101**, and still executes runtime/Clippy afterwards.
 - Feature powerset stops at **8/1035**, `ofdb-btree --no-default-features --features
-  sharded`: eight previously documented missing `std`/`async_stream`/in-memory
+sharded`: eight previously documented missing `std`/`async_stream`/in-memory
   export/`ToString` errors. Remaining combinations did not complete.
 - `just crap` reached coverage compilation for package **6/32** (`ofdb-value`,
   compiling Redb) before its **240 s** bound. No complete coverage/CRAP score.
@@ -126,6 +126,65 @@ browser/driver/runner processes after real runs. No unrelated fixes made.
 
 - **Additional isolated native reproduction:** with the same feature flags and
   stack/jobs, bounded `cargo test --test scoped_sync
-  candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
+candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
   failed **exit 101**, **0 passed / 1 failed / 24 filtered**, at the same 2-versus-1
   assertion. Raw output: `target/browser-validation/native-isolated.log`.
+
+### P2 review fix — PID-only SIGINT — 2026-10-28
+
+- **Location/authority:** applied directly on integration branch
+  `implement/browser-validation-just` in `/home/nathan/code/rust/aicacia/ofdb`,
+  starting from clean `0ad0c72`. The original ticket worktree at
+  `/tmp/ofdb-browser-validation-just` was not edited. Status remains
+  ready-for-review; this is review-fix evidence, not closure.
+- **Complexity/risk/priority:** small test/documentation change; high priority is
+  an honest cancellation/evidence contract. No production process-control changes,
+  replacement public runner, generic framework, dependency or Rust changes.
+- **Investigation:** installed `just --version` reports **1.49.0**. Its tagged
+  [`src/signal_handler.rs`](https://github.com/casey/just/blob/1.49.0/src/signal_handler.rs)
+  deliberately does not forward INT/HUP/QUIT, assuming terminal process-group
+  delivery; it waits for the child. This prevents a recipe Bash trap from observing
+  INT sent only to the outer public just PID. Source also forwards TERM, but the
+  documented cancellation contract here requires group delivery for both signals.
+  Adding a Bash trap cannot fix an unreceived signal; no polling workaround or
+  competing launcher was added. Review explicitly permits documenting this just
+  limitation instead.
+- **Red reproduction:** added a public `browser-accept chrome window` check with
+  a hanging substitute command and TERM-resistant descendant, launched by
+  `setsid env --default-signal=INT,TERM` (not background-inherited SIGINT ignoring).
+  Sent INT only to the public just PID. A test expecting public exit 130 and an
+  interrupted cell failed: the cell reached its **2-second timeout**, recorded
+  `timeout`, and the public invocation returned **1**, not 130. Existing group
+  cancellation tests passed before that new assertion failed.
+- **Regression/green:** retain separate PID-only tests for the hanging command
+  and a command held until an explicit release file. After PID-only INT both
+  public PID and controlled command remain live, with only the four completed
+  prerequisite records. Hanging case then records **timeout / 124**, public
+  exit **1**; released-success case records **passed / 0**, public exit **130**.
+  Each completes within the test's **under-eight-second** bound and leaves no live
+  recorded command/descendant (`/proc`, zombies excluded). Thus passed per-check
+  evidence is explicitly not treated as whole-run success.
+- **Supported cancellation:** INT or TERM to the process group containing just
+  **and recipe Bash**, including terminal foreground Ctrl-C. The recipe terminates
+  its separately supervised active command group, escalates to KILL after one
+  second, records `interrupted`, and returns nonzero. Existing controlled group
+  tests still require **under-five-second** completion and no live TERM-resistant
+  descendant. Per-command timeouts (including compilation) and their five-second
+  escalation remain unchanged even for unsupported PID-only INT; independent
+  checks may continue, so PID-only INT is not prompt cancellation. Detached/new-
+  session descendants and supervisor SIGKILL remain outside the guarantee.
+- **Docs/spec:** corrected the broad interruption wording, documented the exact
+  limitation and status precedence, and supplied a dedicated-group Bash launch /
+  cancellation example. Whole-run success requires **zero public just status AND
+  passing required check records**. Earlier implementation evidence above tested
+  group signals only and must not be read as a PID-only INT guarantee.
+- **Validation:** `just browser-orchestration-test` passed twice after the red
+  reproduction, including both new PID-only cases, existing timeout/KILL and group
+  INT/TERM cleanup, and all matrix/policy/failure/evidence checks. Final run output
+  is local ignored `target/browser-validation-review.log` in this integration
+  checkout (not a remote Actions result). `bash -n` on all three shell scripts,
+  `just --show browser-accept`, and `git diff --check` passed.
+  `git diff --exit-code -- Cargo.toml Cargo.lock crates tests/browser/src` passed.
+  Real browser/Rust/Clippy/powerset/CRAP gates were not rerun for this shell-test and
+  documentation-only fix; previously recorded unrelated Rust blockers remain
+  unchanged and are not waived.
