@@ -1,0 +1,15 @@
+[package]
+name = "ofdb-browser-example-tools"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+# WebDriver HTTP and JSON (native development tools only)
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }

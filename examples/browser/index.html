@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ofdb persistent browser example</title>
+<style>
+  body { font: 1rem/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+  label, input, textarea { display: block; }
+  input, textarea { box-sizing: border-box; width: 100%; margin-bottom: 1rem; font: inherit; }
+  button { font: inherit; padding: .4rem .8rem; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid; padding: 1rem; min-height: 1.5rem; }
+  :focus-visible { outline: 3px solid Highlight; outline-offset: 3px; }
+  [data-error="true"] { font-weight: bold; }
+</style>
+<main>
+  <h1>Persistent browser KV</h1>
+  <p>Save text in IndexedDB, reload, then retrieve it. Database operations run in Rust.</p>
+  <form autocomplete="off">
+    <fieldset id="controls" disabled>
+      <legend>KV store</legend>
+      <label for="key">KV Key</label>
+      <input id="key" name="key" value="theme" required>
+      <label for="value">Text value</label>
+      <textarea id="value" name="value" rows="3"></textarea>
+      <button id="save" type="submit">Save</button>
+      <button id="retrieve" type="button">Retrieve</button>
+    </fieldset>
+  </form>
+  <p id="status" role="status" aria-live="polite" aria-atomic="true">Loading Wasm and opening browser storage…</p>
+  <h2 id="result-label">Committed value</h2>
+  <pre id="result" aria-labelledby="result-label"></pre>
+  <p>Storage belongs to this browser origin and may be cleared or evicted. It is not a backup.</p>
+  <noscript>Enable JavaScript and reload to run this Wasm example.</noscript>
+</main>
+<script type="module" src="app.js"></script>
+</html>

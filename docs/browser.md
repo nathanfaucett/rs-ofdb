@@ -36,8 +36,9 @@ See [validation evidence and reproduction](browser-validation.md).
 ## Application setup
 
 These are Rust APIs to call from an async browser entry point or event handler
-using your existing Wasm integration. There is no generated JavaScript SDK, npm
-package, application UI or bundled browser transport. Build with
+using your existing Wasm integration. For a complete runnable KV page, see the
+[persistent browser example](../examples/browser/README.md) (`just browser-example-serve`).
+There is no public JavaScript SDK, npm package or bundled browser transport. Build with
 `--target wasm32-unknown-unknown` and install that target using rustup.
 
 Packages have **not been published**. Until registry prerequisites exist, use

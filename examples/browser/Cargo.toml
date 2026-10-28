@@ -1,0 +1,26 @@
+[package]
+name = "ofdb-browser-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+# Persistent public KV facade
+ofdb-kv = { version = "0.1", path = "../../crates/kv", default-features = false, features = [
+    "indexeddb",
+] }
+
+# Narrow example-local browser bridge
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+wasm-bindgen-futures = { version = "0.4", default-features = false, features = [
+    "std",
+] }
+
+[profile.dev]
+opt-level = 1
+debug = 0
