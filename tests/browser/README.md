@@ -9,8 +9,9 @@ history/candidate validation.
 
 ## Release matrix automation
 
-Use `python3 scripts/browser_matrix.py check`, `browser`, `measure`, `native`, and
-`final` from the repository root. The [reproduction guide](../../docs/browser-validation.md)
+Use `just browser-check`, `just browser-accept`, `just browser-measure`,
+`just browser-native`, and `just browser-final` from the repository root.
+`just browser-orchestration-test` checks orchestration through these public recipes. The [reproduction guide](../../docs/browser-validation.md)
 details prerequisites, driver selection, bounds, logs/JSON, measurements and known
 broad-gate failures. The dedicated [browser workflow](../../.github/workflows/browser.yml)
 runs the four full acceptance cells independently, not a native workspace Wasm
@@ -127,7 +128,7 @@ byte no-op behavior are covered. Actual disk quota exhaustion is not claimed.
 The measurement test loads 100 and 1,000 records with 1 KiB values and logs elapsed
 snapshot time, raw key+value bytes and Wasm linear capacity before/after snapshot.
 Capacity is not live or peak heap and does not measure transient JS/IDB memory.
-`python3 scripts/browser_matrix.py measure --runner PATH` reproduces all four
+`just browser-measure all all target/browser-validation/measure 600 PATH` reproduces all four
 browser/context samples with explicit drivers; see the reproduction guide. For visible samples, run a built test
 module with `wasm-bindgen-test-runner MODULE snapshot_materialization_measurement
 --nocapture` and the same WebDriver environment. No timing threshold is asserted.

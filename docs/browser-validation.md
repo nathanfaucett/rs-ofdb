@@ -10,13 +10,15 @@ feature combination passes.
 From a source checkout, install:
 
 - Rust **1.99.1**, `rustfmt`, `clippy`, and `wasm32-unknown-unknown`.
-- Python 3 (standard library only; validated with Python 3.12).
+- `just` **1.49.0**, Bash, `jq`, GNU coreutils (`timeout`, `realpath`), and
+  util-linux (`setsid`). The orchestration and its `/proc` cleanup checks target
+  Linux (CI uses Ubuntu 24.04); Windows and BSD/macOS utilities are not supported.
 - `wasm-pack` **0.15.0** and real Chrome/Chromium and Firefox installations.
 - Matching ChromeDriver and GeckoDriver. `wasm-pack` can download drivers/tooling,
   but Chrome must have a matching driver; pass explicit driver paths if needed.
 - For measurements, `wasm-bindgen-test-runner` matching the fixture lock's
   `wasm-bindgen` **0.2.128**. `cargo install wasm-bindgen-cli --version 0.2.128 --locked`
-  installs it, or pass `--runner` pointing to wasm-pack's matching cached runner.
+  installs it, or pass `runner` pointing to wasm-pack's matching cached runner.
 - Native regression prerequisites: `protoc`; final gates additionally require
   `cargo-hack`, `cargo-llvm-cov`, LLVM tools, `cargo-crap` and `just`.
 
@@ -26,21 +28,37 @@ contention and browser startup starvation):
 ```sh
 rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
 rustup default 1.99.1
+cargo install just --version 1.49.0 --locked
 cargo install wasm-pack --version 0.15.0 --locked
-python3 -m unittest discover -s scripts -p test_browser_matrix.py
-python3 scripts/browser_matrix.py check --timeout 600 --output target/browser-validation/check
-python3 scripts/browser_matrix.py browser --timeout 600 --output target/browser-validation/browser
-python3 scripts/browser_matrix.py measure --timeout 600 --output target/browser-validation/measure
-python3 scripts/browser_matrix.py native --timeout 600 --output target/browser-validation/native
-python3 scripts/browser_matrix.py final --timeout 240 --output target/browser-validation/final
+just browser-orchestration-test
+just browser-check target/browser-validation/check 600
+just browser-accept all all target/browser-validation/browser 600
+just browser-measure all all target/browser-validation/measure 600
+just browser-native target/browser-validation/native 600
+just browser-final target/browser-validation/final 240
 ```
 
-For exact browser selection, use `--browser chrome|firefox` and
-`--context window|worker`; default `all` runs all four cells. Use
-`--chromedriver PATH`, `--geckodriver PATH` or the corresponding `CHROMEDRIVER` /
-`GECKODRIVER` environment variables for explicit installations. `measure` requires
-explicit drivers or drivers on PATH, plus `--runner PATH` or the matching runner
-on PATH. Window and Worker measurements are separate fresh test instances.
+`just --list` discovers the recipes; `just --show browser-accept` shows parameters.
+Positional parameters are:
+
+- `browser-check`, `browser-native`, `browser-final`: `output timeout`.
+- `browser-accept`: `browser context output timeout chromedriver geckodriver`.
+- `browser-measure`: `browser context output timeout runner chromedriver geckodriver`.
+
+All parameters have defaults. Browser is `chrome|firefox|all`; context is
+`window|worker|all`; default `all all` runs all four cells. Timeouts must be
+positive integer seconds. Quote paths, including paths containing spaces;
+arguments are forwarded literally, never evaluated as shell source. For example:
+
+```sh
+just browser-accept firefox worker 'target/my evidence' 600 '' '/tools/gecko driver'
+just browser-measure chrome window target/measure 600 '/tools/wasm-bindgen-test-runner' '/tools/chromedriver'
+```
+
+Driver parameters default to `CHROMEDRIVER` / `GECKODRIVER`; measurement also
+searches PATH. The runner defaults to `wasm-bindgen-test-runner` on PATH and must
+match the fixture lock. Its path is passed as a Cargo runner array, preserving
+spaces. Window and Worker measurements are separate fresh test instances.
 
 For nonstandard browser binaries set `WASM_BINDGEN_TEST_WEBDRIVER_JSON` to an
 absolute local capabilities JSON file; `tests/browser/webdriver.local.json` is
@@ -48,20 +66,35 @@ ignored. The keys are `goog:chromeOptions.binary` and `moz:firefoxOptions.binary
 Only an isolated sandbox that needs it should add Chrome's `--no-sandbox` argument.
 Do not commit machine paths/capabilities or use that option for production browsing.
 
-The script resolves its repository from its own path; commands execute there even
-if called elsewhere. Defaults are two Cargo build jobs, 16 MiB native thread stack,
+Just executes in the justfile directory; from elsewhere use
+`just --justfile /path/to/ofdb/justfile browser-check`. Defaults are two Cargo
+build jobs, 16 MiB native thread stack,
 and a 240-second browser test budget; explicit environment settings override these.
 The fixture config supplies a 16 MiB Wasm stack and optimized dev profile. A full
 sync suite includes real capped retry waits totaling about 112 seconds; do not
 replace it with a fake clock and call that browser acceptance.
 
-Each subprocess has its own `--timeout` bound, including compilation, with process
-group termination on timeout. Checks continue after failures to collect remaining
+Each command has its own `timeout` bound, including compilation. GNU timeout sends
+TERM to the process group, escalates to KILL within five seconds, and the recipe
+kills any remaining group descendants after the leader exits. INT/TERM to the
+recipe (or terminal foreground process group) terminates its active group, escalates after one second, records interruption
+and exits nonzero. Children must retain the inherited process group; deliberately
+daemonized/new-session processes and SIGKILL of the supervisor cannot be cleaned
+up by shell traps. Checks continue after failures to collect remaining
 evidence, but **any failure/unavailable tool/timeout exits nonzero**. Each output
-directory holds exact command logs and `results.json` with status, exit code and
-elapsed time. Use a different output directory to retain multiple invocations;
+directory holds raw per-command logs, policy diagnostics, `environment.json`, and
+append-only `results.jsonl` (one complete JSON object per completed check) with
+command argv, working directory, UTC start time, status, exit code, log path and
+whole-second elapsed time. Toolchain versions and revision are recorded checks.
+For example, `jq -s . target/browser-validation/check/results.jsonl` reads a run.
+Completed records survive later failure/interruption; the active check records
+`interrupted` on INT/TERM. Statuses are `passed`, `failed`, `unavailable`, `timeout`,
+and `interrupted`. Reserved timeout exit codes 124/137 denote timeout; 126/127 denote
+unavailable. A policy rejection retains Cargo exit 0 but has status `failed`.
+Use a different output directory to retain multiple invocations;
 the same directory overwrites that invocation's files. Missing tools do not count
-as a pass. The final suite runs formatting, the requested feature powerset, then
+as a pass. The final suite runs formatting, workspace all-target Clippy, the
+requested feature powerset, then
 `just crap` independently even if the powerset fails.
 
 ### What is automated

@@ -4,14 +4,128 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** ready-for-review
 
-- [ ] Discoverable, parameterized just recipes cover independent facade feature builds, browser and store-specific remote dependency isolation, browser Clippy, compiled public Rust quickstarts, browser acceptance, snapshot measurements, native regressions, and final validation gates.
-- [ ] Browser acceptance continues to run the full Rust library tests through wasm-pack with sync enabled, covering Chromium and Firefox in Window and Dedicated Worker, with individual-cell and full-matrix selection. WebKit is not required.
-- [ ] Existing driver/capabilities configuration, measurement runner selection, output selection, stack settings, and Cargo configuration behavior remain supported and documented. Arguments are handled safely, including paths containing spaces; invalid selections and nonpositive timeouts fail clearly.
-- [ ] Commands have configurable finite timeouts covering compilation and execution. Timeouts and interruption clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success.
-- [ ] Per-check logs, toolchain/revision context, elapsed time, exit status where available, and incremental machine-readable summaries remain available. Aggregate recipes exit nonzero when any required check fails, without a logging pipeline masking the command's status; safely independent checks retain useful evidence.
-- [ ] Controlled checks through the public recipes verify matrix/feature selection, driver forwarding, safe argument handling, dependency rejection despite a successful Cargo exit, missing tooling, failure propagation, timeout descendant cleanup, and evidence output. Replace Python-specific tests without adding a testing runtime or generic runner framework.
-- [ ] CI and current reproduction instructions invoke just and publish the replacement evidence. Historical execution records remain unchanged as historical evidence.
-- [ ] Delete the Python matrix runner and its tests; retain no compatibility wrapper. Use the existing Bash shell and ordinary documented utilities, with small shell helpers only where necessary. Do not introduce Node tooling or a Rust xtask.
-- [ ] Run the real feature checks and all four supported browser/context acceptance cells, exercise measurement and native recipes, and run applicable formatting, Clippy, feature-powerset, and CRAP final gates. Record actual results and existing failures/timeouts accurately without weakening checks or fixing unrelated problems.
+- [x] Discoverable, parameterized just recipes cover independent facade feature builds, browser and store-specific remote dependency isolation, browser Clippy, compiled public Rust quickstarts, browser acceptance, snapshot measurements, native regressions, and final validation gates.
+- [x] Browser acceptance continues to run the full Rust library tests through wasm-pack with sync enabled, covering Chromium and Firefox in Window and Dedicated Worker, with individual-cell and full-matrix selection. WebKit is not required.
+- [x] Existing driver/capabilities configuration, measurement runner selection, output selection, stack settings, and Cargo configuration behavior remain supported and documented. Arguments are handled safely, including paths containing spaces; invalid selections and nonpositive timeouts fail clearly.
+- [x] Commands have configurable finite timeouts covering compilation and execution. Timeouts and interruption clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success.
+- [x] Per-check logs, toolchain/revision context, elapsed time, exit status where available, and incremental machine-readable summaries remain available. Aggregate recipes exit nonzero when any required check fails, without a logging pipeline masking the command's status; safely independent checks retain useful evidence.
+- [x] Controlled checks through the public recipes verify matrix/feature selection, driver forwarding, safe argument handling, dependency rejection despite a successful Cargo exit, missing tooling, failure propagation, timeout descendant cleanup, and evidence output. Replace Python-specific tests without adding a testing runtime or generic runner framework.
+- [x] CI and current reproduction instructions invoke just and publish the replacement evidence. Historical execution records remain unchanged as historical evidence.
+- [x] Delete the Python matrix runner and its tests; retain no compatibility wrapper. Use the existing Bash shell and ordinary documented utilities, with small shell helpers only where necessary. Do not introduce Node tooling or a Rust xtask.
+- [x] Run the real feature checks and all four supported browser/context acceptance cells, exercise measurement and native recipes, and run applicable formatting, Clippy, feature-powerset, and CRAP final gates. Record actual results and existing failures/timeouts accurately without weakening checks or fixing unrelated problems.
+
+## Comments
+
+### Implementation and validation — 2026-10-28
+
+- **Review handoff, not closure:** implementation complete; coordinator to review
+  and close. Worktree `/tmp/ofdb-browser-validation-just`, branch
+  `implement/browser-validation-just-ticket`. Before edits, clean worktree HEAD,
+  integration `implement/browser-validation-just`, and merge-base all matched
+  `a46a273ad50f537a53b417e1b83c3f45ed131598`.
+- **Complexity/risk/priority:** moderate orchestration complexity; highest priority
+  is avoiding false success and orphaned processes. No database behavior, Rust
+  dependency, storage, protocol, or synchronization changes. `git diff --exit-code
+  -- Cargo.toml Cargo.lock crates tests/browser/src` passed against that base.
+- Recipes in `justfile` select all suites. A small sourced Bash helper owns only
+  common process-group supervision, dependency policy and JSONL evidence; a bounded
+  shell helper compiles the four current published Rust blocks. No competing public
+  runner, generic framework, Node, Python replacement runtime or compatibility shim.
+- Public recipes: `browser-check`, `browser-accept`, `browser-measure`,
+  `browser-native`, `browser-final`, `browser-orchestration-test`. Positional args
+  avoid just interpolation into shell source. Driver environment defaults,
+  capabilities, runner selection, output paths, Cargo config discovery, independent
+  features, native stack and browser budgets remain supported. Measurement uses
+  a Cargo runner array to preserve whitespace in executable paths.
+- GNU timeout/setsid bound builds and tests, TERM then KILL within five seconds.
+  INT/TERM traps terminate the active group and escalate after one second;
+  remaining inherited-group descendants are killed even after a leader exits.
+  Raw logs, policy diagnostics, environment, exact argv/cwd/start time/status/
+  exit code/whole-second elapsed time are retained. JSONL records publish after
+  each check, including interruption. Failure does not skip independent checks.
+  Deliberately detached/new-session descendants and supervisor SIGKILL are outside
+  the documented shell cleanup guarantee. Linux/Bash/jq/coreutils/util-linux are
+  documented prerequisites.
+- **Controlled red/green:** first public matrix check failed because recipes did
+  not exist. Added recipe coverage before removing Python. Expanded checks caught
+  jq treating command options as its own options (fixed with `--`); controlled
+  unavailable and signal tests were corrected to exercise a genuinely absent
+  executable and terminal-style process-group signals, rather than accidental
+  fallback to installed tools or background-inherited SIGINT ignoring.
+- **Controlled suite passed:** all four full-library/context argv selections;
+  focused cell and environment defaults; seven exact independent feature builds;
+  both browser Clippy contexts and current quickstarts; literal spaces/metacharacters
+  in paths; both driver and capabilities forwarding; all retained native dependency
+  categories and both remote store policies (zero-exit Cargo trees still fail);
+  permitted Tokio; invalid selection/nonpositive/nonnumeric budgets; actual exit 7;
+  unavailable executable and measurement runner; incremental valid JSONL/logs;
+  aggregate failures and later final gates; measurement config and opposite-driver
+  clearing; timeout with TERM-resistant descendant and with resistant leader
+  (KILL/137); INT and TERM cleanup with under-five-second response and no live
+  descendant (Linux `/proc`, zombies excluded). The suite itself is bounded at
+  180 seconds and uses temporary tool substitutes, no compilation or browsers.
+- **CI/docs:** browser workflow installs pinned just 1.49.0 and shell utilities,
+  invokes public recipes, constructs capabilities with jq, and uploads replacement
+  artifacts with `always()`. Pinned action SHAs, read-only token, PR/manual triggers,
+  independent matrix cells and environment-mediated matrix values are preserved.
+  Current reproduction/harness instructions migrated; historical evidence below
+  the dated acceptance heading is byte-for-byte unchanged. Deleted
+  `scripts/browser_matrix.py`, `scripts/test_browser_matrix.py` and obsolete
+  Python cache ignore only after replacement coverage passed.
+
+### Real evidence and remaining limits
+
+All paths below are local ignored artifacts under worktree
+`target/browser-validation/`; these are local runs, **not remote Actions results**.
+Rust **1.99.1**, wasm-pack **0.15.0**, fixture wasm-bindgen **0.2.128**, two Cargo
+jobs, default **16 MiB** native thread stack and **240-second** browser test budget;
+fixture optimized dev build with **16 MiB Wasm stack**. Explicit local capabilities
+select installed Flatpak Chrome **156.0.8078.73** and Firefox **159.0**. Matching
+ChromeDriver downloaded into ignored `target/browser-tools/`; cached GeckoDriver
+and matching wasm-bindgen runner reused. No machine paths/binaries committed.
+
+| Public recipe/run | Result |
+| --- | --- |
+| `browser-check target/browser-validation/check 600` | **23/23 checks passed**, including seven independent facade builds, all graphs, Window/Worker Clippy and compiled current quickstarts |
+| `browser-accept all all target/browser-validation/browser 900` | **All four full-library sync cells passed**; Chrome Window **90 / 330 s**, Chrome Worker **87 / 236 s**, Firefox Window **90 / 170 s**, Firefox Worker **87 / 195 s** (seconds include compilation/startup) |
+| `browser-measure all all target/browser-validation/measure 600 RUNNER CHROME_DRIVER GECKO_DRIVER` | **1 filtered snapshot test passed in each cell**; explicit fixture Cargo config and opposite driver removed |
+| `browser-measure chrome window 'target/browser-validation/measure space' 600 '.../runner space' CHROME_DRIVER` | **Passed**, real executable and evidence paths containing spaces, 9 seconds |
+| `browser-native target/browser-validation/native 900` | **Nonzero**: protocols/ownership **5 passed**, KV **19 passed**, SQL **74 passed / 1 failed**, runtime **10 passed**, native Clippy passed |
+| `browser-native target/browser-validation/native-rerun 600` | **Same SQL failure reproduced**, other native checks still pass |
+| `browser-final target/browser-validation/final 240` | Workspace/fixture formatting passed; workspace Clippy timed out at **240 s**; powerset failed **exit 1 / 42 s** (underlying Cargo 101); CRAP timed out **240 s**; all independently attempted |
+| `timeout --kill-after=5 600 just clippy` | **Passed** on bounded warmed retry, **34.36 s** Cargo wall time; `workspace-clippy-extended.log` |
+
+Snapshot observations, one fresh filtered instance per cell, **not benchmarks or
+peak heap**: Chrome Window **3/33 ms**, Chrome Worker **5/41 ms**, Firefox Window
+**4/20 ms**, Firefox Worker **2/19 ms**, for **100/1,000** records (**102,800 /
+1,028,000** raw key+value bytes). Every sample's Wasm linear capacity was
+**17,891,328 → 18,022,400** and **18,939,904 → 19,988,480** bytes respectively.
+This is allocator capacity, not live allocations, RSS, JS/IDB memory or a safe
+maximum size. The extra path-space run is separate from these four samples.
+
+**Unchanged blockers, not waived:**
+
+- SQL `candidate_outgoing_export_correlates_all_selected_rows_once` at
+  `crates/sql/tests/scoped_sync.rs:1087` observes **2**, expects **1** outgoing
+  observations. Reproduced on both native runs with unchanged base Rust sources
+  and manifests. No runtime fix or weakened assertion. Native recipe correctly
+  returns 1, records Cargo **101**, and still executes runtime/Clippy afterwards.
+- Feature powerset stops at **8/1035**, `ofdb-btree --no-default-features --features
+  sharded`: eight previously documented missing `std`/`async_stream`/in-memory
+  export/`ToString` errors. Remaining combinations did not complete.
+- `just crap` reached coverage compilation for package **6/32** (`ofdb-value`,
+  compiling Redb) before its **240 s** bound. No complete coverage/CRAP score.
+- Native low-stack `sync_stack` is not part of this focused native suite; no
+  default-stack SQL, WebKit, physical quota, power-loss or browser minimum claim.
+
+Additional checks: `bash -n` for all three new scripts, actionlint **1.7.7** on the
+workflow, and `git diff --check` passed. Process inspection found no live test
+browser/driver/runner processes after real runs. No unrelated fixes made.
+
+- **Additional isolated native reproduction:** with the same feature flags and
+  stack/jobs, bounded `cargo test --test scoped_sync
+  candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
+  failed **exit 101**, **0 passed / 1 failed / 24 filtered**, at the same 2-versus-1
+  assertion. Raw output: `target/browser-validation/native-isolated.log`.

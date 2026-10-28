@@ -21,17 +21,22 @@ env:
 jobs:
   feature-matrix:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install Rust and Wasm target
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
           rustup default 1.99.1
+      - name: Install just and shell utilities
+        run: |
+          cargo install just --version 1.49.0 --locked
+          sudo apt-get update
+          sudo apt-get install --yes jq util-linux coreutils
       - name: Test matrix automation
-        run: python3 -m unittest discover -s scripts -p test_browser_matrix.py
+        run: just browser-orchestration-test
       - name: Independent facade checks, dependency graphs and browser Clippy
-        run: python3 scripts/browser_matrix.py check --timeout 600
+        run: just browser-check target/browser-validation/check 600
       - name: Formatting
         run: |
           cargo fmt --all -- --check
@@ -41,13 +46,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: browser-feature-matrix
-          path: target/browser-matrix
+          path: target/browser-validation
           if-no-files-found: error
           retention-days: 14
 
   acceptance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +65,9 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
           rustup default 1.99.1
           cargo install wasm-pack --version 0.15.0 --locked
+          cargo install just --version 1.49.0 --locked
+          sudo apt-get update
+          sudo apt-get install --yes jq util-linux coreutils
       - name: Install Chrome and matching driver
         if: matrix.browser == 'chrome'
         id: chrome
@@ -79,31 +87,24 @@ jobs:
           CHROME_BINARY: ${{ steps.chrome.outputs.chrome-path }}
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
         run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          capabilities = {}
-          if os.environ['CHROME_BINARY']:
-              capabilities['goog:chromeOptions'] = {'binary': os.environ['CHROME_BINARY']}
-          if os.environ['FIREFOX_BINARY']:
-              capabilities['moz:firefoxOptions'] = {'binary': os.environ['FIREFOX_BINARY']}
-          path = Path('tests/browser/webdriver.local.json').resolve()
-          path.write_text(json.dumps(capabilities))
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write(f'WASM_BINDGEN_TEST_WEBDRIVER_JSON={path}\n')
-          PY
+          jq -n --arg chrome "$CHROME_BINARY" --arg firefox "$FIREFOX_BINARY" '
+            {}
+            | if $chrome != "" then .["goog:chromeOptions"] = {binary: $chrome} else . end
+            | if $firefox != "" then .["moz:firefoxOptions"] = {binary: $firefox} else . end
+          ' > tests/browser/webdriver.local.json
+          printf 'WASM_BINDGEN_TEST_WEBDRIVER_JSON=%s/tests/browser/webdriver.local.json\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Run full real-browser public API suite
         env:
           BROWSER: ${{ matrix.browser }}
           CONTEXT: ${{ matrix.context }}
           CHROMEDRIVER: ${{ steps.chrome.outputs.chromedriver-path }}
-        run: python3 scripts/browser_matrix.py browser --browser "$BROWSER" --context "$CONTEXT" --timeout 900
+        run: just browser-accept "$BROWSER" "$CONTEXT" target/browser-validation/browser 900
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: browser-${{ matrix.browser }}-${{ matrix.context }}
-          path: target/browser-matrix
+          path: target/browser-validation
           if-no-files-found: error
           retention-days: 14
 
@@ -117,14 +118,15 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal --component clippy
           rustup default 1.99.1
           sudo apt-get update
-          sudo apt-get install --yes protobuf-compiler
+          sudo apt-get install --yes protobuf-compiler jq util-linux coreutils
+          cargo install just --version 1.49.0 --locked
       - name: Native protocols, ownership, storage, sync and Clippy
-        run: python3 scripts/browser_matrix.py native --timeout 900
+        run: just browser-native target/browser-validation/native 900
       - name: Upload native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: browser-native-regression
-          path: target/browser-matrix
+          path: target/browser-validation
           if-no-files-found: error
           retention-days: 14
