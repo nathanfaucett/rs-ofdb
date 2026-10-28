@@ -16,15 +16,17 @@ use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-struct Process(Child);
+struct Process(Child, bool);
 impl Drop for Process {
     fn drop(&mut self) {
         #[cfg(unix)]
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &format!("-{}", self.0.id())])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if self.1 {
+            let _ = Command::new("kill")
+                .args(["-KILL", "--", &format!("-{}", self.0.id())])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -40,6 +42,16 @@ fn main() -> Result<()> {
             eprintln!("Serving http://127.0.0.1:{port} (Ctrl-C to stop)");
             serve(listener, &root)
         }
+        #[cfg(unix)]
+        Some("smoke") => supervise(),
+        #[cfg(unix)]
+        Some("smoke-worker") => {
+            for browser in ["chrome", "firefox"] {
+                smoke(&root, browser)?;
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
         Some("smoke") => {
             for browser in ["chrome", "firefox"] {
                 smoke(&root, browser)?;
@@ -47,6 +59,37 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => Err("usage: browser-example-tools serve [port] | smoke".into()),
+    }
+}
+
+#[cfg(unix)]
+fn supervise() -> Result<()> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, Arc::clone(&interrupted))?;
+    }
+    let mut command = Command::new(env::current_exe()?);
+    command.arg("smoke-worker").process_group(0);
+    let mut worker = Process(command.spawn()?, true);
+    loop {
+        if interrupted.load(Ordering::Relaxed) {
+            return Err(
+                "Smoke interrupted; terminating worker, server, driver and browser group".into(),
+            );
+        }
+        if let Some(status) = worker.0.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Smoke worker: {status}").into())
+            };
+        }
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -64,9 +107,30 @@ fn serve(listener: TcpListener, root: &Path) -> Result<()> {
 
 fn respond(stream: &mut TcpStream, root: &Path) -> Result<()> {
     let mut buffer = [0; 8192];
-    let count = stream.read(&mut buffer)?;
-    let request = String::from_utf8_lossy(&buffer[..count]);
-    let path = request.split_whitespace().nth(1).unwrap_or("/");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut count = 0;
+    while count < buffer.len() {
+        stream.set_read_timeout(Some(
+            deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("Request headers timed out")?,
+        ))?;
+        if stream.read(&mut buffer[count..count + 1])? == 0 {
+            return Err("Incomplete request headers".into());
+        }
+        count += 1;
+        if buffer[..count].ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    if !buffer[..count].ends_with(b"\r\n\r\n") {
+        return Err("Request headers exceed 8192 bytes".into());
+    }
+    let request = std::str::from_utf8(&buffer[..count])?;
+    let path = request
+        .split_whitespace()
+        .nth(1)
+        .ok_or("Missing request target")?;
     let path = path.split('?').next().unwrap_or("/");
     let path = if path == "/" {
         "index.html"
@@ -128,11 +192,12 @@ fn smoke(root: &Path, browser: &str) -> Result<()> {
     eprintln!("Smoke {browser}: driver={driver_path}, origin=http://{address}");
     let mut command = Command::new(&driver_path);
     command.arg(format!("--port={port}"));
-    #[cfg(unix)]
-    command.process_group(0);
-    let _driver = Process(command.spawn().map_err(|error| {
-        format!("Cannot start {driver_path}: {error}; install driver or set {variable}")
-    })?);
+    let _driver = Process(
+        command.spawn().map_err(|error| {
+            format!("Cannot start {driver_path}: {error}; install driver or set {variable}")
+        })?,
+        false,
+    );
     let client = Client::builder().timeout(Duration::from_secs(55)).build()?;
     let base = format!("http://127.0.0.1:{port}");
     let deadline = Instant::now() + Duration::from_secs(10);

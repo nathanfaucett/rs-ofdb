@@ -6,6 +6,10 @@ publish = false
 
 [workspace]
 
+[target.'cfg(unix)'.dependencies]
+# Native smoke supervisor shutdown
+signal-hook = { version = "0.3", default-features = false }
+
 [dependencies]
 # WebDriver HTTP and JSON (native development tools only)
 reqwest = { version = "0.13", default-features = false, features = [

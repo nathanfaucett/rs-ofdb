@@ -80,3 +80,43 @@
   logs, `feature-powerset.log`, and `crap.log`. Process inspection after the smoke
   runs found no remaining test browser/driver processes. No WebKit, remote CI,
   actual quota exhaustion, default-stack SQL, or crash durability claim.
+
+### Integration review fixes — 2026-10-28
+
+- Single implementer in the main checkout, branch `implement/browser-examples`;
+  existing implementation worktrees retained unchanged. Complexity/risk: small
+  native helper change; critical risks are interrupted blocking HTTP calls leaving
+  browsers alive and TCP fragmentation selecting the wrong static asset.
+- TDD at the requested executable/HTTP seams: new Linux integration regressions
+  failed before the fix. A split `/app.js` request returned 404; SIGINT left the
+  fake driver and its long-lived child running. After implementation, both pass;
+  the interruption regression checks SIGINT and SIGTERM, a five-second exit bound,
+  and no live worker/driver/descendant processes (Linux `/proc`, excluding zombies).
+- Unix smoke now runs in a supervised worker process group. Signal-safe flags
+  route SIGINT/TERM to the supervisor's 20 ms polling loop, independent of blocked
+  worker HTTP calls. Supervisor cleanup kills the group and reaps the worker on
+  success, failure, or interruption. Normal phase completion still attempts session
+  DELETE; interruption forcibly terminates the session, server, driver and browser.
+  README states this distinction, inherited-process-group assumption and SIGKILL
+  limitation. Added only native Unix `signal-hook` with default features disabled.
+- Static requests accumulate through the complete CRLF header terminator, capped
+  at 8192 bytes with a two-second total deadline (not a renewed per-byte budget).
+  Reading headers also avoids resetting connections with unread incoming headers.
+  No HTTP framework or additional server dependency.
+- **Passed:** helper `cargo test --locked` (two executable-level regressions),
+  helper all-targets Clippy with `-D warnings`, workspace/example/helper rustfmt,
+  and `git diff --check`.
+- **Passed:** full `just browser-example-smoke` rebuilt the Wasm page and exercised
+  all KV/SQL phases in Chromium 156.0.8078.73 and Firefox 159.0, reusing ticket 01's
+  ignored browser binaries/ChromeDriver and the cached wasm-pack geckodriver.
+  No live example helper/browser/driver processes remained afterwards.
+- **Passed additionally:** real active-session interruption checks: SIGINT after
+  Chrome session creation, SIGTERM after Firefox session creation. Each helper
+  exited nonzero and Linux process-group inspection found no live worker, driver
+  or browser members. This local check used installed Node only as an observer;
+  it adds no Node prerequisite to the helper or retained Rust regression tests.
+- **Broad validation unchanged:** reran feature-powerset; unchanged `ofdb-btree`
+  sharded/no-default-features compilation fails with missing `std`/`async_stream`.
+  `just crap` timed out after 240 seconds during instrumented compilation; no
+  score claimed. Logs: `/tmp/ofdb-browser-review-features.log` and
+  `/tmp/ofdb-browser-review-crap.log`. No unrelated fixes or worktree removal.

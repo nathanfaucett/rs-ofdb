@@ -93,11 +93,14 @@ UI status, and driver diagnostics. Redirect stdout/stderr to retain a log if des
 Every WebDriver HTTP call is bounded to 55 seconds, page navigation to 30 seconds,
 async scripts to 45 seconds, and UI waits to 15 seconds. Driver startup has a
 10-second polling budget (individual HTTP calls still have their 55-second bound).
-The finite phase sequence cannot retry forever. On success, failure, or these
-timeouts, the session is closed and the driver is reaped; Unix process-group
-cleanup also kills remaining driver/browser descendants. The in-process static
-server exits with the helper. Interrupting the helper with SIGKILL cannot run
-cleanup, like any process; do not use SIGKILL for routine shutdown.
+The finite phase sequence cannot retry forever. On normal completion or a phase failure, the worker attempts WebDriver session
+DELETE before reaping the driver. On Unix, a supervisor owns the worker's process
+group: completion, failure, SIGINT, or SIGTERM triggers group SIGKILL and worker
+reaping, closing the server and forcibly terminating any remaining driver/browser
+session. Signal shutdown polls every 20 ms and does not wait for HTTP timeouts or
+session DELETE. This requires descendants to remain in the inherited process group.
+Sending SIGKILL to the supervisor cannot run cleanup; do not use it for routine
+shutdown.
 
 The app and helper are independent Cargo workspaces with committed lockfiles.
 Only `ofdb-kv/indexeddb` and `ofdb-sql/indexeddb,sql` are enabled in the Wasm
@@ -120,8 +123,12 @@ cargo fmt --manifest-path examples/browser/Cargo.toml -- --check
 cargo fmt --manifest-path examples/browser/tools/Cargo.toml -- --check
 (cd examples/browser && cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings)
 cargo clippy --manifest-path examples/browser/tools/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path examples/browser/tools/Cargo.toml
 cargo tree --manifest-path examples/browser/Cargo.toml --target wasm32-unknown-unknown --edges normal
 ```
+
+On Linux, helper integration tests cover fragmented TCP requests and bounded
+SIGINT/SIGTERM cleanup with a fake driver and child process.
 
 Browser execution parses both handwritten JS files; their interfaces and async
 behavior are documented with JSDoc. Also review the native labels, focus outlines,
