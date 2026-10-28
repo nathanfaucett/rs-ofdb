@@ -196,10 +196,24 @@ fn smoke(root: &Path, browser: &str) -> Result<()> {
             &format!("{prefix}/url"),
             json!({"url":format!("http://{address}/")}),
         )?;
-        for phase in ["save", "committed", "reload", "failure"] {
-            if phase == "committed" {
+        for phase in [
+            "save",
+            "committed",
+            "reload",
+            "sql-save",
+            "sql-committed",
+            "sql-duplicate",
+            "reload-again",
+            "reload-again",
+            "failure",
+        ] {
+            if phase == "committed" || phase == "sql-committed" {
                 let mut actions = Vec::new();
-                for key in ["\u{e004}", "\u{e004}", "\u{e007}"] {
+                for key in if phase == "committed" {
+                    vec!["\u{e004}", "\u{e004}", "\u{e007}"]
+                } else {
+                    vec!["\u{e004}", "\u{e007}"]
+                } {
                     actions.push(json!({"type": "keyDown", "value": key}));
                     actions.push(json!({"type": "keyUp", "value": key}));
                 }
@@ -211,7 +225,7 @@ fn smoke(root: &Path, browser: &str) -> Result<()> {
                     json!({"actions": [{"type": "key", "id": "keyboard", "actions": actions}]}),
                 )?;
             }
-            if phase == "reload" {
+            if phase == "reload" || phase == "reload-again" {
                 call(
                     &client,
                     &base,

@@ -17,7 +17,7 @@ help:
     @printf "  fmt-check      Check formatting for all workspace crates\n"
     @printf "  clean          Remove build artifacts\n"
     @printf "  doc            Build workspace documentation\n"
-    @printf "  browser-example-build  Build the persistent KV Wasm page\n"
+    @printf "  browser-example-build  Build the persistent KV and SQL Wasm page\n"
     @printf "  browser-example-serve  Build and serve at http://127.0.0.1:8080\n"
     @printf "  browser-example-smoke  Build and check the page in Chromium and Firefox\n"
 
@@ -61,7 +61,7 @@ doc:
     cargo doc --workspace --no-deps
 
 browser-example-build:
-    wasm-pack build examples/browser --target web --dev --no-pack -- --locked
+    (cd examples/browser && wasm-pack build . --target web --dev --no-pack -- --locked)
 
 browser-example-serve port="8080": browser-example-build
     cargo run --locked --manifest-path examples/browser/tools/Cargo.toml -- serve {{ port }}

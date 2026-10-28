@@ -10,10 +10,12 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-# Persistent public KV facade
+# Persistent public facades
 ofdb-kv = { version = "0.1", path = "../../crates/kv", default-features = false, features = [
     "indexeddb",
 ] }
+
+ofdb-sql = { version = "0.1", path = "../../crates/sql", default-features = false, features = ["indexeddb", "sql"] }
 
 # Narrow example-local browser bridge
 wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }

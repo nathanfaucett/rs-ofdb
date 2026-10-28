@@ -5,7 +5,7 @@
  * @module app
  */
 const controls = document.querySelector('#controls');
-const form = document.querySelector('form');
+const form = document.querySelector('form:not(#sql-form)');
 const key = document.querySelector('#key');
 const value = document.querySelector('#value');
 const status = document.querySelector('#status');
@@ -81,3 +81,76 @@ async function start() {
 }
 
 await start();
+
+/** Initialize SQL independently, preserving the usable KV section on SQL errors.
+ * @returns {Promise<void>} Settles after initialization and a fresh committed read.
+ */
+async function startSql() {
+  const form = document.querySelector('#sql-form');
+  const controls = document.querySelector('#sql-controls');
+  const status = document.querySelector('#sql-status');
+  const result = document.querySelector('#sql-result');
+  controls.disabled = true;
+  try {
+    const { Sql } = await import('./pkg/ofdb_browser_example.js');
+    const sql = await Sql.open();
+    /** Read persisted rows and render only text, including the empty state.
+     * @returns {Promise<void>} Resolves after a fresh Client read and rendering.
+     */
+    async function list() {
+      const records = await sql.list();
+      result.replaceChildren();
+      if (!records.length) result.textContent = 'No records yet.';
+      else {
+        const list = document.createElement('ol');
+        for (const text of records) {
+          const item = document.createElement('li');
+          item.textContent = text;
+          list.append(item);
+        }
+        result.append(list);
+      }
+    }
+    /** Serialize UI operations; never retry a possibly committed write automatically.
+     * @param {boolean} add Whether to insert the validated input before reading.
+     * @returns {Promise<void>} Settles after committed results or actionable error.
+     */
+    async function operate(add) {
+      if (controls.disabled || (add && !form.reportValidity())) return;
+      const focused = document.activeElement;
+      controls.disabled = true;
+      form.setAttribute('aria-busy', 'true');
+      status.dataset.error = 'false';
+      status.textContent = add ? 'Adding…' : 'Listing…';
+      try {
+        if (add) await sql.add(document.querySelector('#record').value);
+        await list();
+        status.textContent = add ? 'Added and committed.' : 'Listed committed records.';
+      } catch (error) {
+        status.dataset.error = 'true';
+        status.textContent = `Error: ${error.message || error}. Check browser storage permissions and available space; reload and list records before retrying a write.`;
+      } finally {
+        controls.disabled = false;
+        form.setAttribute('aria-busy', 'false');
+        focused?.focus();
+      }
+    }
+    /** Use native Enter submission without navigation.
+     * @param {SubmitEvent} event Native submission.
+     * @returns {void}
+     */
+    form.onsubmit = event => { event.preventDefault(); void operate(true); };
+    /** Refresh from committed storage.
+     * @returns {void}
+     */
+    document.querySelector('#list').onclick = () => { void operate(false); };
+    await list();
+    status.textContent = 'Listed committed records.';
+    controls.disabled = false;
+  } catch (error) {
+    status.dataset.error = 'true';
+    status.textContent = `Error: ${error.message || error}. Check the Wasm build and browser storage permissions, then reload. No memory fallback is used.`;
+  }
+}
+
+await startSql();

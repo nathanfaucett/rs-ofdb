@@ -13,7 +13,7 @@
   [data-error="true"] { font-weight: bold; }
 </style>
 <main>
-  <h1>Persistent browser KV</h1>
+  <h1>Persistent browser KV and SQL</h1>
   <p>Save text in IndexedDB, reload, then retrieve it. Database operations run in Rust.</p>
   <form autocomplete="off">
     <fieldset id="controls" disabled>
@@ -29,6 +29,18 @@
   <p id="status" role="status" aria-live="polite" aria-atomic="true">Loading Wasm and opening browser storage…</p>
   <h2 id="result-label">Committed value</h2>
   <pre id="result" aria-labelledby="result-label"></pre>
+  <h2>SQL records</h2>
+  <form id="sql-form" autocomplete="off">
+    <fieldset id="sql-controls" disabled>
+      <legend>SQL store</legend>
+      <label for="record">Text record</label>
+      <input id="record" name="record" required>
+      <button id="add" type="submit">Add record</button>
+      <button id="list" type="button">List records</button>
+    </fieldset>
+  </form>
+  <p id="sql-status" role="status" aria-live="polite" aria-atomic="true">Loading SQL storage…</p>
+  <div id="sql-result" aria-label="Committed SQL records"></div>
   <p>Storage belongs to this browser origin and may be cleared or evicted. It is not a backup.</p>
   <noscript>Enable JavaScript and reload to run this Wasm example.</noscript>
 </main>

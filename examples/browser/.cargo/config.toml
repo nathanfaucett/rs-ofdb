@@ -1,0 +1,3 @@
+[target.wasm32-unknown-unknown]
+# Match the 16 MiB bounded-stack native SQL regression harness.
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]
