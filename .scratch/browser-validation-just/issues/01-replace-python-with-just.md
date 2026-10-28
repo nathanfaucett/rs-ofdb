@@ -4,12 +4,12 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-review
+**Status:** complete
 
 - [x] Discoverable, parameterized just recipes cover independent facade feature builds, browser and store-specific remote dependency isolation, browser Clippy, compiled public Rust quickstarts, browser acceptance, snapshot measurements, native regressions, and final validation gates.
 - [x] Browser acceptance continues to run the full Rust library tests through wasm-pack with sync enabled, covering Chromium and Firefox in Window and Dedicated Worker, with individual-cell and full-matrix selection. WebKit is not required.
 - [x] Existing driver/capabilities configuration, measurement runner selection, output selection, stack settings, and Cargo configuration behavior remain supported and documented. Arguments are handled safely, including paths containing spaces; invalid selections and nonpositive timeouts fail clearly.
-- [x] Commands have configurable finite timeouts covering compilation and execution. Timeouts and supported process-group INT/TERM cancellation clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success. PID-only SIGINT is an explicit just limitation; require zero public exit status as well as passing required check records.
+- [x] Commands have configurable finite timeouts covering compilation and execution. Timeouts and interruption clean up launched descendants with bounded escalation; missing tools, command failures, dependency-policy failures, and timeouts cannot be reported as success.
 - [x] Per-check logs, toolchain/revision context, elapsed time, exit status where available, and incremental machine-readable summaries remain available. Aggregate recipes exit nonzero when any required check fails, without a logging pipeline masking the command's status; safely independent checks retain useful evidence.
 - [x] Controlled checks through the public recipes verify matrix/feature selection, driver forwarding, safe argument handling, dependency rejection despite a successful Cargo exit, missing tooling, failure propagation, timeout descendant cleanup, and evidence output. Replace Python-specific tests without adding a testing runtime or generic runner framework.
 - [x] CI and current reproduction instructions invoke just and publish the replacement evidence. Historical execution records remain unchanged as historical evidence.
@@ -135,8 +135,8 @@ candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
 - **Location/authority:** applied directly on integration branch
   `implement/browser-validation-just` in `/home/nathan/code/rust/aicacia/ofdb`,
   starting from clean `0ad0c72`. The original ticket worktree at
-  `/tmp/ofdb-browser-validation-just` was not edited. Status remains
-  ready-for-review; this is review-fix evidence, not closure.
+  `/tmp/ofdb-browser-validation-just` was not edited. At this handoff, status was
+  ready-for-review; final review disposition is recorded below.
 - **Complexity/risk/priority:** small test/documentation change; high priority is
   an honest cancellation/evidence contract. No production process-control changes,
   replacement public runner, generic framework, dependency or Rust changes.
@@ -147,8 +147,8 @@ candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
   INT sent only to the outer public just PID. Source also forwards TERM, but the
   documented cancellation contract here requires group delivery for both signals.
   Adding a Bash trap cannot fix an unreceived signal; no polling workaround or
-  competing launcher was added. Review explicitly permits documenting this just
-  limitation instead.
+  competing launcher was added. This is a documented implementation limitation,
+  not an amendment to requirements or a waiver of cleanup/failure reporting.
 - **Red reproduction:** added a public `browser-accept chrome window` check with
   a hanging substitute command and TERM-resistant descendant, launched by
   `setsid env --default-signal=INT,TERM` (not background-inherited SIGINT ignoring).
@@ -188,3 +188,41 @@ candidate_outgoing_export_correlates_all_selected_rows_once -- --exact` also
   Real browser/Rust/Clippy/powerset/CRAP gates were not rerun for this shell-test and
   documentation-only fix; previously recorded unrelated Rust blockers remain
   unchanged and are not waived.
+
+### Final review disposition and evidence preservation — 2026-10-28
+
+- **Disposition:** reviewer confirms the runtime finding is addressed and the
+  controlled tests pass. Completed the requested documentation correction:
+  restored the original normative timeout/interruption bullet in spec.md and the
+  matching ticket criterion; moved just's signal-delivery limitation into a
+  separate implementation note. Review acceptance is not user approval to amend
+  requirements. The added PID-only and existing group-cleanup tests are unchanged.
+- **Completion:** ticket and spec status are complete for the orchestration
+  migration and review fix. This is not a claim that every real validation gate
+  passed, nor a waiver of the original requirements. PID-only SIGINT remains a
+  documented just limitation: prompt cancellation needs process-group delivery;
+  finite per-command timeout cleanup remains enforced, and per-check `passed`
+  evidence alone cannot establish whole-run success.
+- **Preserved original evidence:** copied from
+  `/tmp/ofdb-browser-validation-just/target/browser-validation/` into this
+  integration checkout's ignored `target/browser-validation-migration-evidence/`.
+  Preserved relative paths and raw bytes for **98 files / 236,065 bytes**, selecting
+  only `.log`, `.json`, and `.jsonl` logs, summaries, and context. No build artifacts
+  were copied. `diff -rq` between source and destination passed; `git check-ignore`
+  confirms the destination is ignored. The original source and all worktrees are
+  retained. Historical evidence paths above resolve beneath this preserved root
+  in the integration checkout; the separate review suite output remains at
+  `target/browser-validation-review.log`.
+- **Validation limits:** original real feature checks passed **23/23**, all four
+  browser acceptance cells and measurement cells passed; native SQL still has the
+  recorded 2-versus-1 assertion failure, feature powerset stops at **8/1035** on
+  pre-existing sharded errors, and CRAP did not complete within **240 seconds**.
+  Workspace Clippy passed its bounded warmed retry after the earlier timeout.
+  These are local results, not remote Actions results; closure does not turn
+  failures/timeouts into passes. No unrelated Rust changes were made.
+- **Doc-correction validation:** `bash -n` for all three scripts,
+  `git diff --check`, and unchanged-script/justfile/Rust-source diff checks against
+  review-fix commit `bd35678627363696a04bdfea840e2d871583e8db` passed. No controlled,
+  browser, or Rust suites were rerun for this documentation-only correction; the
+  two prior green controlled runs and reviewer confirmation remain the test
+  evidence.

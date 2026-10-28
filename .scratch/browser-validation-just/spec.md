@@ -1,6 +1,6 @@
 # Browser validation through just
 
-Status: ready-for-agent
+Status: complete
 
 ## Problem Statement
 
@@ -49,7 +49,7 @@ Local developers and CI use the same recipes. The migration must not reduce cove
 - Chromium and Firefox, each in Window and Dedicated Worker, are the supported matrix. Allow focused and full selections. WebKit is not required.
 - Retain configurable driver locations, browser capabilities, measurement runner selection, output destination, and positive per-command timeout budgets. Handle arguments and paths safely without evaluating caller-supplied shell code.
 - Preserve the existing supported SQL stack configuration, Cargo configuration discovery behavior, test time budgets, and native stack settings. Do not claim default-stack support as a side effect of changing orchestration.
-- Bound compilation as well as execution. A timeout must terminate the launched command and its descendants with bounded escalation; timeout, interruption, and unavailable tooling must never become success. Prompt cancellation requires INT/TERM to the process group containing just and the recipe Bash. Review accepted documenting just 1.49.0's non-forwarding of PID-only SIGINT rather than introducing a replacement public runner: per-command timeout cleanup must remain bounded, and whole-run success requires both zero public exit status and passing required check records.
+- Bound compilation as well as execution. A timeout must terminate the launched command and its descendants with bounded escalation; timeout, interruption, and unavailable tooling must never become success.
 - Use ordinary shell/system utilities where sufficient and document any required utility, including its supported platform assumptions. Do not add an npm environment or bespoke server to implement process control.
 - Record toolchain/revision context, command identity, output, completion status, exit code where available, and elapsed time. Preserve per-check logs and a machine-readable summary without requiring the old Python command-line interface or exact JSON shape. Publish completed evidence incrementally so failures and interruptions leave useful artifacts.
 - Aggregate recipes return nonzero when any required check fails. Where independent checks can still run safely, retain their evidence instead of losing it after the first failure. Prevent a successful logger or pipeline stage from masking the actual command status.
@@ -76,6 +76,12 @@ Local developers and CI use the same recipes. The migration must not reduce cove
 - WebKit, additional browser contexts, Windows shell portability, or new minimum browser guarantees.
 - Fixing pre-existing sharded feature errors, SQL stack requirements, native low-stack failures, or unrelated CRAP performance problems.
 - Preserving the Python command-line interface or rewriting historical validation evidence.
+
+## Implementation Note — just signal delivery
+
+The implemented recipes have a platform limitation: just 1.49.0 does not forward PID-only SIGINT to recipe Bash. Prompt cancellation therefore uses INT/TERM sent to the process group containing both just and the recipe. PID-only SIGINT can leave commands running until completion or their configured timeout; per-command bounded cleanup remains in force. A command can record `passed` while the outer just invocation exits nonzero, so whole-run success must be assessed using both the public exit status and required check records. See `docs/browser-validation.md` and the ticket for controlled regression evidence and the exact supported cancellation procedure.
+
+This note describes implementation behavior, not a change to the normative requirements or user approval to waive them. The ticket records review disposition, preserved evidence, and validation failures/timeouts; completion of this migration does not assert that unrelated Rust validation gates passed.
 
 ## Further Notes
 
