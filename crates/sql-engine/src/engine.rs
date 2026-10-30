@@ -41,6 +41,9 @@ pub enum EngineError {
     #[error("Invalid query: {0}")]
     InvalidQuery(&'static str),
 
+    #[error("Read limit exceeded")]
+    LimitExceeded,
+
     #[error("Sync dependency is unavailable")]
     SyncDependencyUnavailable,
 
@@ -135,6 +138,16 @@ where
     K: Kernel,
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
+    pub fn set_read_limits(&mut self, entries: usize, bytes: usize) -> EngineResult<()> {
+        if self.failed {
+            return Err(EngineError::InvalidQuery("Transaction is aborted"));
+        }
+        self.transaction
+            .as_mut()
+            .ok_or(EngineError::InvalidQuery("Transaction is closed"))?
+            .set_read_limits(entries, bytes)
+    }
+
     /// Uses the same user primary-key tuple as [`Engine::row_conflicts`].
     pub async fn row_conflicts(&mut self, table: &str, key: &Row) -> EngineResult<Vec<String>> {
         if self.failed {
@@ -178,15 +191,21 @@ where
             .transaction
             .as_mut()
             .ok_or(EngineError::InvalidQuery("Transaction is closed"))?;
-        match Box::pin(execute_in_transaction(
+        let result = Box::pin(execute_in_transaction(
             &self.engine,
             transaction,
             statements,
             &mut self.changes,
             &mut self.catalog,
         ))
-        .await
-        {
+        .await;
+        // Codec adapters may erase storage error categories; the transaction owns budget exhaustion.
+        let result = if transaction.read_limit_exceeded() {
+            Err(EngineError::LimitExceeded)
+        } else {
+            result
+        };
+        match result {
             Ok(results) => Ok(results),
             Err(error) => {
                 self.failed = true;

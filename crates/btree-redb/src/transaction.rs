@@ -10,9 +10,12 @@ use btree::{BTreeError, BTreeRead, BTreeResult, BTreeTransaction, ChangeSignal};
 use crate::{
     changes::Mutations,
     key::Key,
+    read_budget::{Borrowed, ReadBudget},
     redb::{RedbKey, RedbValue, table_definition},
     value::Value,
 };
+
+type BorrowedTable<'a, K, V> = Table<'a, Borrowed<Key<K>>, Borrowed<Value<V>>>;
 
 trait WriteTransactionHandle {
     fn native(&self) -> &NativeWriteTransaction;
@@ -23,6 +26,7 @@ trait WriteTransactionHandle {
 pub struct NativeWriteTransaction {
     pub(crate) inner: WriteTransaction,
     mutations: Mutations,
+    pub(crate) read_budget: ReadBudget,
     changes: ChangeSignal,
     _admission: MutexGuardArc<()>,
 }
@@ -36,6 +40,7 @@ impl NativeWriteTransaction {
         Self {
             inner,
             mutations: Mutations::default(),
+            read_budget: ReadBudget::default(),
             changes,
             _admission: admission,
         }
@@ -64,7 +69,7 @@ impl NativeWriteTransaction {
     fn open_existing_table<K: RedbKey, V: RedbValue>(
         &self,
         name: &str,
-    ) -> BTreeResult<Option<Table<'_, Key<K>, Value<V>>>> {
+    ) -> BTreeResult<Option<BorrowedTable<'_, K, V>>> {
         if !self
             .inner
             .list_tables()
@@ -74,9 +79,64 @@ impl NativeWriteTransaction {
             return Ok(None);
         }
         self.inner
-            .open_table(table_definition::<K, V>(name))
+            .open_table(redb::TableDefinition::<Borrowed<Key<K>>, Borrowed<Value<V>>>::new(name))
             .map(Some)
             .map_err(BTreeError::custom)
+    }
+
+    #[inline(never)]
+    fn read_value<K: RedbKey, V: RedbValue>(&self, name: &str, key: &K) -> BTreeResult<Option<V>> {
+        let Some(table) = self.open_existing_table::<K, V>(name)? else {
+            return Ok(None);
+        };
+        let key_bytes = K::as_bytes(key);
+        table
+            .get(key_bytes.as_ref())
+            .map_err(BTreeError::custom)?
+            .map(|value| {
+                let bytes = value.value();
+                self.read_budget
+                    .charge(key_bytes.as_ref().len().saturating_add(bytes.len()))?;
+                Ok(V::from_bytes(bytes))
+            })
+            .transpose()
+    }
+
+    #[inline(never)]
+    fn read_range<K: RedbKey, V: RedbValue, R: RangeBounds<K>>(
+        &self,
+        name: &str,
+        range: R,
+    ) -> BTreeResult<Vec<(K, V)>> {
+        let Some(table) = self.open_existing_table::<K, V>(name)? else {
+            return Ok(Vec::new());
+        };
+        let bound = |bound| match bound {
+            std::ops::Bound::Included(key) => {
+                std::ops::Bound::Included(K::as_bytes(key).as_ref().to_vec())
+            }
+            std::ops::Bound::Excluded(key) => {
+                std::ops::Bound::Excluded(K::as_bytes(key).as_ref().to_vec())
+            }
+            std::ops::Bound::Unbounded => std::ops::Bound::Unbounded,
+        };
+        let bounds = (bound(range.start_bound()), bound(range.end_bound()));
+        let results = table
+            .range::<&[u8]>((
+                bounds.0.as_ref().map(Vec::as_slice),
+                bounds.1.as_ref().map(Vec::as_slice),
+            ))
+            .map_err(BTreeError::custom)?;
+        let mut entries = Vec::new();
+        for result in results {
+            let (key, value) = result.map_err(BTreeError::custom)?;
+            let key = key.value();
+            let value = value.value();
+            self.read_budget
+                .charge(key.len().saturating_add(value.len()))?;
+            entries.push((K::from_bytes(key), V::from_bytes(value)));
+        }
+        Ok(entries)
     }
 
     pub(crate) fn record(
@@ -156,13 +216,7 @@ where
     V: RedbValue,
 {
     async fn get(&self, key: &K) -> BTreeResult<Option<V>> {
-        let Some(table) = self.tx.native().open_existing_table::<K, V>(&self.name)? else {
-            return Ok(None);
-        };
-        Ok(table
-            .get(Key::new(key.clone()))
-            .map_err(BTreeError::custom)?
-            .map(|value| value.value().into_inner()))
+        self.tx.native().read_value::<K, V>(&self.name, key)
     }
 
     fn range<R>(&self, range: R) -> impl Stream<Item = BTreeResult<(K, V)>> + Send
@@ -170,18 +224,7 @@ where
         R: RangeBounds<K> + Send,
     {
         stream! {
-            let entries = {
-                let Some(table) = self.tx.native().open_existing_table::<K, V>(&self.name)? else {
-                    return;
-                };
-                let results = table.range(Key::range(range)).map_err(BTreeError::custom)?;
-                let mut entries = Vec::new();
-                for result in results {
-                    let (key, value) = result.map_err(BTreeError::custom)?;
-                    entries.push((key.value().into_inner(), value.value().into_inner()));
-                }
-                entries
-            };
+            let entries = self.tx.native().read_range::<K, V, R>(&self.name, range)?;
             for entry in entries { yield Ok(entry); }
         }
     }
@@ -196,11 +239,10 @@ where
     async fn insert(&mut self, key: K, value: V) -> BTreeResult<()> {
         let table_name = &self.name;
         let tx = self.tx.native();
+        let old = tx
+            .read_value::<K, V>(table_name, &key)?
+            .map(|entry| V::as_bytes(&entry).as_ref().to_vec());
         let mut table = tx.open_table::<K, V>(table_name)?;
-        let old = table
-            .get(Key::new(key.clone()))
-            .map_err(BTreeError::custom)?
-            .map(|entry| V::as_bytes(&entry.value().into_inner()).as_ref().to_vec());
         let new = V::as_bytes(&value).as_ref().to_vec();
         if old.as_ref() == Some(&new) {
             return Ok(());
@@ -231,11 +273,11 @@ where
 
     async fn remove(&mut self, key: &K) -> BTreeResult<Option<V>> {
         let tx = self.tx.native();
+        let value = tx.read_value::<K, V>(&self.name, key)?;
         let mut table = tx.open_table::<K, V>(&self.name)?;
-        let value = table
+        table
             .remove(Key::new(key.clone()))
-            .map_err(BTreeError::custom)?
-            .map(|entry| entry.value().into_inner());
+            .map_err(BTreeError::custom)?;
         if let Some(value) = &value {
             tx.record(
                 &self.name,
@@ -253,13 +295,10 @@ where
     {
         stream! {
             let tx = self.tx.native();
+            let entries = tx.read_range::<K, V, R>(&self.name, range)?;
             let mut table = tx.open_table::<K, V>(&self.name)?;
-            let results = table.range(Key::range(range)).map_err(BTreeError::custom)?;
             let mut keys = Vec::new();
-            for result in results {
-                let (key, value) = result.map_err(BTreeError::custom)?;
-                let key: K = key.value().into_inner();
-                let value: V = value.value().into_inner();
+            for (key, value) in entries {
                 keys.push((Key::new(key.clone()), V::as_bytes(&value).as_ref().to_vec()));
                 yield Ok((key, value));
             }

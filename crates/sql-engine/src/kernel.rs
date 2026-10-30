@@ -9,6 +9,20 @@ use futures::Stream;
 use crate::EngineResult;
 
 pub trait KernelTransaction: MaybeSend + MaybeSync {
+    /// Sets a cumulative budget before owned native read materialization. Unsupported backends fail closed.
+    fn set_read_limits(&mut self, _entries: usize, _bytes: usize) -> EngineResult<()> {
+        Err(crate::EngineError::Unsupported("native read limits"))
+    }
+
+    /// Checks a decoded row before scan accumulation. Backends without limits accept it.
+    fn check_read_row(&self, _row: &value::Row) -> EngineResult<()> {
+        Ok(())
+    }
+
+    fn read_limit_exceeded(&self) -> bool {
+        false
+    }
+
     fn ensure_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
     fn drop_table(&mut self, table: &str) -> impl Future<Output = EngineResult<()>> + MaybeSend;
 

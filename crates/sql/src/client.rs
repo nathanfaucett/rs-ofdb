@@ -94,6 +94,36 @@ enum TransactionBackend {
 }
 
 impl Transaction {
+    /// Sets one cumulative native key/value read budget, including catalog reads and repeated scans.
+    /// Admission precedes owned native read allocation. This is not a decoded-memory or CPU budget;
+    /// callers must also exclude query shapes that amplify data (joins/computed projections).
+    /// Remote and non-native backends reject this operation without executing queries.
+    pub async fn set_read_limits(
+        &mut self,
+        entries: usize,
+        bytes: usize,
+    ) -> Result<(), QueryError> {
+        let _ = (entries, bytes);
+        Self::run(self.request_deadline, async {
+            match &mut self.backend {
+                #[cfg(any(
+                    feature = "redb",
+                    feature = "in-memory",
+                    all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+                ))]
+                TransactionBackend::Embedded(transaction) => {
+                    transaction.set_read_limits(entries, bytes).await
+                }
+                #[cfg(feature = "remote")]
+                TransactionBackend::Remote(_) => Err(QueryError::new(
+                    QueryErrorKind::Unsupported,
+                    "native read limits",
+                )),
+            }
+        })
+        .await
+    }
+
     /// Inspects conflicts in this transaction's snapshot, including local writes.
     /// Aborted transactions fail on either backend.
     #[inline(never)]

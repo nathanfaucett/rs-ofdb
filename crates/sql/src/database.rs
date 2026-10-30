@@ -100,6 +100,26 @@ pub(crate) enum EmbeddedTransaction {
 }
 
 impl EmbeddedTransaction {
+    pub(crate) async fn set_read_limits(&mut self, entries: usize, bytes: usize) -> SqlResult<()> {
+        match self {
+            #[cfg(feature = "redb")]
+            Self::File(transaction) => transaction
+                .read()
+                .await
+                .map_err(native_error)?
+                .set_read_limits(entries, bytes)
+                .map_err(crate::error::from_engine),
+            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
+            Self::IndexedDb(transaction) => transaction
+                .set_read_limits(entries, bytes)
+                .map_err(crate::error::from_engine),
+            #[cfg(feature = "in-memory")]
+            Self::InMemory(transaction) => transaction
+                .set_read_limits(entries, bytes)
+                .map_err(crate::error::from_engine),
+        }
+    }
+
     pub(crate) async fn row_conflicts(&mut self, table: &str, key: &Row) -> SqlResult<Vec<String>> {
         match self {
             #[cfg(feature = "redb")]
@@ -395,10 +415,21 @@ impl Database {
         crate::Client::embedded(self.clone())
     }
 
+    /// Opens or initializes native persistence. Use `open_existing` for acknowledged resources.
     #[cfg(feature = "redb")]
     pub fn open(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
-        let path = path.as_ref();
-        let database = engine_redb::open_unretired(path, true).map_err(native_error)?;
+        Self::open_native(path.as_ref(), true)
+    }
+
+    /// Validates and opens existing native persistence without creating or initializing it.
+    #[cfg(feature = "redb")]
+    pub fn open_existing(path: impl AsRef<std::path::Path>) -> SqlResult<Self> {
+        Self::open_native(path.as_ref(), false)
+    }
+
+    #[cfg(feature = "redb")]
+    fn open_native(path: &std::path::Path, create: bool) -> SqlResult<Self> {
+        let database = engine_redb::open_unretired(path, create).map_err(native_error)?;
         let database = engine_redb::RedbDatabase::new(std::sync::Arc::new(database));
         #[cfg(feature = "sync")]
         let changes = database.subscribe_changes();

@@ -49,6 +49,15 @@ pub struct RedbDatabaseTransaction {
 }
 
 impl RedbDatabaseTransaction {
+    /// Sets one cumulative native read budget; repeated configuration is rejected.
+    pub fn set_read_limits(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
+        self.inner.read_budget.set(entries, bytes)
+    }
+
+    pub fn read_limit_exceeded(&self) -> bool {
+        self.inner.read_budget.exhausted()
+    }
+
     pub fn table<K, V>(&self, name: impl Into<String>) -> RedbBTreeScopedTransaction<'_, K, V> {
         RedbBTreeScopedTransaction::new(&self.inner, name)
     }

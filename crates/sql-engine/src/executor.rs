@@ -1016,6 +1016,7 @@ where
     let schema = table_schema(transaction, reconciler, &insert.table).await?;
     let row_value = materialize_insert(&schema, insert.row, timestamp_provider)?;
     validate_row(&schema, &row_value)?;
+    transaction.check_read_row(&row_value)?;
     let row = match uuid_primary_key(&schema) {
         Some(index) => {
             let id = row_value.values[index]
@@ -1248,6 +1249,7 @@ where
                 if changed_columns.is_empty() {
                     continue;
                 }
+                transaction.check_read_row(&existing)?;
                 let encoded = reconciler
                     .encode_row(transaction, &table, &row_id, &existing, &changed_columns)
                     .await?;
@@ -1340,6 +1342,7 @@ where
             };
         }
         validate_row(&schema, &row)?;
+        transaction.check_read_row(&row)?;
         let changed_columns: Vec<_> = assignments.iter().map(|(index, _)| *index).collect();
         let value = reconciler
             .encode_row(transaction, &table, &id, &row, &changed_columns)
@@ -1628,6 +1631,7 @@ where
     while let Some(item) = stream.next().await {
         let (row_id, row) = item?;
         let row = materialize_defaults(schema, row);
+        transaction.check_read_row(&row)?;
         if predicate_matches(schema, table_name, &row, predicate)? {
             rows.push((row_id, row));
         }
@@ -1779,6 +1783,7 @@ where
     while let Some(item) = stream.next().await {
         let (_, row) = item?;
         let row = materialize_defaults(&schema, row);
+        transaction.check_read_row(&row)?;
         if !predicate_matches(&schema, &select.from.table, &row, select.predicate.as_ref())? {
             continue;
         }

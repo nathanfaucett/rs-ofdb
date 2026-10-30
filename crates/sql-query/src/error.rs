@@ -11,6 +11,7 @@ pub enum QueryErrorKind {
     Transport = 6,
     Protocol = 7,
     Timeout = 8,
+    LimitExceeded = 9,
 }
 
 impl QueryErrorKind {
@@ -24,6 +25,7 @@ impl QueryErrorKind {
             6 => Some(Self::Transport),
             7 => Some(Self::Protocol),
             8 => Some(Self::Timeout),
+            9 => Some(Self::LimitExceeded),
             _ => None,
         }
     }

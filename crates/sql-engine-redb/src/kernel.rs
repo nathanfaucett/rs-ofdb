@@ -26,6 +26,7 @@ impl RedbKernel {
 
 pub struct RedbKernelTransaction {
     pub(crate) database: RedbDatabaseTransaction,
+    decoded_budget: Option<std::sync::Mutex<(usize, usize)>>,
 }
 
 impl Kernel for RedbKernel {
@@ -39,7 +40,10 @@ impl Kernel for RedbKernel {
         self.database
             .transaction()
             .await
-            .map(|database| RedbKernelTransaction { database })
+            .map(|database| RedbKernelTransaction {
+                database,
+                decoded_budget: None,
+            })
             .map_err(EngineError::custom)
     }
 }
@@ -54,6 +58,46 @@ impl RedbKernelTransaction {
 }
 
 impl KernelTransaction for RedbKernelTransaction {
+    fn set_read_limits(&mut self, entries: usize, bytes: usize) -> EngineResult<()> {
+        self.database
+            .set_read_limits(entries, bytes)
+            .map_err(EngineError::custom)?;
+        self.decoded_budget = Some(std::sync::Mutex::new((entries, bytes)));
+        Ok(())
+    }
+
+    fn check_read_row(&self, row: &value::Row) -> EngineResult<()> {
+        let Some(budget) = self.decoded_budget.as_ref() else {
+            return Ok(());
+        };
+        let mut budget = budget.lock().expect("decoded read budget lock");
+        let (entries, remaining) = &mut *budget;
+        let mut bytes = core::mem::size_of::<value::Row>();
+        for value in &row.values {
+            let size = match value {
+                value::Value::Text(text) => text.len(),
+                value::Value::Blob(blob) => blob.len(),
+                value::Value::Json(_) | value::Value::Type(_) => {
+                    return Err(EngineError::Unsupported("bounded decoded value"));
+                }
+                _ => 0,
+            };
+            bytes = bytes
+                .saturating_add(core::mem::size_of::<value::Value>())
+                .saturating_add(size);
+        }
+        if *entries == 0 || bytes > *remaining {
+            return Err(EngineError::LimitExceeded);
+        }
+        *entries -= 1;
+        *remaining -= bytes;
+        Ok(())
+    }
+
+    fn read_limit_exceeded(&self) -> bool {
+        self.database.read_limit_exceeded()
+    }
+
     async fn ensure_table(&mut self, table: &str) -> EngineResult<()> {
         self.database
             .create_table::<Bytes, Bytes>(table)

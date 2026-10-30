@@ -23,8 +23,8 @@ pub use engine_redb::{RedbKernel, RedbKernelTransaction, redb};
 #[cfg(feature = "macros")]
 pub use macros::FromRow;
 pub use query::{
-    Query, QueryColumn, QueryDelete, QueryError, QueryErrorKind, QueryExpr, QueryExprValue,
-    QueryFrom, QueryInsert, QueryParams, QueryResult, QuerySelect, QueryUpdate,
+    DataDefinition, Query, QueryColumn, QueryDelete, QueryError, QueryErrorKind, QueryExpr,
+    QueryExprValue, QueryFrom, QueryInsert, QueryParams, QueryResult, QuerySelect, QueryUpdate,
     QueryUpdateAssignment, Statement, TranslateError, Translator,
 };
 #[cfg(feature = "server")]

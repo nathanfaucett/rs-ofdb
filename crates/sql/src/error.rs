@@ -16,6 +16,7 @@ pub(crate) fn from_engine(error: engine::EngineError) -> Error {
         EngineError::Unsupported(_) | EngineError::SyncDependencyUnavailable => {
             QueryErrorKind::Unsupported
         }
+        EngineError::LimitExceeded => QueryErrorKind::LimitExceeded,
         EngineError::Custom(_) => QueryErrorKind::Storage,
     };
     Error::new(kind, error.to_string())
