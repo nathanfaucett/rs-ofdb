@@ -16,7 +16,9 @@
     "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/db/pkg --features indexeddb --locked",
     "build:ts": "tsc -p tsconfig.json",
     "clean": "shx rm -rf esm types pkg tsconfig.tsbuildinfo",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

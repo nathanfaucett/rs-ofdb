@@ -11,5 +11,5 @@ pub async fn init() {
     console_error_panic_hook::set_once();
 }
 
-pub use kv::Kv;
-pub use sql::Sql;
+pub use kv::{KvClient, KvDatabase, KvTransaction};
+pub use sql::{SqlClient, SqlDatabase, SqlTransaction};

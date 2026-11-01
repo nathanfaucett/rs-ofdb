@@ -17,6 +17,9 @@ sync = [
 ]
 
 [dependencies]
+ofdb-wasm = { path = "../../crates/wasm", default-features = false, features = [
+    "indexeddb",
+] }
 ofdb-kv = { path = "../../crates/kv", default-features = false, features = [
     "in-memory",
     "indexeddb",

@@ -5,6 +5,7 @@ mod local_storage;
 mod smoke;
 
 mod indexeddb;
+mod wasm_api;
 
 #[cfg(feature = "sync")]
 mod kv_sync;
