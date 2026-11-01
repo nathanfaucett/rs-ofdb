@@ -1,7 +1,7 @@
-import { SqlError, wrapError } from "../error";
-import type { WasmSqlClient } from "../wasm";
-import type { QueryParams, SqlResult } from "./result";
-import { SqlTransaction } from "./transaction";
+import { SqlError, wrapError } from "../error.js";
+import type { WasmSqlClient } from "../wasm.js";
+import type { QueryParams, SqlResult } from "./result.js";
+import { SqlTransaction } from "./transaction.js";
 
 /** SQL query handle — the only API for SQL reads and writes. */
 export class SqlClient {

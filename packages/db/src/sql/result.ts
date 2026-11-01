@@ -1,4 +1,4 @@
-import type { DbValue } from "../value";
+import type { DbValue } from "../value.js";
 
 /** One SQL statement result: column names plus positional row values. */
 export interface SqlResult {

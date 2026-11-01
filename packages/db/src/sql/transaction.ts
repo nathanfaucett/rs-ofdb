@@ -1,6 +1,6 @@
-import { SqlError, wrapError } from "../error";
-import type { WasmSqlTransaction } from "../wasm";
-import type { QueryParams, SqlResult } from "./result";
+import { SqlError, wrapError } from "../error.js";
+import type { WasmSqlTransaction } from "../wasm.js";
+import type { QueryParams, SqlResult } from "./result.js";
 
 /** SQL transaction — holds statements until commit or rollback. */
 export class SqlTransaction {

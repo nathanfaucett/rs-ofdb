@@ -1,7 +1,7 @@
-import { KvError, wrapError } from "../error";
-import type { DbValue } from "../value";
-import type { WasmKvTransaction } from "../wasm";
-import type { KVEntry } from "./client";
+import { KvError, wrapError } from "../error.js";
+import type { DbValue } from "../value.js";
+import type { WasmKvTransaction } from "../wasm.js";
+import type { KVEntry } from "./client.js";
 
 /** KV transaction — holds operations until commit or rollback. */
 export class KvTransaction {

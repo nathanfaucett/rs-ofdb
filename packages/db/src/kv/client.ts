@@ -1,7 +1,7 @@
-import { KvError, wrapError } from "../error";
-import type { DbValue } from "../value";
-import type { WasmKvClient } from "../wasm";
-import { KvTransaction } from "./transaction";
+import { KvError, wrapError } from "../error.js";
+import type { DbValue } from "../value.js";
+import type { WasmKvClient } from "../wasm.js";
+import { KvTransaction } from "./transaction.js";
 
 /** One KV entry returned by scan operations. */
 export interface KVEntry {

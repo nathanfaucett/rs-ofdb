@@ -1,7 +1,7 @@
-import { SqlError, wrapError } from "../error";
-import type { WasmSqlDatabase } from "../wasm";
-import { loadWasm } from "../wasm";
-import { SqlClient } from "./client";
+import { SqlError, wrapError } from "../error.js";
+import type { WasmSqlDatabase } from "../wasm.js";
+import { loadWasm } from "../wasm.js";
+import { SqlClient } from "./client.js";
 
 /** Embedded SQL database handle. Opens the store and creates query handles. */
 export class SqlDatabase {
