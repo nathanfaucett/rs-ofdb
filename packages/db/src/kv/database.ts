@@ -1,6 +1,6 @@
 import { KvError, wrapError } from "../error";
-import { loadWasm } from "../wasm";
 import type { WasmKvDatabase } from "../wasm";
+import { loadWasm } from "../wasm";
 import { KvClient } from "./client";
 
 /** Embedded KV database handle. Opens the store and creates query handles. */

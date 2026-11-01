@@ -1,5 +1,5 @@
-import { DbValue } from "../value";
 import { KvError, wrapError } from "../error";
+import type { DbValue } from "../value";
 import type { WasmKvClient } from "../wasm";
 import { KvTransaction } from "./transaction";
 

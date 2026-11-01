@@ -1,6 +1,6 @@
 import { SqlError, wrapError } from "../error";
-import { loadWasm } from "../wasm";
 import type { WasmSqlDatabase } from "../wasm";
+import { loadWasm } from "../wasm";
 import { SqlClient } from "./client";
 
 /** Embedded SQL database handle. Opens the store and creates query handles. */

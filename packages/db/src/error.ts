@@ -1,4 +1,9 @@
-export type DbErrorKind = "timeout" | "query" | "connect" | "transport" | "internal";
+export type DbErrorKind =
+  | "timeout"
+  | "query"
+  | "connect"
+  | "transport"
+  | "internal";
 
 /** Base error for all @of/db operations. */
 export class DbError extends Error {
@@ -28,7 +33,10 @@ export class SqlError extends DbError {
 }
 
 /** Wrap a raw WASM/JS error into a typed DbError subclass. */
-export function wrapError(error: unknown, fallback: typeof KvError | typeof SqlError): DbError {
+export function wrapError(
+  error: unknown,
+  fallback: typeof KvError | typeof SqlError,
+): DbError {
   if (error instanceof DbError) return error;
   const message = error instanceof Error ? error.message : String(error);
   return new fallback("internal", message, { cause: error });

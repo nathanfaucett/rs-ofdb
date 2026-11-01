@@ -1,6 +1,6 @@
 import { SqlError, wrapError } from "../error";
 import type { WasmSqlClient } from "../wasm";
-import { QueryParams, SqlResult } from "./result";
+import type { QueryParams, SqlResult } from "./result";
 import { SqlTransaction } from "./transaction";
 
 /** SQL query handle — the only API for SQL reads and writes. */
