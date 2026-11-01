@@ -1,0 +1,21 @@
+{
+  "name": "ofdb-browser-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript-first persistent browser KV and SQL example for ofdb",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@of/db": "file:.."
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "6.0.0",
+    "@playwright/test": "1.49.0"
+  }
+}

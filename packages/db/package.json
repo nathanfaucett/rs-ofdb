@@ -1,0 +1,32 @@
+{
+  "name": "@of/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript wrapper for ofdb WASM (KV + SQL over IndexedDB)",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "pnpm run build:wasm && pnpm run build:ts",
+    "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/db/pkg --features indexeddb --locked",
+    "build:ts": "tsc -p tsconfig.json",
+    "clean": "shx rm -rf esm types pkg tsconfig.tsbuildinfo",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "shx": "^0.4.0",
+    "typescript": "^5.9.3",
+    "wasm-pack": "^0.13.0"
+  },
+  "files": [
+    "esm",
+    "types",
+    "pkg"
+  ]
+}

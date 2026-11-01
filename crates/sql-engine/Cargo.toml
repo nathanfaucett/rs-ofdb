@@ -15,29 +15,41 @@ name = "engine"
 [features]
 default = ["std"]
 std = [
-  "futures/std",
-  "uuid/std",
-  "async-lock/std",
-  "serde/std",
-  "serde_json/std",
-  "btree/std",
-  "btree/changes",
-  "schema/std",
-  "value/std",
-  "query/std"
+    "futures/std",
+    "uuid/std",
+    "async-lock/std",
+    "serde/std",
+    "serde_json/std",
+    "btree/std",
+    "btree/changes",
+    "schema/std",
+    "value/std",
+    "query/std",
 ]
 in-memory = []
-wasm = ["dep:tsify", "dep:serde-wasm-bindgen", "dep:wasm-bindgen", "value/wasm", "query/wasm", "schema/wasm"]
+wasm = [
+    "dep:tsify",
+    "dep:serde-wasm-bindgen",
+    "dep:wasm-bindgen",
+    "value/wasm",
+    "query/wasm",
+    "schema/wasm",
+]
 
 [dependencies]
 # Platform execution
-platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [
+] }
 
 # internal dependencies
-btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [] }
-query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [] }
-schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [] }
-value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [] }
+btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
+] }
+query = { version = "0.1", path = "../sql-query", package = "ofdb-sql-query", default-features = false, features = [
+] }
+schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema", default-features = false, features = [
+] }
+value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [
+] }
 
 
 # external dependencies
@@ -45,15 +57,24 @@ async-lock = { version = "3.4", default-features = false, features = [] }
 async-stream = { version = "0.3", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = [] }
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
-serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde = { version = "1.0", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false, features = [] }
 thiserror = { version = "2.0", default-features = false }
-uuid = { version = "1.23", default-features = false, features = ["serde", "v7"] }
+uuid = { version = "1.29", default-features = false, features = [
+    "serde",
+    "v7",
+] }
 
 # Optional TS generation + serde for tsify
-tsify = { version = "0.5", default-features = false, features = ["js"], optional = true }
-serde-wasm-bindgen = { version = "0.6", default-features = false, features=[], optional = true }
+tsify = { version = "0.5", default-features = false, features = [
+    "js",
+], optional = true }
+serde-wasm-bindgen = { version = "0.6", default-features = false, features = [
+], optional = true }
 wasm-bindgen = { version = "0.2", default-features = false, features = [
 ], optional = true }
 

@@ -2,6 +2,16 @@
 resolver = "3"
 members = ["crates/*"]
 
+[workspace.dependencies]
+js-sys = { version = "0.3", default-features = false }
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+wasm-bindgen-futures = { version = "0.4", default-features = false }
+web-sys = { version = "0.3", default-features = false }
+uuid = { version = "1.29", default-features = false, features = ["v7", "js"] }
+console_error_panic_hook = { version = "0.1", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -64,4 +74,4 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = false

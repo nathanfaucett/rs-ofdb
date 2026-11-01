@@ -37,7 +37,7 @@ See [validation evidence and reproduction](browser-validation.md).
 
 These are Rust APIs to call from an async browser entry point or event handler
 using your existing Wasm integration. For a complete runnable KV and SQL page, see the
-[persistent browser example](../examples/browser/README.md) (`just browser-example-serve`).
+[persistent browser example](../packages/db/example/README.md) (`just browser-example-serve`).
 There is no public JavaScript SDK, npm package or bundled browser transport. Build with
 `--target wasm32-unknown-unknown` and install that target using rustup.
 

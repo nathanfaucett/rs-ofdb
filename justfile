@@ -19,9 +19,7 @@ help:
     @printf "  doc            Build workspace documentation\n"
     @printf "  browser-{check,accept,measure,native,final}  Bounded release validation (just --list)\n"
     @printf "  browser-orchestration-test  Controlled public-recipe checks\n"
-    @printf "  browser-example-build  Build the persistent KV and SQL Wasm page\n"
-    @printf "  browser-example-serve  Build and serve at http://127.0.0.1:8080\n"
-    @printf "  browser-example-smoke  Build and check the page in Chromium and Firefox\n"
+
 
 build:
     cargo build --workspace
@@ -62,14 +60,7 @@ clean:
 doc:
     cargo doc --workspace --no-deps
 
-browser-example-build:
-    (cd examples/browser && wasm-pack build . --target web --dev --no-pack -- --locked)
 
-browser-example-serve port="8080": browser-example-build
-    cargo run --locked --manifest-path examples/browser/tools/Cargo.toml -- serve {{ port }}
-
-browser-example-smoke: browser-example-build
-    cargo run --locked --manifest-path examples/browser/tools/Cargo.toml -- smoke
 
 # Independent facade builds, dependency policies, browser Clippy and published quickstarts.
 [positional-arguments]

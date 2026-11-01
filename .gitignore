@@ -1,5 +1,2 @@
 /target
-/examples/browser/target/
-/examples/browser/pkg/
-/examples/browser/tools/target/
-/.scratch/browser-tools/
+/node_modules
