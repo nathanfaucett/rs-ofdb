@@ -1,8 +1,8 @@
 # Persistent browser KV and SQL example
 
-A TypeScript-first example demonstrating persistent key-value and SQL stores in the browser using IndexedDB via the `@of/db` npm package (which wraps the ofdb WASM module).
+A TypeScript-first Svelte + Tailwind example demonstrating persistent key-value and SQL stores in the browser using IndexedDB via the `@of/db` npm package (which wraps the ofdb WASM module).
 
-The application schema, queries, parameters, row shaping, and UI all live in TypeScript. The Rust code is a generic engine bridge (`ofdb-wasm` crate) that opens IndexedDB stores and executes SQL text.
+The application schema, queries, parameters, row shaping, and UI all live in TypeScript (`src/App.svelte`). The Rust code is a generic engine bridge (`ofdb-wasm` crate) that opens IndexedDB stores and executes SQL text.
 
 ## Build and open
 
@@ -10,16 +10,16 @@ From the repository root:
 
 ```sh
 # Build the @of/db npm package (compiles WASM via wasm-pack)
-cd packages/db && pnpm run build
+pnpm db:build
 
-# Build the browser example TypeScript
-cd packages/db/example && npm install && npm run build
+# Build the browser example (Svelte + Vite)
+pnpm db:example:build
 ```
 
 ### Development server (Vite)
 
 ```sh
-cd packages/db/example && npx vite --port 8080 --host 127.0.0.1
+pnpm db:example:dev
 ```
 
 Open **http://127.0.0.1:8080/** in Chromium or Firefox.
@@ -28,12 +28,12 @@ Wait for startup, enter a KV Key and text value, and select **Save**. Wait for *
 
 In the SQL section, enter a **Text record** and select **Add record** (or press Enter). Wait for **Added and committed.**, then reload: startup lists committed records afresh. **List records** explicitly refreshes the list. Fresh storage shows **No records yet.** Input containing HTML or SQL punctuation stays literal text. Neither section inserts seed data; opening/reloading never resets either store.
 
-TypeScript sources are in `ts/`; `npm run build` compiles them to `dist/` for production.
+TypeScript/Svelte sources are in `src/`; `npm run build` compiles them to `dist/` for production.
 
 ### Production preview
 
 ```sh
-cd packages/db/example && npx vite preview --port 8080 --host 127.0.0.1
+pnpm db:example:preview
 ```
 
 ## Storage and failures
@@ -46,7 +46,7 @@ Browser eviction, private-mode restrictions, denied storage access, quota limits
 
 ```sh
 cd packages/db/example && npx playwright install --with-deps chromium firefox
-cd packages/db/example && npx playwright test smoke.test.ts
+pnpm db:example:test
 ```
 
 The Playwright test suite checks:
@@ -62,8 +62,8 @@ Both Chromium and Firefox are required; either failing returns nonzero with phas
 
 ```sh
 # Build and check the @of/db package
-cd packages/db && pnpm run check
+pnpm --filter @of/db run check
 
-# Check the browser example TypeScript
-cd packages/db/example && npm run check
+# Check the browser example (svelte-check)
+pnpm db:example:check
 ```

@@ -10,7 +10,11 @@
     "format:fix": "pnpm -r run format:fix",
     "packages:build": "pnpm --filter \"./packages/*\" run build",
     "db:build": "pnpm --filter @of/db run build",
-    "example:build": "pnpm --filter ofdb-browser-example run build"
+    "db:example:dev": "pnpm --filter ofdb-browser-example run dev",
+    "db:example:build": "pnpm --filter ofdb-browser-example run build",
+    "db:example:preview": "pnpm --filter ofdb-browser-example run preview",
+    "db:example:check": "pnpm --filter ofdb-browser-example run check",
+    "db:example:test": "pnpm --filter ofdb-browser-example run test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3"
