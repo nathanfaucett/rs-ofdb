@@ -36,9 +36,3 @@ wasm-bindgen-futures = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = { version = "0.3", default-features = false }
-
-[profile.release]
-strip = false
-codegen-units = 1
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+bulk-memory"]

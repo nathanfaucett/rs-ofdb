@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>SQL binding qualification</title>
+<script type="module">
+    import { holdNextCompletion } from "/fixtures/deadline_helpers.js";
+    import { failNextCommit } from "/fixtures/indexeddb_helpers.js";
+    import {
+        denyOpen,
+        malformed,
+        sentinel,
+    } from "/fixtures/storage_lifecycle_helpers.js";
+    import * as sql from "../browser/index.js";
+
+    window.faults = {
+        failNextCommit,
+        denyOpen,
+        malformed,
+        sentinel,
+        holdNextCompletion,
+    };
+    window.makeSqlWorker = () =>
+        new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+    window.sql = sql;
+</script>

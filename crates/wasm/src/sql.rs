@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use ofdb_kv::{encode_value, parse_value};
 use ofdb_sql::{Client, Database, QueryParams, QueryResult, Transaction};
 use serde_json::Value as Json;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use crate::value::{parse_json, value_from_json, value_to_json, write_json};
+use crate::value::{parse_json, write_json};
 
 #[wasm_bindgen]
 pub struct SqlDatabase {
@@ -39,7 +40,8 @@ impl SqlClient {
     /// Execute SQL text with optional bound parameters and return results as JSON.
     ///
     /// Parameters are a JSON array for positional placeholders or a JSON object for
-    /// named placeholders. The result is a JSON array of `{ columns, rows }` objects.
+    /// named placeholders. Every value uses the owner's lossless tagged codec.
+    /// The result is a JSON array of `{ columns, rows }` objects with tagged cells.
     pub async fn execute(&self, sql: String, params: Option<String>) -> Result<String, JsError> {
         let params = match params {
             Some(params) => Some(parse_params(&params)?),
@@ -115,7 +117,7 @@ fn results_to_json(results: &[QueryResult]) -> Json {
                 let rows = result
                     .rows
                     .iter()
-                    .map(|row| Json::Array(row.values.iter().map(value_to_json).collect()))
+                    .map(|row| Json::Array(row.values.iter().cloned().map(encode_value).collect()))
                     .collect::<Vec<_>>();
                 Json::Object(
                     [
@@ -134,13 +136,18 @@ fn results_to_json(results: &[QueryResult]) -> Json {
 fn parse_params(text: &str) -> Result<QueryParams, JsError> {
     match parse_json(text)? {
         Json::Array(values) => Ok(QueryParams::Positional(
-            values.iter().map(value_from_json).collect(),
+            values
+                .iter()
+                .map(parse_value)
+                .collect::<Result<_, _>>()
+                .map_err(|error| JsError::new(&error))?,
         )),
         Json::Object(values) => Ok(QueryParams::Named(
             values
                 .iter()
-                .map(|(name, value)| (name.clone(), value_from_json(value)))
-                .collect::<BTreeMap<_, _>>(),
+                .map(|(name, value)| Ok((name.clone(), parse_value(value)?)))
+                .collect::<Result<BTreeMap<_, _>, String>>()
+                .map_err(|error| JsError::new(&error))?,
         )),
         other => Err(JsError::new(&format!(
             "query parameters must be a JSON array or object, got {other}"

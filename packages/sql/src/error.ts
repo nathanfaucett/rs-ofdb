@@ -24,6 +24,18 @@ export class SqlError extends DbError {
   }
 }
 
+/** A started commit failed. Its durable outcome must be checked by reopening and reading. */
+export class SqlCommitError extends SqlError {
+  readonly outcome = "unknown";
+
+  constructor(cause: unknown) {
+    super("internal", "SQL commit failed; durable outcome is unknown", {
+      cause,
+    });
+    this.name = "SqlCommitError";
+  }
+}
+
 /** Wrap a raw WASM/JS error into a typed DbError subclass. */
 export function wrapError(error: unknown, fallback: typeof SqlError): DbError {
   if (error instanceof DbError) return error;
