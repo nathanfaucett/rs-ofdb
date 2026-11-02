@@ -7,5 +7,5 @@ export default defineConfig({
     format: "esm",
     codeSplitting: false,
   },
-  external: ["@ofdb/sql"],
+  external: ["../pkg/ofdb_wasm.js"],
 });

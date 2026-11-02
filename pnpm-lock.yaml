@@ -70,19 +70,25 @@ importers:
   packages/sql:
     devDependencies:
       '@biomejs/biome':
-        specifier: ^2.5.3
+        specifier: 2.6.4
         version: 2.6.4
+      '@playwright/test':
+        specifier: 1.49.0
+        version: 1.49.0
       rolldown:
-        specifier: ^1.1.5
+        specifier: 1.2.16
         version: 1.2.16
       shx:
-        specifier: ^0.4.0
+        specifier: 0.4.0
         version: 0.4.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 5.9.3
         version: 5.9.3
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(jiti@2.7.0)
       wasm-pack:
-        specifier: ^0.13.0
+        specifier: 0.13.1
         version: 0.13.1
 
 packages:

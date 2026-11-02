@@ -7,3 +7,6 @@
 /.nyc_output/
 /npm-debug.log
 /*.tsbuildinfo
+/test-results/
+/playwright-report/
+/artifacts/

@@ -20,20 +20,14 @@ async fn kv_wasm_database_client_transaction_commit() {
 
     let mut tx = client.transaction().await.expect("begin tx");
     tx.set("c".into(), "3".into(), None).await.expect("tx set");
-    assert_eq!(
-        tx.get("c".into()).await.expect("tx get"),
-        Some("3".into())
-    );
+    assert_eq!(tx.get("c".into()).await.expect("tx get"), Some("3".into()));
     tx.commit().await.expect("commit");
 
     let all = client.scan_all().await.expect("scan all");
     assert!(all.contains("\"key\":\"a\""));
     assert!(all.contains("\"key\":\"c\""));
 
-    let reopened = KvDatabase::open(name)
-        .await
-        .expect("reopen")
-        .client();
+    let reopened = KvDatabase::open(name).await.expect("reopen").client();
     assert_eq!(
         reopened.get("c".into()).await.expect("get persisted"),
         Some("3".into())
@@ -43,10 +37,7 @@ async fn kv_wasm_database_client_transaction_commit() {
 #[wasm_bindgen_test]
 async fn kv_wasm_transaction_rollback() {
     let name = format!("wasm-kv-rollback-{}", uuid::Uuid::now_v7());
-    let client = KvDatabase::open(name.clone())
-        .await
-        .expect("open")
-        .client();
+    let client = KvDatabase::open(name.clone()).await.expect("open").client();
     client
         .set("x".into(), "original".into(), None)
         .await
@@ -81,12 +72,18 @@ async fn kv_wasm_scan_prefix_and_deadline_clone() {
         .await
         .expect("set");
 
-    let prefix_scan = client.scan_prefix("user:".into()).await.expect("scan prefix");
+    let prefix_scan = client
+        .scan_prefix("user:".into())
+        .await
+        .expect("scan prefix");
     assert!(prefix_scan.contains("user:1"));
     assert!(prefix_scan.contains("user:2"));
     assert!(!prefix_scan.contains("\"key\":\"other\""));
 
-    let range = client.scan("user:".into(), "user;".into()).await.expect("scan range");
+    let range = client
+        .scan("user:".into(), "user;".into())
+        .await
+        .expect("scan range");
     assert!(range.contains("user:1"));
 
     let deadline_client = client.with_deadline(5000);
@@ -106,10 +103,7 @@ async fn sql_wasm_database_client_transaction_commit() {
     let client = db.client();
 
     client
-        .execute(
-            "CREATE TABLE items (name TEXT PRIMARY KEY)".into(),
-            None,
-        )
+        .execute("CREATE TABLE items (name TEXT PRIMARY KEY)".into(), None)
         .await
         .expect("create table");
 
@@ -126,13 +120,10 @@ async fn sql_wasm_database_client_transaction_commit() {
         .execute("SELECT name FROM items ORDER BY name".into(), None)
         .await
         .expect("select");
-    assert!(result.contains("\"name\":\"one\""));
-    assert!(result.contains("\"name\":\"two\""));
+    assert!(result.contains("\"value\":\"one\""));
+    assert!(result.contains("\"value\":\"two\""));
 
-    let reopened = SqlDatabase::open(name)
-        .await
-        .expect("reopen")
-        .client();
+    let reopened = SqlDatabase::open(name).await.expect("reopen").client();
     let persisted = reopened
         .execute("SELECT COUNT(*) FROM items".into(), None)
         .await
@@ -175,21 +166,27 @@ async fn sql_wasm_execute_with_params_and_deadline() {
     let name = format!("wasm-sql-params-{}", uuid::Uuid::now_v7());
     let client = SqlDatabase::open(name).await.expect("open").client();
     client
-        .execute("CREATE TABLE p (id INTEGER PRIMARY KEY, label TEXT)".into(), None)
+        .execute(
+            "CREATE TABLE p (id INTEGER PRIMARY KEY, label TEXT)".into(),
+            None,
+        )
         .await
         .expect("create");
 
     client
         .execute(
             "INSERT INTO p (id, label) VALUES ($1, $2)".into(),
-            Some("[42, \"hello\"]".into()),
+            Some(r#"[{"type":"integer","value":"42"},{"type":"text","value":"hello"}]"#.into()),
         )
         .await
         .expect("insert with positional params");
 
     let deadline_client = client.with_deadline(5000);
     let result = deadline_client
-        .execute("SELECT label FROM p WHERE id = $1".into(), Some("[42]".into()))
+        .execute(
+            "SELECT label FROM p WHERE id = $1".into(),
+            Some(r#"[{"type":"integer","value":"42"}]"#.into()),
+        )
         .await
         .expect("select with params");
     assert!(result.contains("hello"));
