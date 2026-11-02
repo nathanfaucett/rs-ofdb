@@ -1,13 +1,20 @@
-import { SqlError, wrapError } from "./error.js";
+import { SqlCommitError, SqlError, wrapError } from "./error.js";
+import { Handle } from "./handle.js";
 import type { QueryParams, SqlResult } from "./result.js";
+import { decodeResults, encodeParams } from "./result.js";
 import type { WasmSqlTransaction } from "./wasm.js";
 
 /** SQL transaction — holds statements until commit or rollback. */
 export class SqlTransaction {
-  private wasm: WasmSqlTransaction;
+  private readonly handle: Handle<WasmSqlTransaction>;
 
   constructor(wasm: WasmSqlTransaction) {
-    this.wasm = wasm;
+    this.handle = new Handle(wasm);
+  }
+
+  /** Discard uncommitted work after any in-flight execution settles. */
+  close(): void {
+    this.handle.close();
   }
 
   /** Run SQL text within the transaction.
@@ -16,11 +23,12 @@ export class SqlTransaction {
    */
   async execute(sql: string, params?: QueryParams): Promise<SqlResult[]> {
     try {
-      const raw = await this.wasm.execute(
-        sql,
-        params === undefined ? undefined : JSON.stringify(params),
+      const encoded = encodeParams(params);
+      const raw = await this.handle.run(
+        (wasm) => wasm.execute(sql, encoded),
+        true,
       );
-      return JSON.parse(raw) as SqlResult[];
+      return decodeResults(raw);
     } catch (error) {
       throw wrapError(error, SqlError);
     }
@@ -31,19 +39,20 @@ export class SqlTransaction {
     return this.execute(sql, params);
   }
 
-  /** Commit all pending statements. */
+  /** Consumes the transaction. Rejection does not prove rollback: reopen and read. */
   async commit(): Promise<void> {
+    const wasm = this.handle.take();
     try {
-      await this.wasm.commit();
+      await wasm.commit();
     } catch (error) {
-      throw wrapError(error, SqlError);
+      throw new SqlCommitError(error);
     }
   }
 
   /** Discard all pending statements. */
   async rollback(): Promise<void> {
     try {
-      await this.wasm.rollback();
+      await this.handle.take().rollback();
     } catch (error) {
       throw wrapError(error, SqlError);
     }
