@@ -1,11 +1,15 @@
-import { SqlError, wrapError } from "../error.js";
-import type { WasmSqlDatabase } from "../wasm.js";
-import { loadWasm } from "../wasm.js";
 import { SqlClient } from "./client.js";
+import { SqlError, wrapError } from "./error.js";
+import type { WasmSqlDatabase } from "./wasm.js";
+import { loadWasm } from "./wasm.js";
 
 /** Embedded SQL database handle. Opens the store and creates query handles. */
 export class SqlDatabase {
-  private constructor(private readonly wasm: WasmSqlDatabase) {}
+  private readonly wasm: WasmSqlDatabase;
+
+  private constructor(wasm: WasmSqlDatabase) {
+    this.wasm = wasm;
+  }
 
   /** Open a persistent SQL database backed by IndexedDB. */
   static async open(name: string): Promise<SqlDatabase> {

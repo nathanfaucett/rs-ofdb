@@ -5,7 +5,7 @@ export type DbErrorKind =
   | "transport"
   | "internal";
 
-/** Base error for all @of/db operations. */
+/** Base error for all @ofdb/kv operations. */
 export class DbError extends Error {
   readonly kind: DbErrorKind;
 
@@ -24,19 +24,8 @@ export class KvError extends DbError {
   }
 }
 
-/** Error from a SQL store operation. */
-export class SqlError extends DbError {
-  constructor(kind: DbErrorKind, message: string, options?: ErrorOptions) {
-    super(kind, message, options);
-    this.name = "SqlError";
-  }
-}
-
 /** Wrap a raw WASM/JS error into a typed DbError subclass. */
-export function wrapError(
-  error: unknown,
-  fallback: typeof KvError | typeof SqlError,
-): DbError {
+export function wrapError(error: unknown, fallback: typeof KvError): DbError {
   if (error instanceof DbError) return error;
   const message = error instanceof Error ? error.message : String(error);
   return new fallback("internal", message, { cause: error });

@@ -1,0 +1,54 @@
+{
+  "name": "@ofdb/sql",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript wrapper for ofdb SQL over IndexedDB",
+  "keywords": [
+    "ofdb",
+    "sql",
+    "database",
+    "indexeddb",
+    "wasm"
+  ],
+  "author": "Nathan Faucett",
+  "license": "(MIT OR Apache-2.0)",
+  "readmeFilename": "README.md",
+  "module": "esm",
+  "main": "esm",
+  "types": "types",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build:esm": "tsc",
+    "build:browser": "rolldown -c",
+    "build": "pnpm run clean && pnpm run build:esm && pnpm run build:browser",
+    "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/sql/pkg --features indexeddb --locked",
+    "build:all": "pnpm run build:wasm && pnpm run clean && pnpm run build:esm && pnpm run build:browser",
+    "clean": "shx rm -rf esm types browser tsconfig.tsbuildinfo",
+    "check": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format .",
+    "format:fix": "biome format --write .",
+    "prepublishOnly": "pnpm run build:all"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "rolldown": "^1.1.5",
+    "shx": "^0.4.0",
+    "typescript": "^5.9.3",
+    "wasm-pack": "^0.13.0"
+  },
+  "files": [
+    "esm",
+    "types",
+    "pkg",
+    "browser"
+  ]
+}

@@ -1,11 +1,15 @@
-import { KvError, wrapError } from "../error.js";
-import type { WasmKvDatabase } from "../wasm.js";
-import { loadWasm } from "../wasm.js";
 import { KvClient } from "./client.js";
+import { KvError, wrapError } from "./error.js";
+import type { WasmKvDatabase } from "./wasm.js";
+import { loadWasm } from "./wasm.js";
 
 /** Embedded KV database handle. Opens the store and creates query handles. */
 export class KvDatabase {
-  private constructor(private readonly wasm: WasmKvDatabase) {}
+  private readonly wasm: WasmKvDatabase;
+
+  private constructor(wasm: WasmKvDatabase) {
+    this.wasm = wasm;
+  }
 
   /** Open a persistent KV database backed by IndexedDB. */
   static async open(name: string): Promise<KvDatabase> {

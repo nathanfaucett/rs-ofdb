@@ -1,12 +1,23 @@
-import { KvError, wrapError } from "../error.js";
-import type { DbValue } from "../value.js";
-import type { WasmKvTransaction } from "../wasm.js";
-import type { KVEntry } from "./client.js";
+import { KvError, wrapError } from "./error.js";
+import { KvTransaction } from "./transaction.js";
+import type { DbValue } from "./value.js";
+import type { WasmKvClient } from "./wasm.js";
 
-/** KV transaction — holds operations until commit or rollback. */
-export class KvTransaction {
-  constructor(private wasm: WasmKvTransaction) {}
+/** One KV entry returned by scan operations. */
+export interface KVEntry {
+  key: string;
+  value: DbValue;
+}
 
+/** KV query handle — the only API for KV reads and writes. */
+export class KvClient {
+  private readonly wasm: WasmKvClient;
+
+  constructor(wasm: WasmKvClient) {
+    this.wasm = wasm;
+  }
+
+  /** Read a committed value, or undefined when the key is missing. */
   async get<T extends DbValue = DbValue>(key: string): Promise<T | undefined> {
     try {
       const raw = await this.wasm.get(key);
@@ -16,6 +27,7 @@ export class KvTransaction {
     }
   }
 
+  /** Commit a value, optionally with an expiry timestamp (Unix epoch millis). */
   async set(key: string, value: DbValue, expiresAt?: number): Promise<void> {
     try {
       await this.wasm.set(key, JSON.stringify(value), expiresAt);
@@ -24,6 +36,7 @@ export class KvTransaction {
     }
   }
 
+  /** Remove a committed value. */
   async delete(key: string): Promise<void> {
     try {
       await this.wasm.delete(key);
@@ -32,6 +45,7 @@ export class KvTransaction {
     }
   }
 
+  /** Scan entries with keys in [start, end). */
   async scan(start: string, end: string): Promise<KVEntry[]> {
     try {
       const raw = await this.wasm.scan(start, end);
@@ -41,6 +55,7 @@ export class KvTransaction {
     }
   }
 
+  /** Scan entries whose keys start with the given prefix. */
   async scanPrefix(prefix: string): Promise<KVEntry[]> {
     try {
       const raw = await this.wasm.scanPrefix(prefix);
@@ -50,6 +65,7 @@ export class KvTransaction {
     }
   }
 
+  /** Scan all entries. */
   async scanAll(): Promise<KVEntry[]> {
     try {
       const raw = await this.wasm.scanAll();
@@ -59,21 +75,23 @@ export class KvTransaction {
     }
   }
 
-  /** Commit all pending operations. */
-  async commit(): Promise<void> {
+  /** Start a transaction that holds operations until commit or rollback. */
+  async transaction(): Promise<KvTransaction> {
     try {
-      await this.wasm.commit();
+      const wasm = await this.wasm.transaction();
+      return new KvTransaction(wasm);
     } catch (error) {
       throw wrapError(error, KvError);
     }
   }
 
-  /** Discard all pending operations. */
-  async rollback(): Promise<void> {
-    try {
-      await this.wasm.rollback();
-    } catch (error) {
-      throw wrapError(error, KvError);
-    }
+  /** Return a clone of this client with a request deadline in milliseconds. */
+  withDeadline(ms: number): KvClient {
+    return new KvClient(this.wasm.withDeadline(ms));
+  }
+
+  /** Return an independent clone sharing the same storage. */
+  clone(): KvClient {
+    return new KvClient(this.wasm.cloneClient());
   }
 }

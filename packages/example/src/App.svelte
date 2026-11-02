@@ -1,131 +1,140 @@
 <script lang="ts">
-import { KvDatabase, SqlDatabase } from "@of/db";
+    import { KvDatabase, type KvClient } from "@ofdb/kv";
+    import { SqlDatabase, type SqlClient } from "@ofdb/sql";
 
-let kvClient: import("@of/db").KvClient | undefined = $state();
-let sqlClient: import("@of/db").SqlClient | undefined = $state();
+    let kvClient: KvClient | undefined = $state();
+    let sqlClient: SqlClient | undefined = $state();
 
-let key = $state("theme");
-let value = $state("");
-let status = $state("Loading Wasm and opening browser storage…");
-let statusError = $state(false);
-let result = $state("");
-let kvBusy = $state(true);
+    let key = $state("theme");
+    let value = $state("");
+    let status = $state("Loading Wasm and opening browser storage…");
+    let statusError = $state(false);
+    let result = $state("");
+    let kvBusy = $state(true);
 
-let record = $state("");
-let sqlStatus = $state("Loading SQL storage…");
-let sqlStatusError = $state(false);
-let sqlResult: string[] = $state([]);
-let sqlBusy = $state(true);
+    let record = $state("");
+    let sqlStatus = $state("Loading SQL storage…");
+    let sqlStatusError = $state(false);
+    let sqlResult: string[] = $state([]);
+    let sqlBusy = $state(true);
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function report(text: string, error = false): void {
-  status = text;
-  statusError = error;
-}
-
-async function operateKv(save: boolean): Promise<void> {
-  if (kvBusy || !kvClient) return;
-  if (save && !key.trim()) return;
-  kvBusy = true;
-  result = "";
-  report(save ? "Saving…" : "Retrieving…");
-  try {
-    if (save) {
-      await kvClient.set(key, value);
-      report("Saved and committed.");
-    } else {
-      const stored = await kvClient.get(key);
-      if (stored === undefined) {
-        report("Key not found.");
-      } else {
-        result = typeof stored === "string" ? stored : JSON.stringify(stored);
-        report("Retrieved committed value.");
-      }
+    function message(error: unknown): string {
+        return error instanceof Error ? error.message : String(error);
     }
-  } catch (error) {
-    report(
-      `Error: ${message(error)}. Check browser storage permissions and available space; reload and retrieve before retrying a write.`,
-      true,
-    );
-  } finally {
-    kvBusy = false;
-  }
-}
 
-async function listSql(): Promise<void> {
-  if (!sqlClient) return;
-  const results = await sqlClient.execute(
-    "SELECT text FROM records ORDER BY id",
-  );
-  sqlResult = results.flatMap((r) =>
-    r.rows.map((row) => {
-      const first = row[0];
-      return typeof first === "string" ? first : JSON.stringify(first);
-    }),
-  );
-}
-
-async function operateSql(add: boolean): Promise<void> {
-  if (sqlBusy || !sqlClient) return;
-  if (add && !record.trim()) return;
-  sqlBusy = true;
-  sqlStatusError = false;
-  sqlStatus = add ? "Adding…" : "Listing…";
-  try {
-    if (add) {
-      await sqlClient.execute("INSERT INTO records (text) VALUES ($1)", [
-        record,
-      ]);
-      record = "";
+    function report(text: string, error = false): void {
+        status = text;
+        statusError = error;
     }
-    await listSql();
-    sqlStatus = add ? "Added and committed." : "Listed committed records.";
-  } catch (error) {
-    sqlStatusError = true;
-    sqlStatus = `Error: ${message(error)}. Check browser storage permissions and available space; reload and list records before retrying a write.`;
-  } finally {
-    sqlBusy = false;
-  }
-}
 
-async function startKv(): Promise<void> {
-  try {
-    const db = await KvDatabase.open("ofdb-browser-example-kv");
-    kvClient = db.client();
-    kvBusy = false;
-    await operateKv(false);
-  } catch (error) {
-    kvBusy = true;
-    report(
-      `Error: ${message(error)}. Check that the example is built and served over HTTP, allow browser storage, then reload. No memory fallback is used.`,
-      true,
-    );
-  }
-}
+    async function operateKv(save: boolean): Promise<void> {
+        if (kvBusy || !kvClient) return;
+        if (save && !key.trim()) return;
+        kvBusy = true;
+        result = "";
+        report(save ? "Saving…" : "Retrieving…");
+        try {
+            if (save) {
+                await kvClient.set(key, value);
+                report("Saved and committed.");
+            } else {
+                const stored = await kvClient.get(key);
+                if (stored === undefined) {
+                    report("Key not found.");
+                } else {
+                    result =
+                        typeof stored === "string"
+                            ? stored
+                            : JSON.stringify(stored);
+                    report("Retrieved committed value.");
+                }
+            }
+        } catch (error) {
+            report(
+                `Error: ${message(error)}. Check browser storage permissions and available space; reload and retrieve before retrying a write.`,
+                true,
+            );
+        } finally {
+            kvBusy = false;
+        }
+    }
 
-async function startSql(): Promise<void> {
-  try {
-    const db = await SqlDatabase.open("ofdb-browser-example-sql");
-    sqlClient = db.client();
-    await sqlClient.execute(
-      "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)",
-    );
-    sqlBusy = false;
-    await operateSql(false);
-  } catch (error) {
-    sqlBusy = true;
-    sqlStatusError = true;
-    sqlStatus = `Error: ${message(error)}. Check the Wasm build and browser storage permissions, then reload. No memory fallback is used.`;
-  }
-}
+    async function listSql(): Promise<void> {
+        if (!sqlClient) return;
+        const results = await sqlClient.execute(
+            "SELECT text FROM records ORDER BY id",
+        );
+        sqlResult = results.flatMap((r: { rows: unknown[][] }) =>
+            r.rows.map((row: unknown[]) => {
+                const first = row[0];
+                return typeof first === "string"
+                    ? first
+                    : JSON.stringify(first);
+            }),
+        );
+    }
 
-$effect(() => {
-  void startKv();
-  void startSql();
-});
+    async function operateSql(add: boolean): Promise<void> {
+        if (sqlBusy || !sqlClient) return;
+        if (add && !record.trim()) return;
+        sqlBusy = true;
+        sqlStatusError = false;
+        sqlStatus = add ? "Adding…" : "Listing…";
+        try {
+            if (add) {
+                await sqlClient.execute(
+                    "INSERT INTO records (text) VALUES ($1)",
+                    [record],
+                );
+                record = "";
+            }
+            await listSql();
+            sqlStatus = add
+                ? "Added and committed."
+                : "Listed committed records.";
+        } catch (error) {
+            sqlStatusError = true;
+            sqlStatus = `Error: ${message(error)}. Check browser storage permissions and available space; reload and list records before retrying a write.`;
+        } finally {
+            sqlBusy = false;
+        }
+    }
+
+    async function startKv(): Promise<void> {
+        try {
+            const db = await KvDatabase.open("ofdb-browser-example-kv");
+            kvClient = db.client();
+            kvBusy = false;
+            await operateKv(false);
+        } catch (error) {
+            kvBusy = true;
+            report(
+                `Error: ${message(error)}. Check that the example is built and served over HTTP, allow browser storage, then reload. No memory fallback is used.`,
+                true,
+            );
+        }
+    }
+
+    async function startSql(): Promise<void> {
+        try {
+            const db = await SqlDatabase.open("ofdb-browser-example-sql");
+            sqlClient = db.client();
+            await sqlClient.execute(
+                "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)",
+            );
+            sqlBusy = false;
+            await operateSql(false);
+        } catch (error) {
+            sqlBusy = true;
+            sqlStatusError = true;
+            sqlStatus = `Error: ${message(error)}. Check the Wasm build and browser storage permissions, then reload. No memory fallback is used.`;
+        }
+    }
+
+    $effect(() => {
+        void startKv();
+        void startSql();
+    });
 </script>
 
 <main class="mx-auto max-w-2xl px-4 py-12 font-sans text-base leading-relaxed">

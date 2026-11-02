@@ -4,9 +4,6 @@ interface WasmModule {
   KvDatabase: {
     open(name: string): Promise<WasmKvDatabase>;
   };
-  SqlDatabase: {
-    open(name: string): Promise<WasmSqlDatabase>;
-  };
 }
 
 export interface WasmKvDatabase {
@@ -32,23 +29,6 @@ export interface WasmKvTransaction {
   scan(start: string, end: string): Promise<string>;
   scanPrefix(prefix: string): Promise<string>;
   scanAll(): Promise<string>;
-  commit(): Promise<void>;
-  rollback(): Promise<void>;
-}
-
-export interface WasmSqlDatabase {
-  client(): WasmSqlClient;
-}
-
-export interface WasmSqlClient {
-  execute(sql: string, params?: string): Promise<string>;
-  transaction(): Promise<WasmSqlTransaction>;
-  withDeadline(ms: number): WasmSqlClient;
-  cloneClient(): WasmSqlClient;
-}
-
-export interface WasmSqlTransaction {
-  execute(sql: string, params?: string): Promise<string>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
 }

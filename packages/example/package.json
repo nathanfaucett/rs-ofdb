@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Svelte + Tailwind browser example for @of/db (KV + SQL over IndexedDB)",
+  "description": "Svelte + Tailwind browser example for @ofdb/kv and @ofdb/sql (KV + SQL over IndexedDB)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -14,7 +14,8 @@
     "test": "playwright test smoke.test.ts"
   },
   "dependencies": {
-    "@of/db": "file:.."
+    "@ofdb/kv": "file:../kv",
+    "@ofdb/sql": "file:../sql"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

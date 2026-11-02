@@ -1,11 +1,15 @@
-import { SqlError, wrapError } from "../error.js";
-import type { WasmSqlClient } from "../wasm.js";
+import { SqlError, wrapError } from "./error.js";
 import type { QueryParams, SqlResult } from "./result.js";
 import { SqlTransaction } from "./transaction.js";
+import type { WasmSqlClient } from "./wasm.js";
 
 /** SQL query handle — the only API for SQL reads and writes. */
 export class SqlClient {
-  constructor(private readonly wasm: WasmSqlClient) {}
+  private readonly wasm: WasmSqlClient;
+
+  constructor(wasm: WasmSqlClient) {
+    this.wasm = wasm;
+  }
 
   /** Run SQL text and return every statement result.
    * @param sql SQL text, optionally with `$1` or `:name` placeholders.
