@@ -1,12 +1,12 @@
-import { SqlError, wrapError } from "./error.js";
+import { Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
-import type { QueryParams, SqlResult } from "./result.js";
+import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
-import { SqlTransaction } from "./transaction.js";
+import { Transaction } from "./transaction.js";
 import type { WasmSqlClient } from "./wasm.js";
 
 /** SQL query handle — the only API for SQL reads and writes. */
-export class SqlClient {
+export class Client {
   private readonly handle: Handle<WasmSqlClient>;
 
   constructor(wasm: WasmSqlClient) {
@@ -22,44 +22,44 @@ export class SqlClient {
    * @param sql SQL text, optionally with `$1` or `:name` placeholders.
    * @param params Positional values (array) or named values (object).
    */
-  async execute(sql: string, params?: QueryParams): Promise<SqlResult[]> {
+  async execute(sql: string, params?: QueryParams): Promise<Result[]> {
     try {
       const encoded = encodeParams(params);
       const raw = await this.handle.run((wasm) => wasm.execute(sql, encoded));
       return decodeResults(raw);
     } catch (error) {
-      throw wrapError(error, SqlError);
+      throw wrapError(error, Error);
     }
   }
 
   /** Alias for execute(). */
-  async executeSql(sql: string, params?: QueryParams): Promise<SqlResult[]> {
+  async executeSql(sql: string, params?: QueryParams): Promise<Result[]> {
     return this.execute(sql, params);
   }
 
   /** Start a transaction that holds statements until commit or rollback. */
-  async transaction(): Promise<SqlTransaction> {
+  async transaction(): Promise<Transaction> {
     try {
       const wasm = await this.handle.run((wasm) => wasm.transaction());
-      return new SqlTransaction(wasm);
+      return new Transaction(wasm);
     } catch (error) {
-      throw wrapError(error, SqlError);
+      throw wrapError(error, Error);
     }
   }
 
   /** Return a clone of this client with a request deadline in milliseconds. */
-  withDeadline(ms: bigint): SqlClient {
+  withDeadline(ms: bigint): Client {
     if (typeof ms !== "bigint" || ms <= 0n || ms > 18446744073709551615n) {
-      throw new SqlError(
+      throw new Error(
         "query",
         "deadline must be a positive u64 bigint in milliseconds",
       );
     }
-    return new SqlClient(this.handle.get().with_deadline(ms));
+    return new Client(this.handle.get().with_deadline(ms));
   }
 
   /** Return an independent clone sharing the same storage. */
-  clone(): SqlClient {
-    return new SqlClient(this.handle.get().clone_client());
+  clone(): Client {
+    return new Client(this.handle.get().clone_client());
   }
 }

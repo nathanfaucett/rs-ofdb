@@ -1,10 +1,10 @@
-import type { KVEntry } from "./client.js";
-import { KvError, wrapError } from "./error.js";
+import type { Entry } from "./client.js";
+import { Error, wrapError } from "./error.js";
 import type { DbValue } from "./value.js";
 import type { WasmKvTransaction } from "./wasm.js";
 
 /** KV transaction — holds operations until commit or rollback. */
-export class KvTransaction {
+export class Transaction {
   private wasm: WasmKvTransaction;
 
   constructor(wasm: WasmKvTransaction) {
@@ -16,7 +16,7 @@ export class KvTransaction {
       const raw = await this.wasm.get(key);
       return (raw === undefined ? undefined : JSON.parse(raw)) as T | undefined;
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
@@ -24,7 +24,7 @@ export class KvTransaction {
     try {
       await this.wasm.set(key, JSON.stringify(value), expiresAt);
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
@@ -32,34 +32,34 @@ export class KvTransaction {
     try {
       await this.wasm.delete(key);
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
-  async scan(start: string, end: string): Promise<KVEntry[]> {
+  async scan(start: string, end: string): Promise<Entry[]> {
     try {
       const raw = await this.wasm.scan(start, end);
-      return JSON.parse(raw) as KVEntry[];
+      return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
-  async scanPrefix(prefix: string): Promise<KVEntry[]> {
+  async scanPrefix(prefix: string): Promise<Entry[]> {
     try {
       const raw = await this.wasm.scanPrefix(prefix);
-      return JSON.parse(raw) as KVEntry[];
+      return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
-  async scanAll(): Promise<KVEntry[]> {
+  async scanAll(): Promise<Entry[]> {
     try {
       const raw = await this.wasm.scanAll();
-      return JSON.parse(raw) as KVEntry[];
+      return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
@@ -68,7 +68,7 @@ export class KvTransaction {
     try {
       await this.wasm.commit();
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 
@@ -77,7 +77,7 @@ export class KvTransaction {
     try {
       await this.wasm.rollback();
     } catch (error) {
-      throw wrapError(error, KvError);
+      throw wrapError(error, Error);
     }
   }
 }

@@ -20,7 +20,7 @@ test("named transaction parameters, nested JSON numbers, and executeSql aliases 
     },
   };
   const result = await page.evaluate(async (value) => {
-    const db = await (window as any).sql.SqlDatabase.open("named");
+    const db = await (window as any).sql.Database.open("named");
     const client = db.client();
     await client.executeSql(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, data JSON)",

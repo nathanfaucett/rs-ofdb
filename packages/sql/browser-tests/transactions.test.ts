@@ -9,8 +9,8 @@ test("atomic commit, rollback, stale writers and consumed handles survive page r
   page,
 }) => {
   const before = await page.evaluate(async () => {
-    const { SqlDatabase, SqlCommitError } = (window as any).sql;
-    const db = await SqlDatabase.open("transactions");
+    const { Database, CommitError } = (window as any).sql;
+    const db = await Database.open("transactions");
     const client = db.client();
     await client.execute(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, text TEXT)",
@@ -33,7 +33,7 @@ test("atomic commit, rollback, stale writers and consumed handles survive page r
       await stale.commit();
     } catch (error) {
       conflict = {
-        typed: error instanceof SqlCommitError,
+        typed: error instanceof CommitError,
         outcome: (error as any).outcome,
       };
     }
@@ -56,7 +56,7 @@ test("atomic commit, rollback, stale writers and consumed handles survive page r
   await page.reload();
   await page.waitForFunction(() => "sql" in window);
   const rows = await page.evaluate(async () => {
-    const db = await (window as any).sql.SqlDatabase.open("transactions");
+    const db = await (window as any).sql.Database.open("transactions");
     const client = db.client();
     try {
       return await client.execute("SELECT id,text FROM items ORDER BY id");
@@ -86,8 +86,8 @@ for (const mode of ["throw", "abort"]) {
     page,
   }) => {
     const result = await page.evaluate(async (mode) => {
-      const { SqlDatabase, SqlCommitError } = (window as any).sql;
-      const db = await SqlDatabase.open(`failure-${mode}`);
+      const { Database, CommitError } = (window as any).sql;
+      const db = await Database.open(`failure-${mode}`);
       const client = db.client();
       await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
@@ -100,14 +100,14 @@ for (const mode of ["throw", "abort"]) {
         await tx.commit();
       } catch (error) {
         failure = {
-          typed: error instanceof SqlCommitError,
+          typed: error instanceof CommitError,
           outcome: (error as any).outcome,
         };
       }
       tx.close();
       client.close();
       db.close();
-      const reopened = await SqlDatabase.open(`failure-${mode}`);
+      const reopened = await Database.open(`failure-${mode}`);
       const reader = reopened.client();
       try {
         return { failure, rows: await reader.execute("SELECT id FROM items") };
@@ -125,23 +125,23 @@ test("storage denial and incompatible open reject, preserve data, and permit ret
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase, SqlError } = (window as any).sql;
+    const { Database, Error } = (window as any).sql;
     const { denyOpen, malformed, sentinel } = (window as any).faults;
     denyOpen();
     let denied = false;
     try {
-      await SqlDatabase.open("denied");
+      await Database.open("denied");
     } catch (error) {
-      denied = error instanceof SqlError;
+      denied = error instanceof Error;
     }
-    const retried = await SqlDatabase.open("denied");
+    const retried = await Database.open("denied");
     retried.close();
     await malformed("incompatible", "sql", "format");
     let incompatible = false;
     try {
-      await SqlDatabase.open("incompatible");
+      await Database.open("incompatible");
     } catch (error) {
-      incompatible = error instanceof SqlError;
+      incompatible = error instanceof Error;
     }
     return {
       denied,
@@ -160,8 +160,8 @@ test("close during an in-flight call defers free and concurrent transaction call
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase } = (window as any).sql;
-    const db = await SqlDatabase.open("busy");
+    const { Database } = (window as any).sql;
+    const db = await Database.open("busy");
     const client = db.client();
     await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
@@ -198,7 +198,7 @@ for (const stage of ["before-commit", "after-native-commit"]) {
     page,
   }) => {
     await page.evaluate(async (stage) => {
-      const db = await (window as any).sql.SqlDatabase.open("interrupted");
+      const db = await (window as any).sql.Database.open("interrupted");
       const client = db.client();
       await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
@@ -215,7 +215,7 @@ for (const stage of ["before-commit", "after-native-commit"]) {
     await page.reload();
     await page.waitForFunction(() => "sql" in window);
     const rows = await page.evaluate(async () => {
-      const db = await (window as any).sql.SqlDatabase.open("interrupted");
+      const db = await (window as any).sql.Database.open("interrupted");
       const client = db.client();
       try {
         return await client.execute("SELECT id FROM items ORDER BY id");

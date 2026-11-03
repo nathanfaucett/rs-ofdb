@@ -1,4 +1,4 @@
-import { SqlError } from "./error.js";
+import { Error } from "./error.js";
 
 /** Do not free a Rust handle while a generated async call still borrows it. */
 export class Handle<T extends { free(): void }> {
@@ -12,7 +12,7 @@ export class Handle<T extends { free(): void }> {
 
   get(): T {
     if (this.closed || !this.value)
-      throw new SqlError("query", "SQL handle is closed");
+      throw new Error("query", "SQL handle is closed");
     return this.value;
   }
 
@@ -22,7 +22,7 @@ export class Handle<T extends { free(): void }> {
   ): Promise<R> {
     const value = this.get();
     if (exclusive && this.pending !== 0)
-      throw new SqlError("query", "SQL transaction is busy");
+      throw new Error("query", "SQL transaction is busy");
     this.pending++;
     try {
       return await operation(value);
@@ -34,8 +34,7 @@ export class Handle<T extends { free(): void }> {
 
   take(): T {
     const value = this.get();
-    if (this.pending !== 0)
-      throw new SqlError("query", "SQL transaction is busy");
+    if (this.pending !== 0) throw new Error("query", "SQL transaction is busy");
     this.closed = true;
     this.value = undefined;
     return value;

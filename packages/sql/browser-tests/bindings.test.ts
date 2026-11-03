@@ -11,8 +11,8 @@ test("generated clone and u64 deadline signatures work through the public wrappe
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase } = (window as any).sql;
-    const db = await SqlDatabase.open("signatures");
+    const { Database } = (window as any).sql;
+    const db = await Database.open("signatures");
     const client = db.client();
     const clone = client.clone();
     const timed = clone.withDeadline(1000n);
@@ -55,7 +55,7 @@ test("lossless tagged values preserve text, UUID, ciphertext and integer limits"
     },
   ];
   const result = await page.evaluate(async (values) => {
-    const db = await (window as any).sql.SqlDatabase.open("values");
+    const db = await (window as any).sql.Database.open("values");
     const client = db.client();
     await client.execute(
       "CREATE TABLE values_test (id UUID PRIMARY KEY, text TEXT, empty_text TEXT, cipher BLOB, empty_blob BLOB, lo INTEGER, hi INTEGER, f FLOAT, b BOOLEAN, n TEXT, j JSON)",
@@ -80,8 +80,8 @@ test("handles close deterministically, retain independent clients, and discard p
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase } = (window as any).sql;
-    const db = await SqlDatabase.open("cleanup");
+    const { Database } = (window as any).sql;
+    const db = await Database.open("cleanup");
     const client = db.client();
     db.close();
     db.close();
@@ -127,8 +127,8 @@ test("invalid values and deadlines are rejected without a partial write", async 
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase } = (window as any).sql;
-    const db = await SqlDatabase.open("invalid");
+    const { Database } = (window as any).sql;
+    const db = await Database.open("invalid");
     const client = db.client();
     await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const invalid = [

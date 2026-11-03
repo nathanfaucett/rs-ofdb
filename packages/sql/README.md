@@ -24,25 +24,25 @@ a build: retain its checksum. No database format migration is provided.
 ## Public interface
 
 ```ts
-SqlDatabase.open(name: string): Promise<SqlDatabase>
-database.client(): SqlClient
+Database.open(name: string): Promise<Database>
+database.client(): Client
 database.close(): void
 
-client.execute(sql: string, params?: QueryParams): Promise<SqlResult[]>
-client.executeSql(sql: string, params?: QueryParams): Promise<SqlResult[]>
-client.transaction(): Promise<SqlTransaction>
-client.clone(): SqlClient
-client.withDeadline(milliseconds: bigint): SqlClient
+client.execute(sql: string, params?: QueryParams): Promise<Result[]>
+client.executeSql(sql: string, params?: QueryParams): Promise<Result[]>
+client.transaction(): Promise<Transaction>
+client.clone(): Client
+client.withDeadline(milliseconds: bigint): Client
 client.close(): void
 
-transaction.execute(sql: string, params?: QueryParams): Promise<SqlResult[]>
-transaction.executeSql(sql: string, params?: QueryParams): Promise<SqlResult[]>
+transaction.execute(sql: string, params?: QueryParams): Promise<Result[]>
+transaction.executeSql(sql: string, params?: QueryParams): Promise<Result[]>
 transaction.commit(): Promise<void>
 transaction.rollback(): Promise<void>
 transaction.close(): void
 
 type QueryParams = DbValue[] | { [name: string]: DbValue }
-interface SqlResult { columns: string[]; rows: DbValue[][] }
+interface Result { columns: string[]; rows: DbValue[][] }
 ```
 
 `executeSql` is an alias. Use `$1` positional or `:name` named parameters.
@@ -52,9 +52,9 @@ the generated WASM declarations directly, including `with_deadline(bigint)` and
 `clone_client()`. There is no hand-maintained binding signature interface.
 
 ```ts
-import { SqlDatabase } from "@ofdb/sql";
+import { Database } from "@ofdb/sql";
 
-const database = await SqlDatabase.open("vault");
+const database = await Database.open("vault");
 const client = database.client();
 try {
   await client.execute(
@@ -117,10 +117,10 @@ float bit patterns; database arithmetic is not a bit-preservation operation.
   failure. Reuse rejects as closed. Closing an uncommitted transaction discards its
   pending writes; it does not commit them.
 - Resolved `commit()` means the native IndexedDB transaction completed. A started
-  commit that rejects throws `SqlCommitError` with `outcome: "unknown"` and an
+  commit that rejects throws `CommitError` with `outcome: "unknown"` and an
   underlying `cause`. Reopen and read before retrying. Timeout, page termination,
   or a lost completion callback is not proof of rollback. Other operations throw
-  `SqlError`; raw WASM failures currently use its `internal` category.
+  `Error`; raw WASM failures currently use its `internal` category.
 - The page can stop after native commit but before the caller sees completion.
   No API can report an outcome to a page that no longer exists.
 

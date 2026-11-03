@@ -2,7 +2,7 @@ import type { DbValue } from "./value.js";
 import { validateValue } from "./value.js";
 
 /** One SQL statement result: column names plus positional row values. */
-export interface SqlResult {
+export interface Result {
   columns: string[];
   rows: DbValue[][];
 }
@@ -26,7 +26,7 @@ export function encodeParams(
   return JSON.stringify(params);
 }
 
-export function decodeResults(raw: string): SqlResult[] {
+export function decodeResults(raw: string): Result[] {
   const results: unknown = JSON.parse(raw);
   if (!Array.isArray(results)) throw new TypeError("invalid SQL results");
   for (const result of results) {
@@ -44,5 +44,5 @@ export function decodeResults(raw: string): SqlResult[] {
       for (const value of row) validateValue(value);
     }
   }
-  return results as SqlResult[];
+  return results as Result[];
 }

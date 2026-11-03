@@ -1,6 +1,9 @@
 <script lang="ts">
-    import { KvDatabase, type KvClient } from "@ofdb/kv";
-    import { SqlDatabase, type SqlClient } from "@ofdb/sql";
+    import { Database as KvDatabase, type Client as KvClient } from "@ofdb/kv";
+    import {
+        Database as SqlDatabase,
+        type Client as SqlClient,
+    } from "@ofdb/sql";
 
     let kvClient: KvClient | undefined = $state();
     let sqlClient: SqlClient | undefined = $state();

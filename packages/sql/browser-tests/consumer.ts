@@ -1,13 +1,13 @@
 import {
   type DbValue,
   type QueryParams,
-  SqlCommitError,
-  SqlDatabase,
-  type SqlResult,
+  CommitError,
+  Database,
+  type Result,
 } from "@ofdb/sql";
 
-export async function contract(): Promise<SqlResult[]> {
-  const db = await SqlDatabase.open("consumer");
+export async function contract(): Promise<Result[]> {
+  const db = await Database.open("consumer");
   const client = db.client();
   const clone = client.clone();
   const timed = clone.withDeadline(1000n);
@@ -22,7 +22,7 @@ export async function contract(): Promise<SqlResult[]> {
     await tx.commit();
     return result;
   } catch (error) {
-    if (error instanceof SqlCommitError) {
+    if (error instanceof CommitError) {
       const outcome: "unknown" = error.outcome;
       console.log(outcome);
     }
@@ -37,7 +37,7 @@ export async function contract(): Promise<SqlResult[]> {
 }
 
 export async function rejectedTypes(): Promise<void> {
-  const db = await SqlDatabase.open("types");
+  const db = await Database.open("types");
   const client = db.client();
   // @ts-expect-error Generated u64 binding requires bigint, not number.
   client.withDeadline(1000);

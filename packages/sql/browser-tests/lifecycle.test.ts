@@ -9,9 +9,9 @@ test("all owned handles release IndexedDB connections without garbage collection
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { SqlDatabase } = (window as any).sql;
+    const { Database } = (window as any).sql;
     for (let iteration = 0; iteration < 10; iteration++) {
-      const db = await SqlDatabase.open("release");
+      const db = await Database.open("release");
       const client = db.client();
       const clone = client.clone();
       const timed = client.withDeadline(1000n);
@@ -38,7 +38,7 @@ test("the built package runs in a dedicated module worker and persists to a new 
   page,
 }) => {
   await page.evaluate(async () => {
-    const db = await (window as any).sql.SqlDatabase.open("worker");
+    const db = await (window as any).sql.Database.open("worker");
     const client = db.client();
     await client.execute(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, text TEXT)",
@@ -81,7 +81,7 @@ test("the built package runs in a dedicated module worker and persists to a new 
   await page.reload();
   await page.waitForFunction(() => "sql" in window);
   const reopened = await page.evaluate(async () => {
-    const db = await (window as any).sql.SqlDatabase.open("worker");
+    const db = await (window as any).sql.Database.open("worker");
     const client = db.client();
     try {
       return await client.execute("SELECT id,text FROM items");
@@ -97,7 +97,7 @@ test("failed WASM fetch can be retried in the same realm", async ({ page }) => {
   await page.route("**/*wasm", (route) => route.abort());
   const failed = await page.evaluate(async () => {
     try {
-      await (window as any).sql.SqlDatabase.open("load-retry");
+      await (window as any).sql.Database.open("load-retry");
       return false;
     } catch {
       return true;
@@ -106,7 +106,7 @@ test("failed WASM fetch can be retried in the same realm", async ({ page }) => {
   expect(failed).toBe(true);
   await page.unroute("**/*wasm");
   const retried = await page.evaluate(async () => {
-    const db = await (window as any).sql.SqlDatabase.open("load-retry");
+    const db = await (window as any).sql.Database.open("load-retry");
     db.close();
     return true;
   });

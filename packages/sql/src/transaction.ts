@@ -1,11 +1,11 @@
-import { SqlCommitError, SqlError, wrapError } from "./error.js";
+import { CommitError, Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
-import type { QueryParams, SqlResult } from "./result.js";
+import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
 import type { WasmSqlTransaction } from "./wasm.js";
 
 /** SQL transaction — holds statements until commit or rollback. */
-export class SqlTransaction {
+export class Transaction {
   private readonly handle: Handle<WasmSqlTransaction>;
 
   constructor(wasm: WasmSqlTransaction) {
@@ -21,7 +21,7 @@ export class SqlTransaction {
    * @param sql SQL text, optionally with `$1` or `:name` placeholders.
    * @param params Positional values (array) or named values (object).
    */
-  async execute(sql: string, params?: QueryParams): Promise<SqlResult[]> {
+  async execute(sql: string, params?: QueryParams): Promise<Result[]> {
     try {
       const encoded = encodeParams(params);
       const raw = await this.handle.run(
@@ -30,12 +30,12 @@ export class SqlTransaction {
       );
       return decodeResults(raw);
     } catch (error) {
-      throw wrapError(error, SqlError);
+      throw wrapError(error, Error);
     }
   }
 
   /** Alias for execute(). */
-  async executeSql(sql: string, params?: QueryParams): Promise<SqlResult[]> {
+  async executeSql(sql: string, params?: QueryParams): Promise<Result[]> {
     return this.execute(sql, params);
   }
 
@@ -45,7 +45,7 @@ export class SqlTransaction {
     try {
       await wasm.commit();
     } catch (error) {
-      throw new SqlCommitError(error);
+      throw new CommitError(error);
     }
   }
 
@@ -54,7 +54,7 @@ export class SqlTransaction {
     try {
       await this.handle.take().rollback();
     } catch (error) {
-      throw wrapError(error, SqlError);
+      throw wrapError(error, Error);
     }
   }
 }
