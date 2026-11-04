@@ -25,7 +25,7 @@ await writeFile(
   JSON.stringify({
     private: true,
     type: "module",
-    dependencies: { "@ofdb/sql": "file:../ofdb-sql-0.1.0.tgz" },
+    dependencies: { "@ofsdk/sql": "file:../ofdb-sql-0.1.0.tgz" },
   }),
 );
 run(
@@ -66,13 +66,13 @@ run(
 const html = await readFile("browser-tests/index.html", "utf8");
 await writeFile(
   "artifacts/consumer/index.html",
-  html.replace("../browser/index.js", "@ofdb/sql"),
+  html.replace("../browser/index.js", "@ofsdk/sql"),
 );
 await writeFile(
   "artifacts/consumer/worker.js",
   (await readFile("browser-tests/worker.js", "utf8")).replace(
     "../browser/index.js",
-    "@ofdb/sql",
+    "@ofsdk/sql",
   ),
 );
 await build({

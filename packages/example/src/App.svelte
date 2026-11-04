@@ -1,9 +1,9 @@
 <script lang="ts">
-    import { Database as KvDatabase, type Client as KvClient } from "@ofdb/kv";
+    import { Database as KvDatabase, type Client as KvClient } from "@ofsdk/kv";
     import {
         Database as SqlDatabase,
         type Client as SqlClient,
-    } from "@ofdb/sql";
+    } from "@ofsdk/sql";
 
     let kvClient: KvClient | undefined = $state();
     let sqlClient: SqlClient | undefined = $state();

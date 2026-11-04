@@ -1,6 +1,6 @@
 # Persistent browser KV and SQL example
 
-A TypeScript-first Svelte + Tailwind example demonstrating persistent key-value and SQL stores in the browser using IndexedDB via the `@of/db` npm package (which wraps the ofdb WASM module).
+A TypeScript-first Svelte + Tailwind example demonstrating persistent key-value and SQL stores in the browser using IndexedDB via the `@ofsdk/db` npm package (which wraps the ofdb WASM module).
 
 The application schema, queries, parameters, row shaping, and UI all live in TypeScript (`src/App.svelte`). The Rust code is a generic engine bridge (`ofdb-wasm` crate) that opens IndexedDB stores and executes SQL text.
 
@@ -9,7 +9,7 @@ The application schema, queries, parameters, row shaping, and UI all live in Typ
 From the repository root:
 
 ```sh
-# Build the @of/db npm package (compiles WASM via wasm-pack)
+# Build the @ofsdk/db npm package (compiles WASM via wasm-pack)
 pnpm db:build
 
 # Build the browser example (Svelte + Vite)
@@ -61,8 +61,8 @@ Both Chromium and Firefox are required; either failing returns nonzero with phas
 ## Focused contributor checks
 
 ```sh
-# Build and check the @of/db package
-pnpm --filter @of/db run check
+# Build and check the @ofsdk/db package
+pnpm --filter @ofsdk/db run check
 
 # Check the browser example (svelte-check)
 pnpm db:example:check

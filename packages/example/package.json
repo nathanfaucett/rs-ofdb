@@ -1,9 +1,9 @@
 {
-  "name": "ofdb-browser-example",
+  "name": "@ofsdk/ofdb-browser-example",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Svelte + Tailwind browser example for @ofdb/kv and @ofdb/sql (KV + SQL over IndexedDB)",
+  "description": "Svelte + Tailwind browser example for @ofsdk/kv and @ofsdk/sql (KV + SQL over IndexedDB)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -14,8 +14,8 @@
     "test": "playwright test smoke.test.ts"
   },
   "dependencies": {
-    "@ofdb/kv": "file:../kv",
-    "@ofdb/sql": "file:../sql"
+    "@ofsdk/kv": "file:../kv",
+    "@ofsdk/sql": "file:../sql"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

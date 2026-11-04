@@ -56,11 +56,11 @@ selected for compilation and `BROWSER_PATH` selected for browser tests:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @ofdb/sql run build:all
-pnpm --filter @ofdb/sql run check
-pnpm --filter @ofdb/sql run lint
-pnpm --filter @ofdb/sql test
-pnpm --filter @ofdb/sql run test:package
+pnpm --filter @ofsdk/sql run build:all
+pnpm --filter @ofsdk/sql run check
+pnpm --filter @ofsdk/sql run lint
+pnpm --filter @ofsdk/sql test
+pnpm --filter @ofsdk/sql run test:package
 cargo test --locked -p ofdb-kv --lib value_codec
 cargo fmt --all -- --check
 cargo fmt --manifest-path tests/browser/Cargo.toml --all -- --check

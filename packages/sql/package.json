@@ -1,5 +1,5 @@
 {
-  "name": "@ofdb/sql",
+  "name": "@ofsdk/sql",
   "version": "0.1.0",
   "private": false,
   "type": "module",

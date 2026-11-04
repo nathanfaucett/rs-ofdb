@@ -1,5 +1,5 @@
 {
-  "name": "@ofdb/monorepo",
+  "name": "@ofsdk/monorepo",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,13 +9,13 @@
     "format": "pnpm -r run format",
     "format:fix": "pnpm -r run format:fix",
     "packages:build": "pnpm --filter \"./packages/*\" run build",
-    "kv:build": "pnpm --filter @ofdb/kv run build",
-    "sql:build": "pnpm --filter @ofdb/sql run build",
-    "example:dev": "pnpm --filter ofdb-browser-example run dev",
-    "example:build": "pnpm --filter ofdb-browser-example run build",
-    "example:preview": "pnpm --filter ofdb-browser-example run preview",
-    "example:check": "pnpm --filter ofdb-browser-example run check",
-    "example:test": "pnpm --filter ofdb-browser-example run test"
+    "kv:build": "pnpm --filter @ofsdk/kv run build",
+    "sql:build": "pnpm --filter @ofsdk/sql run build",
+    "example:dev": "pnpm --filter @ofsdk/ofdb-browser-example run dev",
+    "example:build": "pnpm --filter @ofsdk/ofdb-browser-example run build",
+    "example:preview": "pnpm --filter @ofsdk/ofdb-browser-example run preview",
+    "example:check": "pnpm --filter @ofsdk/ofdb-browser-example run check",
+    "example:test": "pnpm --filter @ofsdk/ofdb-browser-example run test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3"

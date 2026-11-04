@@ -1,4 +1,4 @@
-# @ofdb/sql
+# @ofsdk/sql
 
 Local SQL over IndexedDB. The package includes generated JavaScript, declarations,
 WASM, and the IndexedDB adapter. It has no runtime npm dependencies, server,
@@ -52,7 +52,7 @@ the generated WASM declarations directly, including `with_deadline(bigint)` and
 `clone_client()`. There is no hand-maintained binding signature interface.
 
 ```ts
-import { Database } from "@ofdb/sql";
+import { Database } from "@ofsdk/sql";
 
 const database = await Database.open("vault");
 const client = database.client();
@@ -136,7 +136,7 @@ The stack is built into the artifact; consuming apps need no Rust configuration.
 
 The package works in Window and a dedicated module Worker. There is no automatic
 worker: create one with `new Worker(new URL('./worker.js', import.meta.url),
-{type:'module'})`. Import `@ofdb/sql` inside the worker and close its handles before
+{type:'module'})`. Import `@ofsdk/sql` inside the worker and close its handles before
 termination. Test/build budgets must also bound worker startup and shutdown.
 
 TypeScript consumers must include `ESNext.Disposable` in `compilerOptions.lib`
@@ -146,7 +146,7 @@ wrapper uses `close()` and does not require `Symbol.dispose`. TypeScript `5.9.3`
 is tested without `skipLibCheck`.
 
 Vite `8.3.5` consumes the root ESM export and emits WASM assets for both Window and
-Worker. `@ofdb/sql/browser` is the prebuilt browser ESM export: serve it with the
+Worker. `@ofsdk/sql/browser` is the prebuilt browser ESM export: serve it with the
 adjacent `pkg/` directory intact. Do not inline the generated module without also
 rewriting/copying its WASM asset URL. Serve `.wasm` as `application/wasm`; CSP must
 permit the modules, worker if used, and WebAssembly compilation. A failed WASM
@@ -161,10 +161,10 @@ build dependencies. Run from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @ofdb/sql run build:all
-pnpm --filter @ofdb/sql exec playwright install chromium
-pnpm --filter @ofdb/sql test
-pnpm --filter @ofdb/sql run test:package
+pnpm --filter @ofsdk/sql run build:all
+pnpm --filter @ofsdk/sql exec playwright install chromium
+pnpm --filter @ofsdk/sql test
+pnpm --filter @ofsdk/sql run test:package
 ```
 
 `build:all` uses a release build, a fixed stack, the lockfile, and no wasm-opt step.

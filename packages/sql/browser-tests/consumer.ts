@@ -4,7 +4,7 @@ import {
   CommitError,
   Database,
   type Result,
-} from "@ofdb/sql";
+} from "@ofsdk/sql";
 
 export async function contract(): Promise<Result[]> {
   const db = await Database.open("consumer");

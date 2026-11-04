@@ -14,10 +14,10 @@ importers:
 
   packages/example:
     dependencies:
-      '@ofdb/kv':
+      '@ofsdk/kv':
         specifier: file:../kv
         version: link:../kv
-      '@ofdb/sql':
+      '@ofsdk/sql':
         specifier: file:../sql
         version: link:../sql
     devDependencies:

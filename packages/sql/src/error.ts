@@ -1,7 +1,7 @@
 export type DbErrorKind =
   "timeout" | "query" | "connect" | "transport" | "internal";
 
-/** Base error for all @ofdb/sql operations. */
+/** Base error for all @ofsdk/sql operations. */
 export class DbError extends globalThis.Error {
   readonly kind: DbErrorKind;
 

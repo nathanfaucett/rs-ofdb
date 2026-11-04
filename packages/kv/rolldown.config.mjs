@@ -7,5 +7,5 @@ export default defineConfig({
     format: "esm",
     codeSplitting: false,
   },
-  external: ["@ofdb/kv"],
+  external: ["@ofsdk/kv"],
 });
