@@ -22,7 +22,7 @@ test("all owned handles release IndexedDB connections without garbage collection
       client.close();
       db.close();
       await new Promise<void>((resolve, reject) => {
-        const request = indexedDB.deleteDatabase("ofdb:3:sql:release");
+        const request = indexedDB.deleteDatabase("ofdb:sql:release");
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
         request.onblocked = () =>

@@ -102,8 +102,8 @@ client.execute_sql("INSERT INTO people VALUES ('Ada')", None).await?;
 The existing engine and Automerge Row Reconciler execute all statements; IndexedDB
 only persists bytes. Catalogs, rows, Tombstones, constraints and derived indexes
 commit together in one database-wide native transaction. Logical DDL changes data,
-not the physical IndexedDB schema. SQL names use `ofdb:3:sql:<name>`; KV has a
-separate namespace. Failed/unsupported opens return errors, never volatile storage.
+not the physical IndexedDB schema. SQL names use `ofdb:sql:<name>`; KV has a
+separate namespace (`ofdb:kv:<name>`). Failed/unsupported opens return errors, never volatile storage.
 
 Explicit transactions own a consistent snapshot plus staged writes across browser
 event-loop awaits. Commit rejects a stale mutating snapshot without replaying it;

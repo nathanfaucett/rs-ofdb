@@ -6,7 +6,7 @@ export const test = base.extend({
     await use(page);
     await page.evaluate(async () => {
       for (const { name } of await indexedDB.databases()) {
-        if (!name?.startsWith("ofdb:3:sql:")) continue;
+        if (!name?.startsWith("ofdb:sql:")) continue;
         await new Promise<void>((resolve, reject) => {
           const request = indexedDB.deleteDatabase(name);
           request.onsuccess = () => resolve();

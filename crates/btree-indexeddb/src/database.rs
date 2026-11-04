@@ -30,7 +30,7 @@ impl Drop for Connection {
 impl Database {
     /// Store kinds have disjoint physical namespaces. No fallback or implicit migration.
     pub async fn open(name: &str, kind: &str) -> BTreeResult<Self> {
-        let physical = format!("ofdb:{}:{kind}:{name}", kind.len());
+        let physical = format!("ofdb:{kind}:{name}");
         let handle = JsFuture::from(platform::open(&physical, kind).map_err(error)?)
             .await
             .map_err(error)?;
