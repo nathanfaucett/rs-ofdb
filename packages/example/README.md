@@ -22,7 +22,7 @@ pnpm db:example:build
 pnpm db:example:dev
 ```
 
-Open **http://127.0.0.1:8080/** in Chromium or Firefox.
+Open **https://ofdb-example.localhost:1355/** in Chromium or Firefox.
 
 Wait for startup, enter a KV Key and text value, and select **Save**. Wait for **Saved and committed.**, then reload and select **Retrieve** under the same key. Startup also reads the default `theme` key afresh. Missing keys display **Key not found.**; an empty stored string is a successful retrieval, not a missing key. Tab moves between native controls; Enter in the key input or on Save submits the form. Multiline text is supported.
 
