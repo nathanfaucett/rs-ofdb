@@ -1,5 +1,10 @@
 import { Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
+import {
+  type Migration,
+  MigrationError,
+  type MigrationResult,
+} from "./migration.js";
 import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
 import { Transaction } from "./transaction.js";
@@ -28,6 +33,27 @@ export class Client {
       const raw = await this.handle.run((wasm) => wasm.execute(sql, encoded));
       return decodeResults(raw);
     } catch (error) {
+      throw wrapError(error, Error);
+    }
+  }
+
+  /** Apply the complete migration list. Each pending version commits with its history record. */
+  async migrate(migrations: readonly Migration[]): Promise<MigrationResult> {
+    try {
+      const raw = await this.handle.run((wasm) =>
+        wasm.migrate(JSON.stringify(migrations)),
+      );
+      return JSON.parse(raw) as MigrationResult;
+    } catch (error) {
+      if (
+        error instanceof globalThis.Error &&
+        "migration" in error &&
+        typeof error.migration === "string"
+      ) {
+        throw new MigrationError(
+          error as globalThis.Error & { migration: string },
+        );
+      }
       throw wrapError(error, Error);
     }
   }

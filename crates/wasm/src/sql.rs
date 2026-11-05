@@ -411,6 +411,11 @@ pub struct SqlClient {
 
 #[wasm_bindgen]
 impl SqlClient {
+    /// Apply the complete application migration history through the Rust runner.
+    pub async fn migrate(&self, migrations: String) -> Result<String, JsValue> {
+        crate::sql_migration::migrate(&self.client, &migrations).await
+    }
+
     /// Execute SQL text with optional bound parameters and return results as JSON.
     ///
     /// Parameters are a JSON array for positional placeholders or a JSON object for

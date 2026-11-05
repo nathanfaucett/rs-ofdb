@@ -1,8 +1,8 @@
 import {
-  type DbValue,
-  type QueryParams,
   CommitError,
   Database,
+  type DbValue,
+  type QueryParams,
   type Result,
 } from "@ofsdk/sql";
 
@@ -13,6 +13,12 @@ export async function contract(): Promise<Result[]> {
   const timed = clone.withDeadline(1000n);
   const value: DbValue = { type: "integer", value: "9223372036854775807" };
   const params: QueryParams = { id: value };
+  const migration = await timed.migrate([
+    { version: 1, sql: "CREATE TABLE items (id INTEGER PRIMARY KEY)" },
+  ]);
+  const version: number = migration.currentVersion;
+  const applied: number[] = migration.appliedVersions;
+  console.log(version, applied);
   const tx = await timed.transaction();
   try {
     const result = await tx.executeSql(

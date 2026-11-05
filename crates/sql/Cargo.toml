@@ -13,7 +13,7 @@ rust-version.workspace = true
 default = []
 std = ["value/std", "uuid/std", "engine?/std"]
 macros = ["dep:macros"]
-sql = ["dep:sql-translator", "sql-translator/std"]
+sql = ["dep:sql-translator", "sql-translator/std", "dep:sha2"]
 native-stage = ["sync", "sync/native-stage"]
 sync = [
     "dep:platform",
@@ -75,6 +75,7 @@ sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-serv
 ], optional = true }
 
 # External dependencies
+sha2 = { version = "0.10", default-features = false, optional = true }
 tokio = { version = "1.0", default-features = false, features = [
     "time",
 ], optional = true }

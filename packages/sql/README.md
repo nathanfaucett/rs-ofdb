@@ -31,6 +31,7 @@ database.close(): void
 client.execute(sql: string, params?: QueryParams): Promise<Result[]>
 client.executeSql(sql: string, params?: QueryParams): Promise<Result[]>
 client.transaction(): Promise<Transaction>
+client.migrate(migrations: readonly Migration[]): Promise<MigrationResult>
 client.clone(): Client
 client.withDeadline(milliseconds: bigint): Client
 client.close(): void
@@ -71,6 +72,49 @@ try {
   database.close();
 }
 ```
+
+## Explicit application migrations
+
+Call `Client.migrate()` before using the required schema. Open does not run it.
+The Wasm adapter calls the same Rust runner as embedded and remote Rust clients;
+TypeScript has no separate execution or history implementation.
+
+```ts
+const result = await client.migrate([
+  {
+    version: 1,
+    sql: "CREATE TABLE entries (id INTEGER PRIMARY KEY, text TEXT)",
+  },
+  {
+    version: 2,
+    sql: "ALTER TABLE entries ADD COLUMN label TEXT DEFAULT 'untitled'",
+  },
+]);
+// { currentVersion: 2, appliedVersions: [1, 2] } on a fresh database.
+// An already-current call returns { currentVersion: 2, appliedVersions: [] }.
+```
+
+`Migration` has a `version` number (positive `u32` integer) and a nonempty `sql`
+batch. Supply the full contiguous list starting at one, not just pending entries.
+Do not edit applied SQL, including whitespace: history stores SHA-256 of the exact
+UTF-8 text. The runner owns `_ofdb_migrations` (`version INTEGER PRIMARY KEY`,
+`fingerprint TEXT`). Do not change its schema or records. Existing application
+tables do not imply applied history. An empty list creates no metadata in an
+unmigrated database and cannot accept unknown applied versions.
+
+Each migration's schema, data, and completion record commit together. A failed SQL
+batch or history insert rolls back that migration and stops the sequence. Earlier
+migrations remain committed. `MigrationError` exposes `version`, `phase`, and
+`queryKind` without SQL or data in its message. A commit failure has
+`outcome: "unknown"`; rejection does not prove rollback. No automatic retry occurs.
+A later explicit call supplies the same complete list and reads history again.
+Client deadlines apply per transaction operation, not to the whole list.
+
+This changes application schema, not physical storage format. Only existing SQL
+operations are supported; `ALTER TABLE` is limited to `ADD COLUMN`. There are no
+callbacks, automatic down migrations, or table-rebuild helpers. Sync policy is
+outside this operation. See the [Rust facade](../../crates/sql/README.md#explicit-application-migrations)
+for the shared contract.
 
 ## Lossless values
 

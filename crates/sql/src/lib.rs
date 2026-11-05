@@ -18,6 +18,26 @@ mod client;
 ))]
 mod database;
 mod error;
+#[cfg(all(
+    feature = "sql",
+    any(
+        feature = "remote",
+        feature = "redb",
+        feature = "in-memory",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    )
+))]
+mod migration;
+#[cfg(all(
+    feature = "sql",
+    any(
+        feature = "remote",
+        feature = "redb",
+        feature = "in-memory",
+        all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
+    )
+))]
+pub use migration::{Migration, MigrationError, MigrationPhase, MigrationResult};
 
 pub use api::*;
 #[cfg(any(

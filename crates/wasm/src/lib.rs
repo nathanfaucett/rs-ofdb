@@ -2,6 +2,7 @@
 
 mod kv;
 mod sql;
+mod sql_migration;
 mod value;
 
 use wasm_bindgen::prelude::wasm_bindgen;

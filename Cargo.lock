@@ -2814,6 +2814,7 @@ dependencies = [
  "ofdb-sql-translator",
  "ofdb-value",
  "redb",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "uuid",

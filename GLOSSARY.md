@@ -120,6 +120,10 @@ Document History is the native changes and dependencies that describe a document
 
 A SQL Tombstone permanently marks one Logical Row as deleted. Its unique-key claim can be superseded only by a different row with the same unique-key value and a larger UUID; this does not restore the deleted row.
 
+## Application Schema Migration
+
+An Application Schema Migration is an explicitly requested, ordered SQL change with an immutable version and completion history. It changes application schema or data, not the physical format covered by SQL Storage Compatibility.
+
 ## SQL Storage Compatibility
 
 UUID row IDs replace the previous tagged and composite SQL row identities. Persisted SQL data and replicated payloads that use the previous identities are incompatible; do not mix formats or migrate them implicitly.

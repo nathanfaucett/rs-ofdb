@@ -14,6 +14,54 @@ Default features are empty. Remote-only builds do not include a local SQL engine
 
 `serve_tcp` and `serve_unix` borrow the embedded database and serve a shared engine clone. The caller owns the database handle and shutdown future. The serving future owns the bound listener until shutdown. The caller owns Unix socket path cleanup. Sync is a separate explicit operation. An interrupted session can leave already-applied batches committed; run sync again to reconcile. SQL transactions use `Client::transaction()` for embedded and remote access. A remote transaction holds one server-side engine transaction across calls; dropping its handle rolls it back. Each execute batch is atomic within the transaction. Commit applies the transaction as one engine operation; rollback discards it. Remote calls do not share a transaction unless they use the same transaction handle.
 
+## Explicit application migrations
+
+With `sql`, embedded and remote Query Handles use the same Rust runner:
+
+```rust,ignore
+use ofdb_sql::Migration;
+
+let migrations = [
+    Migration::new(1, "CREATE TABLE entries (id INTEGER PRIMARY KEY, text TEXT)"),
+    Migration::new(2, "ALTER TABLE entries ADD COLUMN label TEXT DEFAULT 'untitled'"),
+];
+let result = client.migrate(&migrations).await?;
+assert_eq!(result.current_version, 2);
+// result.applied_versions contains only versions committed by this call.
+```
+
+Call this before queries that need the new schema. `Database` construction and
+open never run migrations. Supply the complete list each time, with contiguous
+`u32` versions starting at one and nonempty SQL batches. Applied SQL is immutable:
+SHA-256 fingerprints cover the exact UTF-8 text, including whitespace.
+
+The runner owns the ordinary SQL table `_ofdb_migrations`, with columns
+`version INTEGER PRIMARY KEY` and `fingerprint TEXT` (lowercase SHA-256 hex).
+Do not change this table or its records in application code or migration SQL.
+History is read in each decision transaction. The runner rejects incompatible
+history rather than resetting it or inferring completion from application tables.
+An empty list returns version zero without creating metadata on an unmigrated
+store; it cannot accept unknown applied versions.
+
+Each pending migration commits its schema changes, data changes, and completion
+record in one transaction. Metadata creation belongs to the first such transaction.
+A failed batch or history insert rolls back that migration and stops later work;
+earlier successful migrations stay committed. An already-current call returns an
+empty `applied_versions` list without changing history.
+
+`MigrationError` identifies the phase and, when known, the version. Its `source`
+retains the structured query error; Display and Debug omit SQL and values. Do not
+log underlying source messages when SQL or data can contain secrets. Any failed
+commit has an unknown durable outcome (`commit_outcome_unknown()`); it is not
+proof of rollback. There are no automatic retries. A later explicit call must
+supply the complete unchanged list and will read history again. Existing Client
+and transaction deadlines apply per operation, not to the whole migration list.
+
+Only existing engine SQL is supported. `ALTER TABLE` supports `ADD COLUMN`, not
+rename, drop-column, type changes, or automatic table rebuilds. There are no
+callbacks, down migrations, automatic opening upgrades, or physical storage-format
+upgrades. Replication and sync policy are outside this operation.
+
 ## Continuous synchronization
 
 With `sync`, `Database::sync_changes()` returns `std::io::Result<ChangeSubscription>` for SQL memory, Redb and browser IndexedDB backends. This opaque type belongs to the sync API: it exposes no Tokio receiver or revision bookkeeping. Obtain it before starting reconciliation, then await `changes.run(synchronize)`, where the callback implements `FnMut() -> Future<Output = Result<(), E>>` and supplies an authorized sync session. The sync library owns the initial pass, change coalescing, race-free rescheduling for commits during a pass, and retry of failed work without waiting for another commit. Retry backoff starts at 100 ms, doubles to a 30-second cap, and resets on success. The callback reports/logs its errors and must return `Err` when delivery is still pending, including unavailable peers.
