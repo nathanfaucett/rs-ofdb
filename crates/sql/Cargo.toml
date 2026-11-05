@@ -90,6 +90,7 @@ btree = { version = "0.1", package = "ofdb-btree", path = "../btree", default-fe
 btree-redb = { version = "0.1", package = "ofdb-btree-redb", path = "../btree-redb", default-features = false, features = [
 ] }
 
+protocol = { version = "0.1", package = "ofdb-sql-protocol", path = "../sql-protocol", default-features = false }
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
 sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [
 ] }
