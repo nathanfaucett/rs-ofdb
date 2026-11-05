@@ -34,6 +34,9 @@ Call this before queries that need the new schema. `Database` construction and
 open never run migrations. Supply the complete list each time, with contiguous
 `u32` versions starting at one and nonempty SQL batches. Applied SQL is immutable:
 SHA-256 fingerprints cover the exact UTF-8 text, including whitespace.
+The complete list is translated before any mutation. Empty, comment-only, and
+semicolon-only batches, invalid SQL, duplicate versions, gaps, and out-of-order
+versions fail during `Plan`, even when the invalid entry is after pending work.
 
 The runner owns the ordinary SQL table `_ofdb_migrations`, with columns
 `version INTEGER PRIMARY KEY` and `fingerprint TEXT` (lowercase SHA-256 hex).
@@ -41,7 +44,12 @@ Do not change this table or its records in application code or migration SQL.
 History is read in each decision transaction. The runner rejects incompatible
 history rather than resetting it or inferring completion from application tables.
 An empty list returns version zero without creating metadata on an unmigrated
-store; it cannot accept unknown applied versions.
+store; it cannot accept unknown applied versions. Before pending SQL runs, the
+runner validates the metadata columns, types, defaults, primary key, and every
+stored version and fingerprint. Wrong table shapes, malformed records, duplicate
+or missing versions, changed SQL, and history newer than the supplied list fail
+during `History`. Rejection preserves application schema, data, and history; it
+never repairs metadata or treats a shorter list as a downgrade.
 
 Each pending migration commits its schema changes, data changes, and completion
 record in one transaction. Metadata creation belongs to the first such transaction.

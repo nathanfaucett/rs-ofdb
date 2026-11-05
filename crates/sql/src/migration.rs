@@ -3,7 +3,9 @@ use core::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::{Client, Error, ErrorKind, QueryParams, Row, Transaction, Value, ValueType};
+use crate::{
+    Client, Error, ErrorKind, QueryParams, Row, Transaction, Translator, Value, ValueType,
+};
 
 const CREATE_HISTORY: &str =
     "CREATE TABLE _ofdb_migrations (version INTEGER PRIMARY KEY, fingerprint TEXT)";
@@ -103,7 +105,13 @@ impl Client {
         let mut fingerprints = Vec::with_capacity(migrations.len());
         for (index, migration) in migrations.iter().enumerate() {
             if usize::try_from(migration.version).ok() != index.checked_add(1)
-                || migration.sql.trim().is_empty()
+                || sql_translator::SqlTranslator
+                    .translate(&migration.sql)
+                    .await
+                    .map_err(|_| {
+                        MigrationError::invalid(Some(migration.version), MigrationPhase::Plan)
+                    })?
+                    .is_empty()
             {
                 return Err(MigrationError::invalid(
                     Some(migration.version),

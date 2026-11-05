@@ -102,6 +102,15 @@ UTF-8 text. The runner owns `_ofdb_migrations` (`version INTEGER PRIMARY KEY`,
 tables do not imply applied history. An empty list creates no metadata in an
 unmigrated database and cannot accept unknown applied versions.
 
+Rust validates the complete plan before mutations. Comment-only and
+semicolon-only SQL are empty batches and fail during `Plan`, as do invalid SQL,
+duplicate versions, gaps, and invalid ordering. Within each decision transaction,
+Rust validates the metadata table shape and every stored version and fingerprint.
+Colliding schemas, malformed or missing history, changed SQL, and stored versions
+absent from the full list fail during `History`. Rejection leaves application
+schema, data, and history unchanged. The runner does not repair history or treat
+a shorter list as a downgrade.
+
 Each migration's schema, data, and completion record commit together. A failed SQL
 batch or history insert rolls back that migration and stops the sequence. Earlier
 migrations remain committed. `MigrationError` exposes `version`, `phase`, and
