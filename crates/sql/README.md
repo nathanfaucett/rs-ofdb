@@ -57,6 +57,26 @@ proof of rollback. There are no automatic retries. A later explicit call must
 supply the complete unchanged list and will read history again. Existing Client
 and transaction deadlines apply per operation, not to the whole migration list.
 
+Concurrent calls use the backend's existing serialization or stale-revision
+rejection. A competing call either sees completed history or returns an error;
+there is no migration lock or automatic conflict retry. Storage errors remain
+structured query errors, not classifications inferred from message text.
+
+After an error, do not execute the failed SQL directly or remove history. When
+ready to try again, explicitly call `client.migrate(&migrations).await` with the
+same complete list. The new decision transaction checks committed history and
+skips completed transformations, including a commit whose response was lost.
+Inspect `current_version` and `applied_versions` on success. A failed invocation
+returns an error, not a partial result; it can still have earlier committed
+versions. A later successful result lists only that later call's applied versions.
+
+A pre-commit error has `commit_outcome_unknown() == false`. This does not undo
+earlier successful versions. Once commit is attempted, any error, including a
+conflict or deadline, has an unknown outcome at this API boundary. A timeout does
+not cancel remote work or prove rollback. Uncommitted handles are rolled back or
+dropped; a remote server cleans up when it observes stream closure. An issued
+IndexedDB commit remains observed independently of the waiting caller.
+
 Only existing engine SQL is supported. `ALTER TABLE` supports `ADD COLUMN`, not
 rename, drop-column, type changes, or automatic table rebuilds. There are no
 callbacks, down migrations, automatic opening upgrades, or physical storage-format

@@ -2806,6 +2806,7 @@ dependencies = [
  "ofdb-sql-engine-indexeddb",
  "ofdb-sql-engine-redb",
  "ofdb-sql-macros",
+ "ofdb-sql-protocol",
  "ofdb-sql-query",
  "ofdb-sql-schema",
  "ofdb-sql-server",

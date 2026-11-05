@@ -110,6 +110,37 @@ migrations remain committed. `MigrationError` exposes `version`, `phase`, and
 A later explicit call supplies the same complete list and reads history again.
 Client deadlines apply per transaction operation, not to the whole list.
 
+Concurrent calls use existing backend transactions. A competing call sees
+completed history or receives a conflict/error; there are no migration locks,
+automatic retries, or SQL replay. IndexedDB rejects stale write revisions.
+`MigrationError.queryKind` preserves the Rust query category. Use its fields,
+not message matching:
+
+```ts
+try {
+  const result = await client.migrate(migrations);
+  console.log(result.currentVersion, result.appliedVersions);
+} catch (error) {
+  if (!(error instanceof MigrationError)) throw error;
+  console.error(error.version, error.phase, error.queryKind, error.outcome);
+  // Let the application decide when to invoke migration again.
+}
+```
+
+Import `MigrationError` from `@ofsdk/sql`. A failure returns no partial result;
+earlier versions can still be committed. When the application is ready, call
+`client.migrate(migrations)` again with the full unchanged list. The new decision
+transaction reads committed history and skips completed transformations, even if
+the earlier completion response was lost. `appliedVersions` includes only versions
+applied by the successful invocation, not earlier calls.
+
+Before commit, `outcome` is `undefined`; after any failed commit attempt it is
+`"unknown"`, including a conflict or timeout. A deadline reports `kind: "timeout"`
+and `queryKind: "Timeout"`. Timeout does not cancel remote work or prove rollback.
+The runner releases uncommitted transaction handles, but an issued IndexedDB commit
+can finish after the caller stops waiting. Do not delete history or run SQL directly
+to recover from an uncertain outcome.
+
 This changes application schema, not physical storage format. Only existing SQL
 operations are supported; `ALTER TABLE` is limited to `ADD COLUMN`. There are no
 callbacks, automatic down migrations, or table-rebuild helpers. Sync policy is
