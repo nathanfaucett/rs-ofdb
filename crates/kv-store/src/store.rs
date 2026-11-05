@@ -243,12 +243,9 @@ where
         while let Some(item) = documents.next().await {
             let (id, document) = item?;
             let (key, _) = decode_document_id(&id)?;
-            latest.insert(key, (id, document));
+            latest.insert(key, history_parts(id, document));
         }
-        latest
-            .into_values()
-            .map(|(id, document)| history_parts(id, document))
-            .collect()
+        latest.into_values().collect()
     }
 
     /// Export native changes even when their only physical representation is a snapshot.
@@ -262,6 +259,7 @@ where
             return Ok(Vec::new());
         };
         read_document(&document)?;
+        let known = known.iter().collect::<std::collections::BTreeSet<_>>();
         Ok(document
             .get_changes(&[])
             .into_iter()
@@ -330,19 +328,14 @@ where
     pub async fn export_snapshots(&self) -> BTreeResult<Vec<(DocumentChangeKey, Vec<u8>)>> {
         let documents = self.inner.range(..);
         pin_mut!(documents);
-        let mut latest = BTreeMap::<String, (Vec<u8>, AutoCommit)>::new();
+        let mut latest = BTreeMap::new();
         while let Some(item) = documents.next().await {
             let (id, document) = item?;
             let (key, _) = decode_document_id(&id)?;
-            latest.insert(key, (id, document));
+            let snapshot = read_document(&document).map(|_| snapshot_parts(id, document));
+            latest.insert(key, snapshot);
         }
-        latest
-            .into_values()
-            .map(|(id, document)| {
-                read_document(&document)?;
-                Ok(snapshot_parts(id, document))
-            })
-            .collect()
+        latest.into_values().collect()
     }
 
     pub async fn export_snapshot(
@@ -521,7 +514,7 @@ fn upper_id(key: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::KvStore;
-    use btree::{BTreeRead, InMemoryBTree};
+    use btree::{BTreeRead, BTreeTransaction, InMemoryBTree};
     use btree_automerge::{DocumentChangeKey, DocumentType};
     use futures::{StreamExt, executor::block_on};
     use value::Value;
@@ -535,6 +528,48 @@ mod tests {
             0,
             0,
         )
+    }
+
+    #[test]
+    fn broad_exports_validate_only_the_latest_generation() {
+        block_on(async {
+            for invalid_latest in [false, true] {
+                let store = KvStore::new(InMemoryBTree::new(), test_timestamp_provider);
+                let mut tx = store.transaction().await.expect("transaction");
+                for (n, invalid) in [(1u128, !invalid_latest), (2, invalid_latest)] {
+                    let generation = uuid::Uuid::from_u128((n << 80) | (7 << 76) | (2 << 62));
+                    let document = if invalid {
+                        automerge::AutoCommit::new()
+                    } else {
+                        super::new_document(Value::Integer(2), None).expect("valid document")
+                    };
+                    tx.inner
+                        .insert(super::encode_document_id("key", generation), document)
+                        .await
+                        .expect("insert generation");
+                }
+                if invalid_latest {
+                    assert!(tx.history("key").await.is_err());
+                    assert!(tx.histories().await.is_err());
+                    assert!(tx.export_snapshots().await.is_err());
+                } else {
+                    assert_eq!(
+                        tx.histories().await.expect("broad history"),
+                        vec![tx.history("key").await.expect("history").expect("key")]
+                    );
+                    assert_eq!(
+                        tx.export_snapshots().await.expect("broad snapshots"),
+                        vec![
+                            tx.export_snapshot("key")
+                                .await
+                                .expect("snapshot")
+                                .expect("key")
+                        ]
+                    );
+                }
+                tx.rollback().await.expect("rollback");
+            }
+        });
     }
 
     #[test]

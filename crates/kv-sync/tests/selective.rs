@@ -193,6 +193,151 @@ fn selected_native_deltas_merge_nested_edits_and_replay_without_snapshots() {
 }
 
 #[test]
+fn byte_limited_batches_make_progress() {
+    block_on(async {
+        let a = store();
+        let b = store();
+        for n in 0..16 {
+            set(&a, &format!("key-{n}"), Value::Blob(vec![n; 600])).await;
+        }
+        let config = Config {
+            max_frame_bytes: 1024,
+            ..Config::default()
+        };
+        let (mut at, mut bt) = channels();
+        futures::try_join!(
+            synchronize(&a, &mut at, SyncRole::Initiator, config),
+            synchronize(&b, &mut bt, SyncRole::Responder, config)
+        )
+        .expect("individually valid documents must fit separate frames");
+        assert!(
+            at.sent
+                .iter()
+                .filter(|m| matches!(m, Message::Snapshots(_)))
+                .count()
+                > 1
+        );
+        assert!(
+            at.sent
+                .iter()
+                .filter(|m| matches!(m, Message::Inventory(_)))
+                .count()
+                > 1
+        );
+        for n in 0..16 {
+            set(&a, &format!("key-{n}"), Value::Blob(vec![n + 1; 600])).await;
+        }
+        let (mut at, mut bt) = channels();
+        futures::try_join!(
+            synchronize(&a, &mut at, SyncRole::Initiator, config),
+            synchronize(&b, &mut bt, SyncRole::Responder, config)
+        )
+        .expect("native deltas must also fit separate frames");
+        assert!(
+            at.sent
+                .iter()
+                .filter(|m| matches!(m, Message::Changes(_)))
+                .count()
+                > 1
+        );
+        assert!(!at.sent.iter().any(|m| matches!(m, Message::Snapshots(_))));
+        let tx = b.transaction().await.expect("read");
+        for n in 0..16 {
+            assert_eq!(
+                tx.get(&format!("key-{n}"), 0).await.expect("value"),
+                Some(Value::Blob(vec![n + 1; 600]))
+            );
+        }
+        tx.rollback().await.expect("rollback");
+    });
+}
+
+#[test]
+fn byte_limited_recovery_makes_progress() {
+    fn blob(seed: u8) -> Value {
+        let mut state = u32::from(seed) + 1;
+        Value::Blob(
+            (0..600)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (state >> 24) as u8
+                })
+                .collect(),
+        )
+    }
+    block_on(async {
+        let a = store();
+        let b = store();
+        for n in 0..12 {
+            set(&a, &format!("key-{n}"), blob(n)).await;
+        }
+        broad(&a, &b).await;
+        let mut parents = Vec::new();
+        for n in 0..12 {
+            let key = format!("key-{n}");
+            set(&a, &key, blob(n + 1)).await;
+            let tx = a.transaction().await.expect("read");
+            parents.extend(tx.history(&key).await.expect("history").expect("key").heads);
+            tx.rollback().await.expect("rollback");
+            let mut tx = a.transaction().await.expect("expiry edit");
+            tx.set(&key, blob(n + 1), Some(100)).await.expect("set");
+            tx.commit().await.expect("commit");
+        }
+        let config = Config {
+            max_frame_bytes: 8192,
+            ..Config::default()
+        };
+        let (mut at, mut bt) = channels();
+        bt.pretend_known = parents;
+        let result = futures::try_join!(
+            synchronize(&a, &mut at, SyncRole::Initiator, config),
+            synchronize(&b, &mut bt, SyncRole::Responder, config)
+        );
+        assert!(bt.sent.contains(&Message::Recover));
+        result.expect("recovery snapshots must fit separate frames");
+        assert!(
+            at.sent
+                .iter()
+                .filter(|m| matches!(m, Message::Snapshots(_)))
+                .count()
+                > 1
+        );
+        let tx = b.transaction().await.expect("read");
+        for n in 0..12 {
+            assert_eq!(
+                tx.get(&format!("key-{n}"), 0).await.expect("value"),
+                Some(blob(n + 1))
+            );
+            assert_eq!(
+                tx.get(&format!("key-{n}"), 100).await.expect("expiry"),
+                None
+            );
+        }
+        tx.rollback().await.expect("rollback");
+    });
+}
+
+#[test]
+fn unchanged_sync_does_not_read_documents_again_for_transfer() {
+    block_on(async {
+        let (a, reads) = measured_store();
+        let b = store();
+        set(&a, "key", Value::Integer(1)).await;
+        broad(&a, &b).await;
+        reads.store(0, std::sync::atomic::Ordering::SeqCst);
+        let tx = a.transaction().await.expect("read");
+        tx.histories().await.expect("inventory");
+        tx.rollback().await.expect("rollback");
+        let inventory_reads = reads.swap(0, std::sync::atomic::Ordering::SeqCst);
+        broad(&a, &b).await;
+        assert!(
+            reads.load(std::sync::atomic::Ordering::SeqCst) <= 2 * inventory_reads,
+            "an unchanged sync needs only the two directional inventory reads"
+        );
+    });
+}
+
+#[test]
 fn large_valid_inventory_syncs_values_across_many_frames() {
     block_on(async {
         let a = store();
@@ -357,6 +502,108 @@ impl<T: btree::BTreeTransaction<Vec<u8>, Vec<u8>>> btree::BTreeTransaction<Vec<u
     async fn rollback(self) -> btree::BTreeResult<()> {
         self.inner.rollback().await
     }
+}
+
+#[test]
+fn split_recovery_failure_does_not_commit_the_first_frame() {
+    block_on(async {
+        for failure in ["disconnect", "invalid", "denied", "budget"] {
+            let source = store();
+            let target = store();
+            let mut changes = Vec::new();
+            let mut snapshots = Vec::new();
+            for key in ["a", "b"] {
+                set(&source, key, Value::Integer(1)).await;
+                set(&source, key, Value::Integer(2)).await;
+                let tx = source.transaction().await.expect("source read");
+                let history = tx.history(key).await.expect("history").expect("key");
+                let native = tx.export_changes(&history.id, &[]).await.expect("changes");
+                let child = native.last().expect("child");
+                changes.push(ofdb_kv_sync::KvChanges {
+                    id: history.id,
+                    changes: vec![ofdb_kv_sync::KvChange {
+                        hash: child.hash,
+                        deps: child.deps.clone(),
+                        payload: child.payload.clone(),
+                    }],
+                });
+                let (key, payload) = tx
+                    .export_snapshot(key)
+                    .await
+                    .expect("snapshot")
+                    .expect("key");
+                snapshots.push(ofdb_kv_sync::KvSnapshot { key, payload });
+                tx.rollback().await.expect("rollback");
+            }
+            let first = Message::Snapshots(vec![snapshots.remove(0)]);
+            let config = Config {
+                max_inventory_bytes: if failure == "budget" {
+                    ofdb_kv_sync::encode_frame(&first, Config::default())
+                        .expect("first frame")
+                        .len()
+                } else {
+                    Config::default().max_inventory_bytes
+                },
+                ..Config::default()
+            };
+            let (mut at, mut bt) = channels();
+            for message in [
+                Message::Hello { version: 3 },
+                Message::Selection(None),
+                Message::End,
+                Message::Changes(changes),
+                first,
+            ] {
+                at.send(ofdb_kv_sync::encode_frame(&message, config).expect("frame"))
+                    .await
+                    .expect("queue");
+            }
+            if failure != "disconnect" {
+                if failure == "invalid" {
+                    snapshots[0].payload = vec![0];
+                }
+                at.send(
+                    ofdb_kv_sync::encode_frame(&Message::Snapshots(snapshots), config)
+                        .expect("frame"),
+                )
+                .await
+                .expect("queue");
+            }
+            at.sender.close_channel();
+            let mut checks = 0;
+            let result = ofdb_kv_sync::synchronize_checked(
+                &target,
+                &mut bt,
+                SyncRole::Responder,
+                config,
+                || {
+                    checks += 1;
+                    core::future::ready(if failure == "denied" && checks == 3 {
+                        Err("denied".into())
+                    } else {
+                        Ok(())
+                    })
+                },
+            )
+            .await;
+            match failure {
+                "disconnect" => assert!(matches!(result, Err(ofdb_kv_sync::Error::Transport(())))),
+                "invalid" => assert!(matches!(result, Err(ofdb_kv_sync::Error::Storage(_)))),
+                "denied" => assert!(matches!(result, Err(ofdb_kv_sync::Error::PreApply(_)))),
+                "budget" => assert_eq!(result, Err(ofdb_kv_sync::Error::FrameTooLarge)),
+                _ => unreachable!("known failure"),
+            }
+            let tx = target.transaction().await.expect("target read");
+            for key in ["a", "b"] {
+                assert_eq!(
+                    tx.history(key).await.expect("history"),
+                    None,
+                    "{failure} must leave {key} unchanged"
+                );
+            }
+            tx.rollback().await.expect("rollback");
+        }
+    });
 }
 
 #[test]

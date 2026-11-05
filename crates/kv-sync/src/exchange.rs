@@ -184,11 +184,47 @@ async fn send_inventory<T: SyncTransport>(
     items: &[KvInventory],
     config: Config,
 ) -> Result<(), Error<T::Error>> {
-    for batch in items.chunks(config.max_snapshots_per_batch.max(1)) {
-        send(transport, Message::Inventory(batch.to_vec()), config).await?;
+    let mut remaining = items;
+    while !remaining.is_empty() {
+        let count = batch_len(remaining, config)?;
+        send(
+            transport,
+            Message::Inventory(remaining[..count].to_vec()),
+            config,
+        )
+        .await?;
+        remaining = &remaining[count..];
     }
     send(transport, Message::End, config).await
 }
+fn encoded_size<E>(value: &impl serde::Serialize) -> Result<usize, Error<E>> {
+    postcard::experimental::serialized_size(value).map_err(|error| Error::Codec(error.to_string()))
+}
+
+fn batch_fits<E>(bytes: usize, count: usize, config: Config) -> Result<bool, Error<E>> {
+    Ok(count <= config.max_snapshots_per_batch
+        && 1usize
+            .saturating_add(encoded_size(&count)?)
+            .saturating_add(bytes)
+            <= config.max_frame_bytes)
+}
+
+fn batch_len<E>(items: &[impl serde::Serialize], config: Config) -> Result<usize, Error<E>> {
+    let mut bytes = 0usize;
+    let mut count = 0;
+    for item in items.iter().take(config.max_snapshots_per_batch) {
+        bytes = bytes.saturating_add(encoded_size(item)?);
+        if !batch_fits(bytes, count + 1, config)? {
+            break;
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return Err(Error::FrameTooLarge);
+    }
+    Ok(count)
+}
+
 async fn receive_inventory<T: SyncTransport>(
     transport: &mut T,
     config: Config,
@@ -225,22 +261,33 @@ async fn send_direction<B: BTree<Vec<u8>, Vec<u8>>, T: SyncTransport>(
     keys: Option<&[String]>,
     config: Config,
 ) -> Result<(), Error<T::Error>> {
-    let local = inventory(store, keys).await.map_err(storage_error)?;
+    let mut local = inventory(store, keys).await.map_err(storage_error)?;
     send_inventory(transport, &local, config).await?;
     let remote = receive_inventory(transport, config)
         .await?
         .into_iter()
         .map(|item| (item.id, item.hashes))
         .collect::<BTreeMap<_, _>>();
+    local.retain(|item| {
+        !remote.get(&item.id).is_some_and(|known| {
+            let known = known.iter().collect::<BTreeSet<_>>();
+            item.hashes.iter().all(|hash| known.contains(hash))
+        })
+    });
     // Each complete batch is prepared in one transaction and released before network I/O.
-    for batch in local.chunks(config.max_snapshots_per_batch.max(1)) {
+    let mut remaining = local.as_slice();
+    while !remaining.is_empty() {
         let tx = store.transaction().await.map_err(storage_error)?;
         let mut snapshots = Vec::new();
         let mut deltas = Vec::new();
         let mut delta_keys = Vec::new();
-        for item in batch {
+        let mut snapshot_bytes = 0;
+        let mut delta_bytes = 0;
+        let mut consumed = 0;
+        for item in remaining.iter().take(config.max_snapshots_per_batch.max(1)) {
             let (key, _) = decode_document_id(&item.id).map_err(storage_error)?;
             let Some(current) = tx.history(&key).await.map_err(storage_error)? else {
+                consumed += 1;
                 continue;
             };
             if let Some(known) = remote.get(&current.id) {
@@ -249,8 +296,7 @@ async fn send_direction<B: BTree<Vec<u8>, Vec<u8>>, T: SyncTransport>(
                     .await
                     .map_err(storage_error)?;
                 if !changes.is_empty() {
-                    delta_keys.push(key);
-                    deltas.push(KvChanges {
+                    let delta = KvChanges {
                         id: current.id,
                         changes: changes
                             .into_iter()
@@ -260,15 +306,36 @@ async fn send_direction<B: BTree<Vec<u8>, Vec<u8>>, T: SyncTransport>(
                                 payload: change.payload,
                             })
                             .collect(),
-                    });
+                    };
+                    let bytes = encoded_size(&delta)?;
+                    if !batch_fits(delta_bytes + bytes, deltas.len() + 1, config)? {
+                        if snapshots.is_empty() && deltas.is_empty() {
+                            return Err(Error::FrameTooLarge);
+                        }
+                        break;
+                    }
+                    delta_bytes += bytes;
+                    delta_keys.push(key);
+                    deltas.push(delta);
                 }
             } else if let Some((key, payload)) =
                 tx.export_snapshot(&key).await.map_err(storage_error)?
             {
-                snapshots.push(KvSnapshot { key, payload });
+                let snapshot = KvSnapshot { key, payload };
+                let bytes = encoded_size(&snapshot)?;
+                if !batch_fits(snapshot_bytes + bytes, snapshots.len() + 1, config)? {
+                    if snapshots.is_empty() && deltas.is_empty() {
+                        return Err(Error::FrameTooLarge);
+                    }
+                    break;
+                }
+                snapshot_bytes += bytes;
+                snapshots.push(snapshot);
             }
+            consumed += 1;
         }
         tx.rollback().await.map_err(storage_error)?;
+        remaining = &remaining[consumed..];
         if !snapshots.is_empty() {
             send(transport, Message::Snapshots(snapshots), config).await?;
             if receive(transport, config).await? != Message::Applied {
@@ -280,19 +347,35 @@ async fn send_direction<B: BTree<Vec<u8>, Vec<u8>>, T: SyncTransport>(
             match receive(transport, config).await? {
                 Message::Applied => {}
                 Message::Recover => {
-                    let tx = store.transaction().await.map_err(storage_error)?;
-                    let mut snapshots = Vec::new();
-                    for key in delta_keys {
-                        if let Some((key, payload)) =
-                            tx.export_snapshot(&key).await.map_err(storage_error)?
-                        {
-                            snapshots.push(KvSnapshot { key, payload });
+                    let mut keys = delta_keys.as_slice();
+                    while !keys.is_empty() {
+                        let tx = store.transaction().await.map_err(storage_error)?;
+                        let mut snapshots = Vec::new();
+                        let mut bytes = 0;
+                        let mut consumed = 0;
+                        for key in keys {
+                            if let Some((key, payload)) =
+                                tx.export_snapshot(key).await.map_err(storage_error)?
+                            {
+                                let snapshot = KvSnapshot { key, payload };
+                                let size = encoded_size(&snapshot)?;
+                                if !batch_fits(bytes + size, snapshots.len() + 1, config)? {
+                                    if snapshots.is_empty() {
+                                        return Err(Error::FrameTooLarge);
+                                    }
+                                    break;
+                                }
+                                bytes += size;
+                                snapshots.push(snapshot);
+                            }
+                            consumed += 1;
                         }
-                    }
-                    tx.rollback().await.map_err(storage_error)?;
-                    send(transport, Message::Snapshots(snapshots), config).await?;
-                    if receive(transport, config).await? != Message::Applied {
-                        return Err(Error::UnexpectedMessage);
+                        tx.rollback().await.map_err(storage_error)?;
+                        keys = &keys[consumed..];
+                        send(transport, Message::Snapshots(snapshots), config).await?;
+                        if receive(transport, config).await? != Message::Applied {
+                            return Err(Error::UnexpectedMessage);
+                        }
                     }
                 }
                 _ => return Err(Error::UnexpectedMessage),
@@ -326,9 +409,12 @@ where
         config,
     )
     .await?;
-    let mut recovery = Vec::new();
+    let mut recovery: Vec<KvChanges> = Vec::new();
+    let mut snapshots = BTreeMap::new();
+    let mut recovery_bytes = 0usize;
     loop {
-        let message = receive(transport, config).await?;
+        let frame = transport.receive().await.map_err(Error::Transport)?;
+        let mut message = decode_frame(&frame, config)?;
         if message == Message::End && recovery.is_empty() {
             return Ok(());
         }
@@ -344,11 +430,42 @@ where
                 .poll(&mut Context::from_waker(Waker::noop()));
             return Err(Error::PreApply(reason));
         }
+        if !recovery.is_empty() {
+            recovery_bytes = recovery_bytes.saturating_add(frame.len());
+            if recovery_bytes > config.max_inventory_bytes {
+                return Err(Error::FrameTooLarge);
+            }
+            let expected = recovery
+                .iter()
+                .map(|item| decode_document_id(&item.id).map(|(key, _)| key))
+                .collect::<BTreeResult<BTreeSet<_>>>()
+                .map_err(storage_error)?;
+            let Message::Snapshots(items) = message else {
+                unreachable!("only snapshots are accepted during recovery");
+            };
+            if items.is_empty() {
+                return Err(storage_error(btree::BTreeError::InvalidDocument));
+            }
+            for item in items {
+                let (key, _) = decode_document_id(&item.key.id).map_err(storage_error)?;
+                if !expected.contains(&key) || snapshots.contains_key(&key) {
+                    return Err(Error::InvalidFrame);
+                }
+                snapshots.insert(key, item);
+            }
+            if snapshots.len() < expected.len() {
+                // Acknowledge staging, but commit only the complete original Changes batch.
+                send(transport, Message::Applied, config).await?;
+                continue;
+            }
+            message = Message::Snapshots(core::mem::take(&mut snapshots).into_values().collect());
+        }
         let applied = apply_batch(store, &message, &recovery)
             .await
             .map_err(storage_error)?;
         if applied {
             recovery.clear();
+            recovery_bytes = 0;
         } else if let Message::Changes(items) = message {
             recovery = items;
         }

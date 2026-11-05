@@ -1,137 +1,243 @@
 <script lang="ts">
-    import { Database as KvDatabase, type Client as KvClient } from "@ofsdk/kv";
-    import {
-        Database as SqlDatabase,
-        type Client as SqlClient,
-    } from "@ofsdk/sql";
+    import { KvPeerNetwork, type KvPeer } from "./sync/kv-network.js";
+    import { SqlPeerNetwork, type SqlPeer } from "./sync/sql-network.js";
+    import KvTab from "./KvTab.svelte";
+    import SqlTab from "./SqlTab.svelte";
 
-    let kvClient: KvClient | undefined = $state();
-    let sqlClient: SqlClient | undefined = $state();
+    let activeTab = $state<"kv" | "sql">("kv");
 
-    let key = $state("theme");
-    let value = $state("");
-    let status = $state("Loading Wasm and opening browser storage…");
-    let statusError = $state(false);
-    let result = $state("");
+    // KV state
+    let kvNetwork = $state<KvPeerNetwork | null>(null);
+    let kvPeers = $state<KvPeer[]>([]);
+    let kvKey = $state("theme");
+    let kvStatus = $state("Starting…");
+    let kvStatusError = $state(false);
     let kvBusy = $state(true);
 
-    let record = $state("");
-    let sqlStatus = $state("Loading SQL storage…");
+    // SQL state
+    let sqlNetwork = $state<SqlPeerNetwork | null>(null);
+    let sqlPeers = $state<SqlPeer[]>([]);
+    let sqlStatus = $state("Starting…");
     let sqlStatusError = $state(false);
-    let sqlResult: string[] = $state([]);
     let sqlBusy = $state(true);
 
-    function message(error: unknown): string {
+    // Per-peer editor state
+    const kvEditorState = $state<
+        Record<string, { key: string; value: string }>
+    >({});
+    const sqlEditorState = $state<
+        Record<string, { text: string; records: string[] }>
+    >({});
+
+    function msg(error: unknown): string {
         return error instanceof Error ? error.message : String(error);
     }
 
-    function report(text: string, error = false): void {
-        status = text;
-        statusError = error;
+    function kvReport(text: string, error = false): void {
+        kvStatus = text;
+        kvStatusError = error;
     }
 
-    async function operateKv(save: boolean): Promise<void> {
-        if (kvBusy || !kvClient) return;
-        if (save && !key.trim()) return;
-        kvBusy = true;
-        result = "";
-        report(save ? "Saving…" : "Retrieving…");
-        try {
-            if (save) {
-                await kvClient.set(key, value);
-                report("Saved and committed.");
-            } else {
-                const stored = await kvClient.get(key);
-                if (stored === undefined) {
-                    report("Key not found.");
+    function getKvState(peerId: string) {
+        return (kvEditorState[peerId] ??= { key: kvKey, value: "" });
+    }
+
+    function getSqlState(peerId: string) {
+        return (sqlEditorState[peerId] ??= { text: "", records: [] });
+    }
+
+    async function refreshKvValues(): Promise<void> {
+        if (!kvNetwork) return;
+        for (const peer of kvNetwork.getPeers()) {
+            const state = getKvState(peer.id);
+            try {
+                const val = await peer.client.get(state.key);
+                if (val === undefined) {
+                    state.value = "—";
                 } else {
-                    result =
-                        typeof stored === "string"
-                            ? stored
-                            : JSON.stringify(stored);
-                    report("Retrieved committed value.");
+                    state.value =
+                        typeof val === "string" ? val : JSON.stringify(val);
                 }
+            } catch {
+                state.value = "error";
             }
-        } catch (error) {
-            report(
-                `Error: ${message(error)}. Check browser storage permissions and available space; reload and retrieve before retrying a write.`,
-                true,
-            );
-        } finally {
-            kvBusy = false;
-        }
-    }
-
-    async function listSql(): Promise<void> {
-        if (!sqlClient) return;
-        const results = await sqlClient.execute(
-            "SELECT text FROM records ORDER BY id",
-        );
-        sqlResult = results.flatMap((r: { rows: unknown[][] }) =>
-            r.rows.map((row: unknown[]) => {
-                const first = row[0];
-                return typeof first === "string"
-                    ? first
-                    : JSON.stringify(first);
-            }),
-        );
-    }
-
-    async function operateSql(add: boolean): Promise<void> {
-        if (sqlBusy || !sqlClient) return;
-        if (add && !record.trim()) return;
-        sqlBusy = true;
-        sqlStatusError = false;
-        sqlStatus = add ? "Adding…" : "Listing…";
-        try {
-            if (add) {
-                await sqlClient.execute(
-                    "INSERT INTO records (text) VALUES ($1)",
-                    [record],
-                );
-                record = "";
-            }
-            await listSql();
-            sqlStatus = add
-                ? "Added and committed."
-                : "Listed committed records.";
-        } catch (error) {
-            sqlStatusError = true;
-            sqlStatus = `Error: ${message(error)}. Check browser storage permissions and available space; reload and list records before retrying a write.`;
-        } finally {
-            sqlBusy = false;
         }
     }
 
     async function startKv(): Promise<void> {
         try {
-            const db = await KvDatabase.open("ofdb-browser-example-kv");
-            kvClient = db.client();
+            kvNetwork = new KvPeerNetwork("ofdb-example-kv");
+            kvNetwork.setListener(() => {
+                kvPeers = kvNetwork!.getPeers();
+                void refreshKvValues();
+            });
+            await kvNetwork.addPeer();
+            kvPeers = kvNetwork.getPeers();
             kvBusy = false;
-            await operateKv(false);
+            await refreshKvValues();
+            kvReport("Ready. Add peers and toggle them offline to test sync.");
         } catch (error) {
-            kvBusy = true;
-            report(
-                `Error: ${message(error)}. Check that the example is built and served over HTTP, allow browser storage, then reload. No memory fallback is used.`,
-                true,
-            );
+            kvReport(`Error: ${msg(error)}`, true);
         }
     }
 
     async function startSql(): Promise<void> {
         try {
-            const db = await SqlDatabase.open("ofdb-browser-example-sql");
-            sqlClient = db.client();
-            await sqlClient.execute(
-                "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)",
-            );
+            sqlNetwork = new SqlPeerNetwork("ofdb-example-sql");
+            sqlNetwork.setListener(() => {
+                sqlPeers = sqlNetwork!.getPeers();
+                void refreshSqlRecords();
+            });
+            await sqlNetwork.addPeer();
+            sqlPeers = sqlNetwork.getPeers();
             sqlBusy = false;
-            await operateSql(false);
+            await refreshSqlRecords();
+            sqlStatus =
+                "Ready. Add peers and toggle them offline to test sync.";
         } catch (error) {
-            sqlBusy = true;
             sqlStatusError = true;
-            sqlStatus = `Error: ${message(error)}. Check the Wasm build and browser storage permissions, then reload. No memory fallback is used.`;
+            sqlStatus = `Error: ${msg(error)}`;
         }
+    }
+
+    async function kvSave(peerId: string): Promise<void> {
+        console.log("[App] kvSave called for:", peerId);
+        if (!kvNetwork || kvBusy) return;
+        const state = getKvState(peerId);
+        console.log("[App] kvSave state:", state);
+        if (!state.key.trim()) return;
+        kvBusy = true;
+        kvReport("Saving…");
+        try {
+            await kvNetwork.write(peerId, state.key, state.value);
+            await refreshKvValues();
+            kvReport("Saved (sync runs automatically).");
+        } catch (error) {
+            kvReport(`Error: ${msg(error)}`, true);
+        } finally {
+            kvBusy = false;
+        }
+    }
+
+    async function kvRetrieve(peerId: string): Promise<void> {
+        if (kvBusy) return;
+        const state = getKvState(peerId);
+        if (!state.key.trim()) return;
+        kvBusy = true;
+        kvReport("Reading…");
+        try {
+            const peer = kvNetwork!.getPeer(peerId);
+            if (peer) {
+                const val = await peer.client.get(state.key);
+                state.value =
+                    val === undefined
+                        ? "—"
+                        : typeof val === "string"
+                          ? val
+                          : JSON.stringify(val);
+                kvReport("Read from peer.");
+            }
+        } catch (error) {
+            kvReport(`Error: ${msg(error)}`, true);
+        } finally {
+            kvBusy = false;
+        }
+    }
+
+    async function addKvPeer(): Promise<void> {
+        if (!kvNetwork) return;
+        kvBusy = true;
+        try {
+            await kvNetwork.addPeer();
+            kvPeers = kvNetwork.getPeers();
+            await refreshKvValues();
+            kvReport(`Added peer. Total: ${kvPeers.length}`);
+        } catch (error) {
+            kvReport(`Error: ${msg(error)}`, true);
+        } finally {
+            kvBusy = false;
+        }
+    }
+
+    async function removeKvPeer(id: string): Promise<void> {
+        if (!kvNetwork) return;
+        await kvNetwork.removePeer(id);
+        kvPeers = kvNetwork.getPeers();
+        delete kvEditorState[id];
+        await refreshKvValues();
+    }
+
+    async function toggleKvPeer(id: string, online: boolean): Promise<void> {
+        if (!kvNetwork) return;
+        await kvNetwork.setOnline(id, online);
+        kvPeers = kvNetwork.getPeers();
+        await refreshKvValues();
+    }
+
+    async function sqlAdd(peerId: string): Promise<void> {
+        console.log("[App] sqlAdd called for:", peerId);
+        if (!sqlNetwork || sqlBusy) return;
+        const state = getSqlState(peerId);
+        console.log("[App] sqlAdd state:", state);
+        if (!state.text.trim()) return;
+        sqlBusy = true;
+        sqlStatusError = false;
+        sqlStatus = "Adding…";
+        try {
+            await sqlNetwork.addRecord(peerId, state.text);
+            state.text = "";
+            sqlPeers = sqlNetwork.getPeers();
+            await refreshSqlRecords();
+            sqlStatus = "Added (sync runs automatically).";
+        } catch (error) {
+            sqlStatusError = true;
+            sqlStatus = `Error: ${msg(error)}`;
+        } finally {
+            sqlBusy = false;
+        }
+    }
+
+    async function refreshSqlRecords(): Promise<void> {
+        if (!sqlNetwork) return;
+        for (const peer of sqlNetwork.getPeers()) {
+            const state = getSqlState(peer.id);
+            try {
+                state.records = await sqlNetwork.listRecords(peer);
+            } catch {
+                state.records = [];
+            }
+        }
+    }
+
+    async function addSqlPeer(): Promise<void> {
+        if (!sqlNetwork) return;
+        sqlBusy = true;
+        try {
+            await sqlNetwork.addPeer();
+            sqlPeers = sqlNetwork.getPeers();
+            await refreshSqlRecords();
+            sqlStatus = `Added peer. Total: ${sqlPeers.length}`;
+        } catch (error) {
+            sqlStatusError = true;
+            sqlStatus = `Error: ${msg(error)}`;
+        } finally {
+            sqlBusy = false;
+        }
+    }
+
+    async function removeSqlPeer(id: string): Promise<void> {
+        if (!sqlNetwork) return;
+        await sqlNetwork.removePeer(id);
+        sqlPeers = sqlNetwork.getPeers();
+        delete sqlEditorState[id];
+        await refreshSqlRecords();
+    }
+
+    async function toggleSqlPeer(id: string, online: boolean): Promise<void> {
+        if (!sqlNetwork) return;
+        await sqlNetwork.setOnline(id, online);
+        sqlPeers = sqlNetwork.getPeers();
+        await refreshSqlRecords();
     }
 
     $effect(() => {
@@ -140,142 +246,75 @@
     });
 </script>
 
-<main class="mx-auto max-w-2xl px-4 py-12 font-sans text-base leading-relaxed">
-    <h1 class="mb-4 text-2xl font-bold">Persistent browser KV and SQL</h1>
-    <p class="mb-8 text-gray-600">
-        Save text in IndexedDB, reload, then retrieve it. The schema, queries
-        and UI live in TypeScript; Rust is a generic Wasm bridge to the database
-        engine.
+<main class="mx-auto max-w-4xl px-4 py-8 font-sans text-base leading-relaxed">
+    <h1 class="mb-2 text-2xl font-bold">Browser KV & SQL with Sync</h1>
+    <p class="mb-6 text-gray-600">
+        Each tab runs multiple peers with their own IndexedDB database. Peers
+        sync automatically when online. Toggle a peer offline to simulate losing
+        internet, write on another peer, then bring it back online to catch up.
     </p>
 
-    <form
-        autocomplete="off"
-        onsubmit={(e) => {
-            e.preventDefault();
-            void operateKv(true);
-        }}
-    >
-        <fieldset
-            id="controls"
-            disabled={kvBusy}
-            class="mb-2 rounded-lg border border-gray-300 p-4"
+    <!-- Tab Navigation -->
+    <div class="mb-6 flex border-b border-gray-300">
+        <button
+            class="rounded-t-lg border-b-2 px-4 py-2 font-medium transition-colors {activeTab ===
+            'kv'
+                ? 'border-blue-600 bg-white text-blue-600'
+                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:text-gray-700'}"
+            onclick={() => (activeTab = "kv")}
         >
-            <legend class="px-1 font-semibold">KV store</legend>
-            <label for="key" class="mb-1 block text-sm font-medium"
-                >KV Key</label
-            >
-            <input
-                id="key"
-                name="key"
-                bind:value={key}
-                required
-                class="mb-3 w-full rounded border border-gray-300 px-2 py-1.5"
-            />
-            <label for="value" class="mb-1 block text-sm font-medium"
-                >Text value</label
-            >
-            <textarea
-                id="value"
-                name="value"
-                bind:value
-                rows="3"
-                class="mb-3 w-full rounded border border-gray-300 px-2 py-1.5"
-            ></textarea>
-            <button
-                id="save"
-                type="submit"
-                class="mr-2 rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
-                >Save</button
-            >
-            <button
-                id="retrieve"
-                type="button"
-                onclick={() => void operateKv(false)}
-                class="rounded border border-gray-300 px-3 py-1.5 hover:bg-gray-100 disabled:opacity-50"
-                >Retrieve</button
-            >
-        </fieldset>
-    </form>
-    <p
-        id="status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        data-error={String(statusError)}
-        class={statusError ? "mb-4 font-bold" : "mb-4"}
-    >
-        {status}
-    </p>
-    <h2 class="mb-2 text-lg font-semibold">Committed value</h2>
-    <pre
-        id="result"
-        class="mb-8 min-h-6 overflow-wrap-anywhere whitespace-pre-wrap rounded border border-gray-300 p-4">{result}</pre>
-
-    <h2 class="mb-2 text-lg font-semibold">SQL records</h2>
-    <form
-        id="sql-form"
-        autocomplete="off"
-        onsubmit={(e) => {
-            e.preventDefault();
-            void operateSql(true);
-        }}
-    >
-        <fieldset
-            id="sql-controls"
-            disabled={sqlBusy}
-            class="mb-2 rounded-lg border border-gray-300 p-4"
+            KV Store
+        </button>
+        <button
+            class="rounded-t-lg border-b-2 px-4 py-2 font-medium transition-colors {activeTab ===
+            'sql'
+                ? 'border-blue-600 bg-white text-blue-600'
+                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:text-gray-700'}"
+            onclick={() => (activeTab = "sql")}
         >
-            <legend class="px-1 font-semibold">SQL store</legend>
-            <label for="record" class="mb-1 block text-sm font-medium"
-                >Text record</label
-            >
-            <input
-                id="record"
-                name="record"
-                bind:value={record}
-                required
-                class="mb-3 w-full rounded border border-gray-300 px-2 py-1.5"
-            />
-            <button
-                id="add"
-                type="submit"
-                class="mr-2 rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:opacity-50"
-                >Add record</button
-            >
-            <button
-                id="list"
-                type="button"
-                onclick={() => void operateSql(false)}
-                class="rounded border border-gray-300 px-3 py-1.5 hover:bg-gray-100 disabled:opacity-50"
-                >List records</button
-            >
-        </fieldset>
-    </form>
-    <p
-        id="sql-status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        data-error={String(sqlStatusError)}
-        class={sqlStatusError ? "mb-4 font-bold" : "mb-4"}
-    >
-        {sqlStatus}
-    </p>
-    <div id="sql-result" aria-label="Committed SQL records" class="mb-8">
-        {#if sqlResult.length === 0}
-            <p>No records yet.</p>
-        {:else}
-            <ol class="list-decimal pl-6">
-                {#each sqlResult as row, i (i)}
-                    <li>{row}</li>
-                {/each}
-            </ol>
-        {/if}
+            SQL Store
+        </button>
     </div>
 
-    <p class="text-sm text-gray-500">
-        Storage belongs to this browser origin and may be cleared or evicted. It
-        is not a backup.
+    <!-- KV Tab -->
+    {#if activeTab === "kv"}
+        <div class="pt-6">
+            <KvTab
+                peers={kvPeers}
+                busy={kvBusy}
+                status={kvStatus}
+                statusError={kvStatusError}
+                onAdd={addKvPeer}
+                onSave={kvSave}
+                onRetrieve={kvRetrieve}
+                onToggle={toggleKvPeer}
+                onRemove={removeKvPeer}
+                getState={getKvState}
+            />
+        </div>
+    {/if}
+
+    <!-- SQL Tab -->
+    {#if activeTab === "sql"}
+        <div class="pt-6">
+            <SqlTab
+                peers={sqlPeers}
+                busy={sqlBusy}
+                status={sqlStatus}
+                statusError={sqlStatusError}
+                onAdd={addSqlPeer}
+                onAddRecord={sqlAdd}
+                onToggle={toggleSqlPeer}
+                onRemove={removeSqlPeer}
+                getState={getSqlState}
+            />
+        </div>
+    {/if}
+
+    <p class="mt-8 text-sm text-gray-500">
+        Storage belongs to this browser origin. Peers sync via an in-memory
+        transport (MessageChannel-like); replace with WebRTC/WebSocket in
+        production.
     </p>
     <noscript>Enable JavaScript and reload to run this Wasm example.</noscript>
 </main>

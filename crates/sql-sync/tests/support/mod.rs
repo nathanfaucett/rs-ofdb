@@ -1,6 +1,12 @@
-use engine::{EngineError, EngineResult, KernelTransaction, RowCodec, Uuid};
+extern crate alloc;
+
+use alloc::{boxed::Box, vec::Vec};
+
+use engine::{
+    DocumentChangeId as SyncChangeId, EngineError, EngineResult, KernelTransaction, RowCodec,
+    RowReconciler as SyncRowCodec, Uuid,
+};
 use futures::{StreamExt, stream::Stream};
-use sync::{SyncChangeId, SyncRowCodec};
 use value::{Row, Value};
 
 pub struct TestCodec;
@@ -219,13 +225,20 @@ impl<T: KernelTransaction> SyncRowCodec<T> for TestCodec {
 
     async fn export_change(
         &self,
-        _transaction: &T,
+        transaction: &T,
         _table: &str,
         _row: Uuid,
-        _id: &SyncChangeId,
-        _max_bytes: usize,
+        id: &SyncChangeId,
+        max_bytes: usize,
     ) -> EngineResult<Option<Vec<u8>>> {
-        Ok(None)
+        let payload = transaction.get_bytes("__test_changes", &id.0).await?;
+        if payload
+            .as_ref()
+            .is_some_and(|payload| payload.len() > max_bytes)
+        {
+            return Err(EngineError::custom("sync change payload exceeds budget"));
+        }
+        Ok(payload)
     }
 
     async fn apply_change(

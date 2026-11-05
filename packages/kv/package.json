@@ -28,7 +28,7 @@
     "build:esm": "tsc",
     "build:browser": "rolldown -c",
     "build": "pnpm run clean && pnpm run build:esm && pnpm run build:browser",
-    "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/kv/pkg --features indexeddb --locked",
+    "build:wasm": "cd ../../crates/wasm && wasm-pack build --target web --out-dir ../../packages/kv/pkg --features sync --locked",
     "build:all": "pnpm run build:wasm && pnpm run clean && pnpm run build:esm && pnpm run build:browser",
     "clean": "shx rm -rf esm types browser tsconfig.tsbuildinfo",
     "check": "tsc --noEmit",

@@ -15,6 +15,7 @@ name = "ofdb_wasm"
 [features]
 default = ["indexeddb"]
 indexeddb = ["ofdb-kv/indexeddb", "ofdb-sql/indexeddb"]
+sync = ["ofdb-kv/sync", "ofdb-sql/sync", "indexeddb"]
 
 [dependencies]
 # Internal
@@ -25,6 +26,9 @@ ofdb-sql = { version = "0.1", path = "../sql", package = "ofdb-sql", default-fea
 ofdb-value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false, features = [
     "serde_json",
 ] }
+ofdb-btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
+    "std",
+] }
 
 # WASM
 base64 = { workspace = true }
@@ -33,6 +37,7 @@ js-sys = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 wasm-bindgen-test = { version = "0.3", default-features = false }

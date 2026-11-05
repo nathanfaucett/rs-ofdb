@@ -22,6 +22,19 @@ fn native_history_survives_snapshot_rewrite_and_validates_claims_and_dependencie
             .await
             .expect("native changes");
         assert_eq!(changes.len(), 3);
+        assert_eq!(
+            tx.histories().await.expect("broad history"),
+            vec![history.clone()]
+        );
+        assert_eq!(
+            tx.export_changes(
+                &history.id,
+                &[changes[2].hash, [42; 32], changes[0].hash, changes[0].hash]
+            )
+            .await
+            .expect("unordered known changes"),
+            vec![changes[1].clone()]
+        );
         assert!(changes[0].deps.is_empty());
         assert_eq!(changes[1].deps, vec![changes[0].hash]);
         let snapshot = tx
@@ -29,6 +42,10 @@ fn native_history_survives_snapshot_rewrite_and_validates_claims_and_dependencie
             .await
             .expect("snapshot")
             .expect("document");
+        assert_eq!(
+            tx.export_snapshots().await.expect("broad snapshots"),
+            vec![snapshot.clone()]
+        );
         tx.commit().await.expect("commit source");
 
         let mut tx = target.transaction().await.expect("target transaction");

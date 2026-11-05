@@ -3090,7 +3090,9 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "console_error_panic_hook",
+ "futures-util",
  "js-sys",
+ "ofdb-btree",
  "ofdb-kv",
  "ofdb-sql",
  "ofdb-value",

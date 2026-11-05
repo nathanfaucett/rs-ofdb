@@ -8,6 +8,14 @@ interface WasmModule {
 
 export interface WasmKvDatabase {
   client(): WasmKvClient;
+  synchronize(transport: any, role: any, config: any): Promise<void>;
+  synchronize_checked(
+    transport: any,
+    role: any,
+    config: any,
+    check: () => Promise<void>,
+  ): Promise<void>;
+  sync_changes(): Promise<any>;
 }
 
 export interface WasmKvClient {

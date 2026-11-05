@@ -518,17 +518,8 @@ where
             .collect(),
     );
     let remote_manifest = exchange_manifest_value(transport, role, local_manifest).await?;
-    let local_inventories = summaries
-        .iter()
-        .map(|(key, summary)| {
-            let SyncKey::Row { table, row } = key;
-            SyncRowInventory {
-                table: table.clone(),
-                row: *row,
-                changes: summary.changes.clone(),
-            }
-        })
-        .collect();
+    let local_inventories =
+        with_engine_abort(transport, inventory_for(&summaries, &remote_manifest)).await?;
 
     let remote_inventories = exchange_inventories(transport, role, local_inventories).await?;
 
@@ -1640,6 +1631,34 @@ fn validate_change_batch(batch: &[SyncIncrementalChange]) -> Result<(), EngineEr
     Ok(())
 }
 
+fn inventory_for(
+    summaries: &[(SyncKey, DocumentSummary)],
+    remote_manifest: &SyncManifest,
+) -> Result<Vec<SyncRowInventory>, EngineError> {
+    let mut inventory = Vec::new();
+    // Reserve the variant tag and the largest possible vector length prefix.
+    let mut used = 11usize;
+    for (key, summary) in summaries {
+        if remote_manifest.contains(key, summary.digest) {
+            continue;
+        }
+        let SyncKey::Row { table, row } = key;
+        let size = postcard::experimental::serialized_size(&(table, row, &summary.changes))
+            .map_err(EngineError::custom)?;
+        if size > MAX_MESSAGE_BYTES.saturating_sub(used) {
+            // Missing inventories already select snapshots; no wire-format change is needed.
+            continue;
+        }
+        used += size;
+        inventory.push(SyncRowInventory {
+            table: table.clone(),
+            row: *row,
+            changes: summary.changes.clone(),
+        });
+    }
+    Ok(inventory)
+}
+
 async fn exchange_inventories<T>(
     transport: &mut T,
     role: SyncRole,
@@ -1705,72 +1724,81 @@ where
             continue;
         }
         let remote = remote.expect("inventory checked above");
-        let local = summary.changes;
-        let has_history = !local.is_empty();
-        let row_changes_start = outbound.changes.len();
-        let row_bytes_start = used_bytes;
-        let mut snapshot_required = false;
-        for key in local {
-            if remote.changes.iter().any(|candidate| candidate == &key) {
-                continue;
+        let has_history = !summary.changes.is_empty();
+        let remote_changes = remote.changes.iter().collect::<BTreeSet<_>>();
+        let local = summary
+            .changes
+            .into_iter()
+            .filter(|id| !remote_changes.contains(id))
+            .collect::<Vec<_>>();
+        if local.is_empty() {
+            if !has_history {
+                snapshot_requests.push(SyncSnapshotRequest { table, row });
             }
-            let export_id = key.clone();
-            let table_for_export = table.clone();
-            let row_for_export = row;
-            let export_budget = max_bytes.saturating_sub(
-                used_bytes
-                    .saturating_add(key.0.len())
-                    .saturating_add(table.len())
-                    .saturating_add(row.as_bytes().len())
-                    .saturating_add(64),
-            );
-            let candidate_tables = scope.and_then(TableScope::candidate_tables);
-            let (payload, view) = engine
-                .read_transaction(move |codec, transaction| {
-                    Box::pin(async move {
-                        let payload = codec
+            continue;
+        }
+        let candidate_tables = scope.and_then(TableScope::candidate_tables);
+        let table_for_export = table.clone();
+        let row_bytes_start = used_bytes;
+        let (changes, view) = engine
+            .read_transaction(move |codec, transaction| {
+                Box::pin(async move {
+                    let mut changes = Vec::new();
+                    let mut used = row_bytes_start;
+                    for id in local {
+                        let overhead = id.0.len() + table_for_export.len() + 16 + 64;
+                        let Some(payload) = codec
                             .export_change(
                                 transaction,
                                 &table_for_export,
-                                row_for_export,
-                                &export_id,
-                                export_budget,
-                            )
-                            .await?;
-                        let view = if payload.is_some() {
-                            crate::candidate::read_candidate_view(
-                                codec,
-                                transaction,
-                                Vec::from([SyncKey::Row {
-                                    table: table_for_export,
-                                    row: row_for_export,
-                                }]),
-                                crate::SyncValidationDirection::Outgoing,
-                                candidate_tables,
+                                row,
+                                &id,
+                                max_bytes.saturating_sub(used.saturating_add(overhead)),
                             )
                             .await?
-                        } else {
-                            None
+                        else {
+                            return Ok((None, None));
                         };
-                        Ok((payload, view))
-                    })
+                        used = account_engine_payload(used, payload.len() + overhead, max_bytes)?;
+                        changes.push(SyncIncrementalChange {
+                            table: table_for_export.clone(),
+                            row,
+                            id,
+                            payload,
+                        });
+                    }
+                    let view = if changes.is_empty() {
+                        None
+                    } else {
+                        crate::candidate::read_candidate_view(
+                            codec,
+                            transaction,
+                            Vec::from([SyncKey::Row {
+                                table: table_for_export,
+                                row,
+                            }]),
+                            crate::SyncValidationDirection::Outgoing,
+                            candidate_tables,
+                        )
+                        .await?
+                    };
+                    Ok((Some(changes), view))
                 })
-                .await?;
-            if let Some(scope) = scope {
-                scope.validate_candidates(&view)?;
-            }
-            if let Some(payload) = payload {
+            })
+            .await?;
+        if let Some(scope) = scope {
+            scope.validate_candidates(&view)?;
+        }
+        if let Some(changes) = changes.filter(|changes| !changes.is_empty()) {
+            for change in &changes {
                 if let Some(scope) = scope {
                     scope
                         .clone()
                         .validate(
                             engine,
                             &SyncStateUnit::new(
-                                SyncKey::Row {
-                                    table: table.clone(),
-                                    row,
-                                },
-                                payload.clone(),
+                                unit_key.clone(),
+                                change.payload.clone(),
                                 Vec::new(),
                             ),
                         )
@@ -1778,26 +1806,12 @@ where
                 }
                 used_bytes = account_engine_payload(
                     used_bytes,
-                    payload.len() + key.0.len() + table.len() + row.as_bytes().len() + 64,
+                    change.payload.len() + change.id.0.len() + table.len() + 16 + 64,
                     max_bytes,
                 )?;
-                outbound.changes.push(SyncIncrementalChange {
-                    table: table.clone(),
-                    row,
-                    id: key,
-                    payload,
-                });
-            } else {
-                snapshot_required = true;
-                break;
             }
-        }
-        if !snapshot_required && has_history && outbound.changes.len() == row_changes_start {
-            continue;
-        }
-        if snapshot_required || outbound.changes.len() == row_changes_start {
-            outbound.changes.truncate(row_changes_start);
-            used_bytes = row_bytes_start;
+            outbound.changes.extend(changes);
+        } else {
             snapshot_requests.push(SyncSnapshotRequest { table, row });
         }
     }
@@ -1831,6 +1845,43 @@ where
     Ok(outbound)
 }
 
+async fn send_batches<T, U>(
+    transport: &mut T,
+    units: &[U],
+    batch_size: usize,
+    message: fn(Vec<U>) -> SyncMessage,
+) -> Result<(), SyncError<T::Error>>
+where
+    T: SyncTransport,
+    T::Error: core::fmt::Display,
+    U: serde::Serialize + Clone,
+{
+    let header = postcard::experimental::serialized_size(&message(Vec::new()))
+        .map_err(|error| SyncError::Protocol(error.to_string()))?
+        - 1;
+    let mut start = 0;
+    let mut bytes = 0;
+    for (index, unit) in units.iter().enumerate() {
+        let size = postcard::experimental::serialized_size(unit)
+            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+        let count = index - start + 1;
+        let prefix = postcard::experimental::serialized_size(&count)
+            .map_err(|error| SyncError::Protocol(error.to_string()))?;
+        if index > start
+            && (count > batch_size || header + prefix + bytes + size > MAX_MESSAGE_BYTES)
+        {
+            send_message(transport, &message(units[start..index].to_vec())).await?;
+            start = index;
+            bytes = 0;
+        }
+        bytes += size;
+    }
+    if start < units.len() {
+        send_message(transport, &message(units[start..].to_vec())).await?;
+    }
+    Ok(())
+}
+
 async fn send_outbound<T>(
     transport: &mut T,
     outbound: &Outbound,
@@ -1840,12 +1891,20 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    for batch in outbound.snapshots.chunks(batch_size) {
-        send_message(transport, &SyncMessage::State(batch.to_vec())).await?;
-    }
-    for batch in outbound.changes.chunks(batch_size) {
-        send_message(transport, &SyncMessage::Changes(batch.to_vec())).await?;
-    }
+    send_batches(
+        transport,
+        &outbound.snapshots,
+        batch_size,
+        SyncMessage::State,
+    )
+    .await?;
+    send_batches(
+        transport,
+        &outbound.changes,
+        batch_size,
+        SyncMessage::Changes,
+    )
+    .await?;
     send_message(transport, &SyncMessage::Done).await?;
     Ok(TransferCount {
         snapshots: outbound.snapshots.len(),
@@ -1981,9 +2040,7 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    for batch in snapshots.chunks(batch_size) {
-        send_message(transport, &SyncMessage::State(batch.to_vec())).await?;
-    }
+    send_batches(transport, snapshots, batch_size, SyncMessage::State).await?;
     send_message(transport, &SyncMessage::Done).await?;
     Ok(snapshots.len())
 }
@@ -2938,11 +2995,11 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let frame =
-        postcard::to_allocvec(message).map_err(|error| SyncError::Protocol(error.to_string()))?;
-    if frame.len() > MAX_MESSAGE_BYTES {
+    let size = postcard::experimental::serialized_size(message)
+        .map_err(|error| SyncError::Protocol(error.to_string()))?;
+    if size > MAX_MESSAGE_BYTES {
         let error = SyncError::MessageTooLarge {
-            size: frame.len(),
+            size,
             max: MAX_MESSAGE_BYTES,
         };
         if let Ok(abort) = postcard::to_allocvec(&SyncMessage::Abort(error.to_string())) {
@@ -2950,6 +3007,8 @@ where
         }
         return Err(error);
     }
+    let frame =
+        postcard::to_allocvec(message).map_err(|error| SyncError::Protocol(error.to_string()))?;
     transport.send(frame).await.map_err(SyncError::Transport)
 }
 
@@ -2972,23 +3031,33 @@ where
 }
 
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use alloc::{collections::BTreeSet, string::String, vec, vec::Vec};
 
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use engine::{
         ENGINE_INDEX_FIELDS_STORAGE, ENGINE_INDICES_STORAGE, ENGINE_TABLE_FIELDS_STORAGE,
         ENGINE_TABLES_STORAGE, Uuid,
     };
     use futures::executor::block_on;
 
+    use super::test_support::TestCodec;
     use super::{
-        MAX_MESSAGE_BYTES, SyncError, account_message, catalog_order, consume_recovery_snapshot,
-        receive_message, retained_message_bytes, send_message, validate_hello,
+        DEFAULT_MAX_SESSION_BYTES, MAX_MESSAGE_BYTES, Outbound, SyncError, account_message,
+        build_outbound, catalog_order, consume_recovery_snapshot, inventory_for, receive_message,
+        retained_message_bytes, send_message, send_outbound, send_snapshots, validate_hello,
         validate_recovery_complete, validate_state_batch,
     };
     use crate::{
-        PROTOCOL_VERSION, SyncHello, SyncKey, SyncManifest, SyncMessage, SyncSnapshotRequest,
-        SyncStateUnit, SyncTransport,
+        PROTOCOL_VERSION, SyncChangeId, SyncHello, SyncKey, SyncManifest, SyncMessage,
+        SyncRowInventory, SyncSnapshotRequest, SyncStateUnit, SyncTransport,
+    };
+    use engine::{
+        DocumentSummary, Engine, EngineResult, InMemoryKernel, Kernel, KernelTransaction,
     };
 
     #[derive(Default)]
@@ -3008,6 +3077,341 @@ mod tests {
             self.outbound = Some(frame);
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        frames: Vec<Vec<u8>>,
+    }
+
+    impl SyncTransport for RecordingTransport {
+        type Error = &'static str;
+
+        async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+            Err("send-only transport")
+        }
+
+        async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+            assert!(frame.len() <= MAX_MESSAGE_BYTES);
+            self.frames.push(frame);
+            Ok(())
+        }
+    }
+
+    struct CountingKernel {
+        inner: InMemoryKernel,
+        reads: alloc::sync::Arc<AtomicUsize>,
+    }
+
+    impl Kernel for CountingKernel {
+        type Transaction = <InMemoryKernel as Kernel>::Transaction;
+
+        async fn transaction(&self) -> EngineResult<Self::Transaction> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.transaction().await
+        }
+    }
+
+    fn history(changes: Vec<SyncChangeId>) -> (SyncKey, DocumentSummary) {
+        (
+            SyncKey::Row {
+                table: "people".into(),
+                row: Uuid::from_bytes([1; 16]),
+            },
+            DocumentSummary {
+                digest: crate::StateDigest::from_parts(b"history", b""),
+                metadata: Vec::new(),
+                changes,
+            },
+        )
+    }
+
+    #[test]
+    fn outbound_and_recovery_split_on_bytes_and_preserve_order() {
+        block_on(async {
+            let snapshots = (0..3)
+                .map(|id| {
+                    SyncStateUnit::new(
+                        SyncKey::Row {
+                            table: "people".into(),
+                            row: Uuid::from_bytes([id; 16]),
+                        },
+                        vec![id; 600_000],
+                        Vec::new(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let changes = (0..3)
+                .map(|id| crate::SyncIncrementalChange {
+                    table: "people".into(),
+                    row: Uuid::from_bytes([id; 16]),
+                    id: SyncChangeId(vec![id]),
+                    payload: vec![id; 600_000],
+                })
+                .collect::<Vec<_>>();
+            let outbound = Outbound {
+                snapshots: snapshots.clone(),
+                changes: changes.clone(),
+            };
+            let mut transport = RecordingTransport::default();
+            let count = send_outbound(&mut transport, &outbound, 64)
+                .await
+                .expect("byte bounded transfer");
+            assert_eq!((count.snapshots, count.changes), (3, 3));
+            assert_eq!(transport.frames.len(), 7);
+            let mut actual_snapshots = Vec::new();
+            let mut actual_changes = Vec::new();
+            for frame in &transport.frames {
+                match postcard::from_bytes::<SyncMessage>(frame).expect("decode transfer") {
+                    SyncMessage::State(units) => actual_snapshots.extend(units),
+                    SyncMessage::Changes(units) => actual_changes.extend(units),
+                    SyncMessage::Done => {}
+                    other => panic!("unexpected message: {other:?}"),
+                }
+            }
+            assert_eq!(actual_snapshots, snapshots);
+            assert_eq!(actual_changes, changes);
+            let mut recovery = RecordingTransport::default();
+            assert_eq!(
+                send_snapshots(&mut recovery, &snapshots, 64)
+                    .await
+                    .expect("recovery transfer"),
+                3
+            );
+            assert_eq!(recovery.frames.len(), 4);
+        });
+    }
+
+    #[test]
+    fn outbound_respects_count_limit_and_rejects_oversized_single_unit() {
+        block_on(async {
+            let snapshot = SyncStateUnit::new(history(Vec::new()).0, vec![1], Vec::new());
+            let mut transport = RecordingTransport::default();
+            send_snapshots(&mut transport, &vec![snapshot.clone(); 3], 2)
+                .await
+                .expect("count bounded transfer");
+            assert_eq!(transport.frames.len(), 3);
+            let oversized =
+                SyncStateUnit::new(snapshot.key, vec![0; MAX_MESSAGE_BYTES], Vec::new());
+            let mut transport = RecordingTransport::default();
+            assert!(matches!(
+                send_snapshots(&mut transport, &[oversized], 64).await,
+                Err(SyncError::MessageTooLarge { .. })
+            ));
+            assert_eq!(transport.frames.len(), 1);
+            assert!(matches!(
+                postcard::from_bytes::<SyncMessage>(&transport.frames[0]).expect("decode abort"),
+                SyncMessage::Abort(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn inventories_skip_equal_rows_and_fall_back_when_frame_is_full() {
+        let summaries = (0..4)
+            .map(|id| {
+                let (mut key, summary) = history(vec![SyncChangeId(vec![id; 400_000])]);
+                let SyncKey::Row { row, .. } = &mut key;
+                *row = Uuid::from_bytes([id; 16]);
+                (key, summary)
+            })
+            .collect::<Vec<_>>();
+        let manifest = SyncManifest::new(vec![(summaries[0].0.clone(), summaries[0].1.digest)]);
+        let inventory = inventory_for(&summaries, &manifest).expect("bounded inventory");
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(inventory[0].key(), summaries[1].0);
+        assert_eq!(inventory[1].key(), summaries[2].0);
+        assert!(
+            postcard::to_allocvec(&SyncMessage::Inventory(inventory))
+                .expect("encode inventory")
+                .len()
+                <= MAX_MESSAGE_BYTES
+        );
+        assert!(
+            inventory_for(
+                &[history(vec![SyncChangeId(vec![0; MAX_MESSAGE_BYTES])])],
+                &SyncManifest::default()
+            )
+            .expect("oversized row uses snapshot")
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn outbound_exports_missing_history_in_one_transaction_per_row() {
+        block_on(async {
+            let kernel = CountingKernel {
+                inner: InMemoryKernel::new(),
+                reads: alloc::sync::Arc::new(AtomicUsize::new(0)),
+            };
+            let mut tx = kernel.inner.transaction().await.expect("seed transaction");
+            tx.ensure_table("__test_changes")
+                .await
+                .expect("history table");
+            for id in [9, 2, 7] {
+                tx.put_bytes("__test_changes", vec![id], vec![id; 4])
+                    .await
+                    .expect("seed change");
+            }
+            tx.commit().await.expect("commit history");
+            let reads = kernel.reads.clone();
+            let engine = Engine::new(kernel, TestCodec);
+            let (key, summary) = history(
+                [9, 2, 7, 1]
+                    .into_iter()
+                    .map(|id| SyncChangeId(vec![id]))
+                    .collect(),
+            );
+            let SyncKey::Row { table, row } = key.clone();
+            let remote = alloc::collections::BTreeMap::from([(
+                key.clone(),
+                SyncRowInventory {
+                    table,
+                    row,
+                    changes: vec![SyncChangeId(vec![1])],
+                },
+            )]);
+            let outbound = build_outbound(
+                &engine,
+                vec![(key, summary)],
+                &SyncManifest::default(),
+                remote,
+                DEFAULT_MAX_SESSION_BYTES,
+                None,
+            )
+            .await
+            .expect("export history");
+            assert!(outbound.snapshots.is_empty());
+            assert_eq!(
+                outbound
+                    .changes
+                    .iter()
+                    .map(|change| change.id.0[0])
+                    .collect::<Vec<_>>(),
+                vec![9, 2, 7]
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), 1);
+        });
+    }
+
+    #[test]
+    fn missing_change_discards_partial_deltas_and_exports_snapshot() {
+        block_on(async {
+            let kernel = CountingKernel {
+                inner: InMemoryKernel::new(),
+                reads: alloc::sync::Arc::new(AtomicUsize::new(0)),
+            };
+            let (key, summary) = history(vec![SyncChangeId(vec![9]), SyncChangeId(vec![2])]);
+            let SyncKey::Row { table, row } = key.clone();
+            let state = vec![42];
+            let mut tx = kernel.inner.transaction().await.expect("seed transaction");
+            tx.ensure_table("__test_changes")
+                .await
+                .expect("history table");
+            tx.put_bytes("__test_changes", vec![9], vec![9])
+                .await
+                .expect("first change");
+            tx.ensure_table(&table).await.expect("row table");
+            tx.put_bytes(&table, row.as_bytes().to_vec(), state.clone())
+                .await
+                .expect("snapshot");
+            tx.commit().await.expect("commit seed");
+            let engine = Engine::new(kernel, TestCodec);
+            for remote in [
+                alloc::collections::BTreeMap::from([(
+                    key.clone(),
+                    SyncRowInventory {
+                        table: table.clone(),
+                        row,
+                        changes: Vec::new(),
+                    },
+                )]),
+                alloc::collections::BTreeMap::new(),
+            ] {
+                let outbound = build_outbound(
+                    &engine,
+                    vec![(key.clone(), summary.clone())],
+                    &SyncManifest::default(),
+                    remote,
+                    DEFAULT_MAX_SESSION_BYTES,
+                    None,
+                )
+                .await
+                .expect("snapshot fallback");
+                assert!(outbound.changes.is_empty());
+                assert_eq!(outbound.snapshots.len(), 1);
+                assert_eq!(outbound.snapshots[0].state, state);
+            }
+        });
+    }
+
+    #[test]
+    fn shared_long_history_needs_no_export_transaction() {
+        block_on(async {
+            let reads = alloc::sync::Arc::new(AtomicUsize::new(0));
+            let kernel = CountingKernel {
+                inner: InMemoryKernel::new(),
+                reads: reads.clone(),
+            };
+            let engine = Engine::new(kernel, TestCodec);
+            let changes = (0u32..20_000)
+                .map(|id| SyncChangeId(id.to_be_bytes().to_vec()))
+                .collect::<Vec<_>>();
+            let (key, summary) = history(changes.clone());
+            let SyncKey::Row { table, row } = key.clone();
+            let remote = alloc::collections::BTreeMap::from([(
+                key.clone(),
+                SyncRowInventory {
+                    table,
+                    row,
+                    changes,
+                },
+            )]);
+            let outbound = build_outbound(
+                &engine,
+                vec![(key, summary)],
+                &SyncManifest::default(),
+                remote,
+                DEFAULT_MAX_SESSION_BYTES,
+                None,
+            )
+            .await
+            .expect("compare shared history");
+            assert!(outbound.changes.is_empty());
+            assert!(outbound.snapshots.is_empty());
+            assert_eq!(reads.load(Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn snapshot_at_frame_limit_sends_before_next_snapshot() {
+        block_on(async {
+            let mut snapshot = SyncStateUnit::new(
+                history(Vec::new()).0,
+                vec![1; MAX_MESSAGE_BYTES - 100],
+                Vec::new(),
+            );
+            let size = postcard::experimental::serialized_size(&SyncMessage::State(vec![
+                snapshot.clone(),
+            ]))
+            .expect("encoded size");
+            snapshot
+                .state
+                .resize(snapshot.state.len() + MAX_MESSAGE_BYTES - size, 1);
+            let mut transport = RecordingTransport::default();
+            send_snapshots(
+                &mut transport,
+                &[
+                    snapshot,
+                    SyncStateUnit::new(history(Vec::new()).0, vec![2], Vec::new()),
+                ],
+                64,
+            )
+            .await
+            .expect("boundary transfer");
+            assert_eq!(transport.frames.len(), 3);
+            assert_eq!(transport.frames[0].len(), MAX_MESSAGE_BYTES);
+        });
     }
 
     fn abort_with_encoded_size(size: usize) -> SyncMessage {

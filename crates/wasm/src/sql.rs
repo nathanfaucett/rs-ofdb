@@ -1,11 +1,20 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use futures_util::future::FutureExt;
 use ofdb_kv::{encode_value, parse_value};
 use ofdb_sql::{Client, Database, QueryParams, QueryResult, Transaction};
+#[cfg(feature = "sync")]
+use ofdb_sql::{
+    SessionConfig as OfdbSqlSessionConfig, SyncDirection as OfdbSqlSyncDirection,
+    SyncError as OfdbSqlSyncErrorEnum, SyncResult as OfdbSqlSyncResult,
+    SyncRole as OfdbSqlSyncRole, SyncTransport as OfdbSqlSyncTransport,
+};
 use serde_json::Value as Json;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 use crate::value::{parse_json, write_json};
 
@@ -26,6 +35,371 @@ impl SqlDatabase {
     pub fn client(&self) -> SqlClient {
         SqlClient {
             client: self.database.client(),
+        }
+    }
+
+    /// Synchronize with a remote peer using the given transport.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize(
+        &self,
+        transport: &mut JsSqlSyncTransport,
+        config: SqlSessionConfig,
+        role: SqlSyncRole,
+    ) -> Result<SqlSyncResult, JsSqlSyncError> {
+        self.database
+            .synchronize(transport, &config.into(), role.into())
+            .await
+            .map_err(JsSqlSyncError::from)
+            .map(SqlSyncResult::from)
+    }
+
+    /// Synchronize with a remote peer, checking caller authorization before each batch.
+    #[cfg(feature = "sync")]
+    pub async fn synchronize_checked(
+        &self,
+        transport: &mut JsSqlSyncTransport,
+        config: SqlSessionConfig,
+        role: SqlSyncRole,
+        check: js_sys::Function,
+    ) -> Result<SqlSyncResult, JsSqlSyncError> {
+        let check_fn = move || {
+            let promise = check.call0(&JsValue::NULL).unwrap();
+            let promise: js_sys::Promise = promise.dyn_into().unwrap();
+            JsFuture::from(promise).then(|result| async move {
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(format!("{:?}", e)),
+                }
+            })
+        };
+        self.database
+            .synchronize_checked(transport, &config.into(), role.into(), check_fn)
+            .await
+            .map_err(JsSqlSyncError::from)
+            .map(SqlSyncResult::from)
+    }
+}
+
+/// Sync role: Initiator or Responder.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlSyncRole {
+    Initiator = 0,
+    Responder = 1,
+}
+
+impl From<SqlSyncRole> for OfdbSqlSyncRole {
+    fn from(role: SqlSyncRole) -> Self {
+        match role {
+            SqlSyncRole::Initiator => OfdbSqlSyncRole::Initiator,
+            SqlSyncRole::Responder => OfdbSqlSyncRole::Responder,
+        }
+    }
+}
+
+impl From<OfdbSqlSyncRole> for SqlSyncRole {
+    fn from(role: OfdbSqlSyncRole) -> Self {
+        match role {
+            OfdbSqlSyncRole::Initiator => SqlSyncRole::Initiator,
+            OfdbSqlSyncRole::Responder => SqlSyncRole::Responder,
+        }
+    }
+}
+
+/// Sync direction.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlSyncDirection {
+    Bidirectional = 0,
+    SendOnly = 1,
+    ReceiveOnly = 2,
+}
+
+impl From<SqlSyncDirection> for OfdbSqlSyncDirection {
+    fn from(dir: SqlSyncDirection) -> Self {
+        match dir {
+            SqlSyncDirection::Bidirectional => OfdbSqlSyncDirection::Bidirectional,
+            SqlSyncDirection::SendOnly => OfdbSqlSyncDirection::SendOnly,
+            SqlSyncDirection::ReceiveOnly => OfdbSqlSyncDirection::ReceiveOnly,
+        }
+    }
+}
+
+impl From<OfdbSqlSyncDirection> for SqlSyncDirection {
+    fn from(dir: OfdbSqlSyncDirection) -> Self {
+        match dir {
+            OfdbSqlSyncDirection::Bidirectional => SqlSyncDirection::Bidirectional,
+            OfdbSqlSyncDirection::SendOnly => SqlSyncDirection::SendOnly,
+            OfdbSqlSyncDirection::ReceiveOnly => SqlSyncDirection::ReceiveOnly,
+        }
+    }
+}
+
+/// Sync configuration.
+#[wasm_bindgen]
+pub struct SqlSessionConfig {
+    inner: OfdbSqlSessionConfig,
+}
+
+#[wasm_bindgen]
+impl SqlSessionConfig {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: OfdbSqlSessionConfig::default(),
+        }
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn direction(&self) -> SqlSyncDirection {
+        self.inner.direction.into()
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_direction(&mut self, value: SqlSyncDirection) {
+        self.inner.direction = value.into();
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn max_units_per_frame(&self) -> usize {
+        self.inner.max_units_per_frame
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_max_units_per_frame(&mut self, value: usize) {
+        self.inner.max_units_per_frame = value;
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn max_session_bytes(&self) -> usize {
+        self.inner.max_session_bytes
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_max_session_bytes(&mut self, value: usize) {
+        self.inner.max_session_bytes = value;
+    }
+}
+
+impl Default for SqlSessionConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<SqlSessionConfig> for OfdbSqlSessionConfig {
+    fn from(config: SqlSessionConfig) -> Self {
+        config.inner
+    }
+}
+
+impl From<OfdbSqlSessionConfig> for SqlSessionConfig {
+    fn from(config: OfdbSqlSessionConfig) -> Self {
+        Self { inner: config }
+    }
+}
+
+/// Sync result.
+#[wasm_bindgen]
+pub struct SqlSyncResult {
+    inner: OfdbSqlSyncResult,
+}
+
+#[wasm_bindgen]
+impl SqlSyncResult {
+    #[wasm_bindgen(getter)]
+    pub fn received_units(&self) -> usize {
+        self.inner.received_units
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sent_units(&self) -> usize {
+        self.inner.sent_units
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn received_changes(&self) -> usize {
+        self.inner.received_changes
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sent_changes(&self) -> usize {
+        self.inner.sent_changes
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn received_snapshots(&self) -> usize {
+        self.inner.received_snapshots
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sent_snapshots(&self) -> usize {
+        self.inner.sent_snapshots
+    }
+}
+
+impl From<OfdbSqlSyncResult> for SqlSyncResult {
+    fn from(inner: OfdbSqlSyncResult) -> Self {
+        Self { inner }
+    }
+}
+
+/// Sync error.
+#[wasm_bindgen]
+pub struct JsSqlSyncError {
+    inner: OfdbSqlSyncErrorEnum<JsSqlSyncTransportError>,
+}
+
+#[wasm_bindgen]
+impl JsSqlSyncError {
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.inner.to_string()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn kind(&self) -> JsSqlSyncErrorKind {
+        match &self.inner {
+            OfdbSqlSyncErrorEnum::PreApply(_) => JsSqlSyncErrorKind::PreApply,
+            OfdbSqlSyncErrorEnum::Engine(_) => JsSqlSyncErrorKind::Engine,
+            OfdbSqlSyncErrorEnum::Transport(_) => JsSqlSyncErrorKind::Transport,
+            OfdbSqlSyncErrorEnum::Staging(_) => JsSqlSyncErrorKind::Staging,
+            OfdbSqlSyncErrorEnum::InvalidConfiguration => JsSqlSyncErrorKind::InvalidConfiguration,
+            OfdbSqlSyncErrorEnum::Protocol(_) => JsSqlSyncErrorKind::Protocol,
+            OfdbSqlSyncErrorEnum::MessageTooLarge { .. } => JsSqlSyncErrorKind::MessageTooLarge,
+            OfdbSqlSyncErrorEnum::SessionTooLarge { .. } => JsSqlSyncErrorKind::SessionTooLarge,
+            OfdbSqlSyncErrorEnum::IncompatibleProtocol(_) => {
+                JsSqlSyncErrorKind::IncompatibleProtocol
+            }
+            OfdbSqlSyncErrorEnum::UnexpectedMessage => JsSqlSyncErrorKind::UnexpectedMessage,
+            OfdbSqlSyncErrorEnum::RemoteAbort(_) => JsSqlSyncErrorKind::RemoteAbort,
+        }
+    }
+}
+
+impl From<OfdbSqlSyncErrorEnum<JsSqlSyncTransportError>> for JsSqlSyncError {
+    fn from(inner: OfdbSqlSyncErrorEnum<JsSqlSyncTransportError>) -> Self {
+        Self { inner }
+    }
+}
+
+/// Sync error kind.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsSqlSyncErrorKind {
+    PreApply = 0,
+    Engine = 1,
+    Transport = 2,
+    Staging = 3,
+    InvalidConfiguration = 4,
+    Protocol = 5,
+    MessageTooLarge = 6,
+    SessionTooLarge = 7,
+    IncompatibleProtocol = 8,
+    UnexpectedMessage = 9,
+    RemoteAbort = 10,
+}
+
+/// Transport error for JS-implemented transports.
+#[wasm_bindgen]
+pub struct JsSqlSyncTransportError {
+    message: String,
+}
+
+#[wasm_bindgen]
+impl JsSqlSyncTransportError {
+    #[wasm_bindgen(constructor)]
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+}
+
+impl std::fmt::Display for JsSqlSyncTransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::fmt::Debug for JsSqlSyncTransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JsSqlSyncTransportError({})", self.message)
+    }
+}
+
+impl std::error::Error for JsSqlSyncTransportError {}
+
+/// Sync transport trait that can be implemented in JavaScript.
+#[wasm_bindgen]
+pub struct JsSqlSyncTransport {
+    inner: JsValue,
+}
+
+#[wasm_bindgen]
+impl JsSqlSyncTransport {
+    #[wasm_bindgen(constructor)]
+    pub fn new(transport: JsValue) -> Self {
+        Self { inner: transport }
+    }
+}
+
+impl OfdbSqlSyncTransport for JsSqlSyncTransport {
+    type Error = JsSqlSyncTransportError;
+
+    fn receive(&mut self) -> impl Future<Output = Result<Vec<u8>, Self::Error>> {
+        let transport = self.inner.clone();
+        async move {
+            let recv_fn = js_sys::Reflect::get(&transport, &"receive".into()).map_err(|_| {
+                JsSqlSyncTransportError::new("transport has no receive method".into())
+            })?;
+            let recv_fn: js_sys::Function = recv_fn
+                .dyn_into()
+                .map_err(|_| JsSqlSyncTransportError::new("receive is not a function".into()))?;
+
+            let promise = recv_fn.call0(&transport).map_err(|e| {
+                JsSqlSyncTransportError::new(format!("receive call failed: {:?}", e))
+            })?;
+            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
+                JsSqlSyncTransportError::new("receive did not return a Promise".into())
+            })?;
+
+            let result = JsFuture::from(promise)
+                .await
+                .map_err(|e| JsSqlSyncTransportError::new(format!("receive failed: {:?}", e)))?;
+
+            let array = js_sys::Uint8Array::from(result);
+            let mut vec = vec![0u8; array.length() as usize];
+            array.copy_to(&mut vec);
+            Ok(vec)
+        }
+    }
+
+    fn send(&mut self, frame: Vec<u8>) -> impl Future<Output = Result<(), Self::Error>> {
+        let transport = self.inner.clone();
+        async move {
+            let send_fn = js_sys::Reflect::get(&transport, &"send".into())
+                .map_err(|_| JsSqlSyncTransportError::new("transport has no send method".into()))?;
+            let send_fn: js_sys::Function = send_fn
+                .dyn_into()
+                .map_err(|_| JsSqlSyncTransportError::new("send is not a function".into()))?;
+
+            let array = js_sys::Uint8Array::from(frame.as_slice());
+            let promise = send_fn
+                .call1(&transport, &array)
+                .map_err(|e| JsSqlSyncTransportError::new(format!("send call failed: {:?}", e)))?;
+            let promise: js_sys::Promise = promise.dyn_into().map_err(|_| {
+                JsSqlSyncTransportError::new("send did not return a Promise".into())
+            })?;
+
+            JsFuture::from(promise)
+                .await
+                .map_err(|e| JsSqlSyncTransportError::new(format!("send failed: {:?}", e)))?;
+
+            Ok(())
         }
     }
 }

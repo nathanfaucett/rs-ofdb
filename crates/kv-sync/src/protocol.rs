@@ -76,6 +76,21 @@ pub enum Error<E> {
     Storage(String),
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            Error::PreApply(s) => write!(f, "pre-apply check failed: {}", s),
+            Error::Transport(e) => write!(f, "transport error: {}", e),
+            Error::Codec(s) => write!(f, "codec error: {}", s),
+            Error::InvalidFrame => write!(f, "invalid frame"),
+            Error::FrameTooLarge => write!(f, "frame too large"),
+            Error::UnsupportedVersion(v) => write!(f, "unsupported version: {}", v),
+            Error::UnexpectedMessage => write!(f, "unexpected message"),
+            Error::Storage(s) => write!(f, "storage error: {}", s),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
     Hello {
