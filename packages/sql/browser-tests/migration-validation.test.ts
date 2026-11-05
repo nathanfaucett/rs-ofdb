@@ -56,7 +56,11 @@ test("invalid inputs and statement-free tails reject before any migration commit
             version: (error as any).version,
             phase: (error as any).phase,
             kind: (error as any).queryKind,
-            message: String(error),
+            message: [
+              String(error),
+              String((error as any).cause),
+              JSON.stringify(error),
+            ].join(" "),
             outcome: (error as any).outcome,
           };
         }
@@ -81,11 +85,89 @@ test("invalid inputs and statement-free tails reject before any migration commit
     });
     expect(result.failure?.message).not.toContain("private-value");
     expect(result.failure?.message).not.toContain("UPDATE");
+    expect(result.failure?.message).not.toContain("INVALID");
     expect(result.unchanged).toBe(true);
   }
   expect(results[5].failure?.version).toBe(0);
   for (const result of results.slice(-6)) {
     expect(result.failure?.version).toBe(2);
+  }
+});
+
+test("post-execution history failures identify the active version and roll back", async ({
+  page,
+}) => {
+  const results = await page.evaluate(async () => {
+    const { Database, MigrationError } = (window as any).sql;
+    const db = await Database.open("migration-record-context");
+    const client = db.client();
+    const timed = client.withDeadline(5000n);
+    const first = {
+      version: 1,
+      sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
+    };
+    const snapshot = async () =>
+      Promise.all([
+        client.execute("SELECT * FROM table_fields ORDER BY table, position"),
+        client.execute("SELECT * FROM items"),
+        client.execute("SELECT * FROM _ofdb_migrations ORDER BY version"),
+      ]);
+    const results = [];
+    try {
+      await timed.migrate([first]);
+      const before = await snapshot();
+      for (const sql of [
+        "ALTER TABLE _ofdb_migrations ADD COLUMN extra TEXT",
+        "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 1",
+      ]) {
+        let failure;
+        try {
+          await timed.migrate([
+            first,
+            { version: 2, sql: `UPDATE items SET amount = 99; ${sql}` },
+          ]);
+        } catch (error) {
+          failure = {
+            typed: error instanceof MigrationError,
+            phase: (error as any).phase,
+            version: (error as any).version,
+            kind: (error as any).queryKind,
+            outcome: (error as any).outcome,
+            message: [
+              String(error),
+              String((error as any).cause),
+              JSON.stringify(error),
+            ].join(" "),
+          };
+        }
+        results.push({
+          failure,
+          unchanged:
+            JSON.stringify(before) === JSON.stringify(await snapshot()),
+        });
+      }
+      const repeated = await timed.migrate([first]);
+      if (repeated.appliedVersions.length !== 0)
+        throw new Error("history was changed");
+      return results;
+    } finally {
+      timed.close();
+      client.close();
+      db.close();
+    }
+  });
+  for (const result of results) {
+    expect(result.failure).toMatchObject({
+      typed: true,
+      phase: "Record",
+      version: 2,
+      kind: "Validation",
+      outcome: undefined,
+    });
+    expect(result.failure?.message).not.toContain("private-value");
+    expect(result.failure?.message).not.toContain("UPDATE");
+    expect(result.failure?.message).not.toContain("ALTER");
+    expect(result.unchanged).toBe(true);
   }
 });
 

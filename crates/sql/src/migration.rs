@@ -104,21 +104,32 @@ impl Client {
     ) -> Result<MigrationResult, MigrationError> {
         let mut fingerprints = Vec::with_capacity(migrations.len());
         for (index, migration) in migrations.iter().enumerate() {
-            if usize::try_from(migration.version).ok() != index.checked_add(1)
-                || sql_translator::SqlTranslator
-                    .translate(&migration.sql)
-                    .await
-                    .map_err(|_| {
-                        MigrationError::invalid(Some(migration.version), MigrationPhase::Plan)
-                    })?
-                    .is_empty()
-            {
-                return Err(MigrationError::invalid(
-                    Some(migration.version),
-                    MigrationPhase::Plan,
-                ));
-            }
-            fingerprints.push(format!("{:x}", Sha256::digest(migration.sql.as_bytes())));
+            let fingerprint = self
+                .run(async {
+                    if usize::try_from(migration.version).ok() != index.checked_add(1)
+                        || sql_translator::SqlTranslator
+                            .translate(&migration.sql)
+                            .await
+                            .map_err(|error| {
+                                Error::new(
+                                    ErrorKind::Validation,
+                                    format!("Translate error: {error}"),
+                                )
+                            })?
+                            .is_empty()
+                    {
+                        return Err(Error::new(
+                            ErrorKind::Validation,
+                            "invalid migration plan or history",
+                        ));
+                    }
+                    Ok(format!("{:x}", Sha256::digest(migration.sql.as_bytes())))
+                })
+                .await
+                .map_err(|source| {
+                    MigrationError::new(Some(migration.version), MigrationPhase::Plan, source)
+                })?;
+            fingerprints.push(fingerprint);
         }
         let current_version = migrations.last().map_or(0, |migration| migration.version);
         let mut result = MigrationResult {
@@ -154,6 +165,9 @@ impl Client {
                 MigrationError::new(Some(migration.version), MigrationPhase::Commit, source)
             })?;
             result.applied_versions.push(migration.version);
+            if migration.version == current_version {
+                return Ok(result);
+            }
         }
     }
 }
@@ -170,7 +184,13 @@ async fn read_history(
         )
         .await
         .map_err(context)?;
-    if tables[0].rows.is_empty() {
+    let tables = tables.first().ok_or_else(|| {
+        context(Error::new(
+            ErrorKind::Protocol,
+            "missing migration table result",
+        ))
+    })?;
+    if tables.rows.is_empty() {
         return Ok((false, 0));
     }
     let fields = tx.execute_sql("SELECT name, type, default, primary_key FROM table_fields WHERE table = '_ofdb_migrations' ORDER BY position", None).await.map_err(context)?;
@@ -188,7 +208,13 @@ async fn read_history(
             Value::Bool(false),
         ]),
     ];
-    if tables[0].rows.len() != 1 || fields[0].rows != expected {
+    let fields = fields.first().ok_or_else(|| {
+        context(Error::new(
+            ErrorKind::Protocol,
+            "missing migration fields result",
+        ))
+    })?;
+    if tables.rows.len() != 1 || fields.rows != expected {
         return Err(MigrationError::invalid(None, MigrationPhase::History));
     }
     let history = tx
@@ -198,7 +224,13 @@ async fn read_history(
         )
         .await
         .map_err(context)?;
-    for (index, row) in history[0].rows.iter().enumerate() {
+    let history = history.first().ok_or_else(|| {
+        context(Error::new(
+            ErrorKind::Protocol,
+            "missing migration history result",
+        ))
+    })?;
+    for (index, row) in history.rows.iter().enumerate() {
         let version = u32::try_from(index + 1).ok();
         let expected = fingerprints.get(index).map(|fingerprint| {
             vec![
@@ -210,7 +242,7 @@ async fn read_history(
             return Err(MigrationError::invalid(version, MigrationPhase::History));
         }
     }
-    Ok((true, history[0].rows.len()))
+    Ok((true, history.rows.len()))
 }
 
 async fn apply(
@@ -230,7 +262,9 @@ async fn apply(
         .await
         .map_err(|source| context(MigrationPhase::Execute, source))?;
     // Migration SQL must not change runner-owned history.
-    let history = read_history(tx, fingerprints).await?;
+    let history = read_history(tx, fingerprints)
+        .await
+        .map_err(|error| context(MigrationPhase::Record, error.source))?;
     if history != (true, applied) {
         return Err(MigrationError::invalid(
             Some(migration.version),

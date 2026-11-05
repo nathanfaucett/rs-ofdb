@@ -73,7 +73,7 @@ mod remote {
         pin::Pin,
         sync::{
             Arc,
-            atomic::{AtomicU8, Ordering},
+            atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -87,6 +87,11 @@ mod remote {
     #[derive(Default)]
     struct Control {
         stage: AtomicU8,
+        executes: AtomicUsize,
+        malformed_at: AtomicUsize,
+        extra_result: AtomicBool,
+        reject_after_commit: AtomicBool,
+        reject_begin: AtomicBool,
         reached: Notify,
         release: Notify,
         cleaned: Notify,
@@ -120,6 +125,9 @@ mod remote {
         }
 
         async fn transaction(&self) -> Result<Box<dyn QueryTransaction>, QueryServiceError> {
+            if self.control.reject_begin.load(Ordering::SeqCst) {
+                return Err(QueryServiceError::Rejected("begin disabled".into()));
+            }
             Ok(Box::new(ControlledTransaction {
                 transaction: Some(self.client.transaction().await.map_err(service_error)?),
                 control: Arc::clone(&self.control),
@@ -154,6 +162,15 @@ mod remote {
                     self.control.reached.notify_one();
                     self.control.release.notified().await;
                 }
+                let number = self.control.executes.fetch_add(1, Ordering::SeqCst) + 1;
+                if number == self.control.malformed_at.load(Ordering::SeqCst) {
+                    if self.control.extra_result.load(Ordering::SeqCst) {
+                        let mut result = result;
+                        result.push(result[0].clone());
+                        return Ok(result);
+                    }
+                    return Ok(Vec::new());
+                }
                 Ok(result)
             })
         }
@@ -168,6 +185,9 @@ mod remote {
                     .commit()
                     .await
                     .map_err(service_error)?;
+                if self.control.reject_after_commit.load(Ordering::SeqCst) {
+                    self.control.reject_begin.store(true, Ordering::SeqCst);
+                }
                 if self
                     .control
                     .stage
@@ -235,6 +255,122 @@ mod remote {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_final_commit_returns_success_without_another_begin() {
+        let (client, control, shutdown, server) = start().await;
+        client.migrate(&plan()[..1]).await.expect("initialize");
+        control.reject_after_commit.store(true, Ordering::SeqCst);
+        let result = client
+            .migrate(&plan())
+            .await
+            .expect("final commit completes migration");
+        assert_eq!(result.current_version, 2);
+        assert_eq!(result.applied_versions, vec![2]);
+        assert_eq!(
+            client
+                .transaction()
+                .await
+                .err()
+                .expect("next begin is disabled")
+                .kind,
+            ErrorKind::Rejected
+        );
+        control.reject_begin.store(false, Ordering::SeqCst);
+        assert_applied_once(&client).await;
+        drop(client);
+        shutdown.send(()).expect("shutdown");
+        server.await.expect("join server");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_malformed_history_results_return_protocol_errors() {
+        for step in 1..=3 {
+            let (client, control, shutdown, server) = start().await;
+            if step > 1 {
+                client
+                    .migrate(&plan()[..1])
+                    .await
+                    .expect("initialize history");
+            }
+            control.executes.store(0, Ordering::SeqCst);
+            control.malformed_at.store(step, Ordering::SeqCst);
+            let error = client
+                .migrate(&if step == 1 {
+                    vec![]
+                } else {
+                    plan()[..1].to_vec()
+                })
+                .await
+                .expect_err("empty response must not panic");
+            assert_eq!(error.phase, MigrationPhase::History);
+            assert_eq!(error.source.kind, ErrorKind::Protocol);
+            drop(client);
+            shutdown.send(()).expect("shutdown");
+            server.await.expect("join server");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_record_read_failures_preserve_protocol_source_and_active_version() {
+        let (client, control, shutdown, server) = start().await;
+        client.migrate(&plan()[..1]).await.expect("initialize");
+        for step in 5..=7 {
+            control.executes.store(0, Ordering::SeqCst);
+            control.malformed_at.store(step, Ordering::SeqCst);
+            let error = client
+                .migrate(&plan())
+                .await
+                .expect_err("post-execution response missing");
+            assert_eq!(error.version, Some(2));
+            assert_eq!(error.phase, MigrationPhase::Record);
+            assert_eq!(error.source.kind, ErrorKind::Protocol);
+            assert_eq!(
+                error.source.message,
+                "transaction execute result count mismatch"
+            );
+            assert!(!error.commit_outcome_unknown());
+            let rows = client
+                .execute_sql("SELECT amount FROM items", None)
+                .await
+                .expect("rolled back data");
+            assert_eq!(rows[0].rows, vec![super::Row::from([10_i64])]);
+            let history = client
+                .execute_sql("SELECT version FROM _ofdb_migrations", None)
+                .await
+                .expect("no false record");
+            assert_eq!(history[0].rows, vec![super::Row::from([1_i64])]);
+        }
+        control.malformed_at.store(0, Ordering::SeqCst);
+        assert_eq!(
+            client
+                .migrate(&plan())
+                .await
+                .expect("resume")
+                .applied_versions,
+            vec![2]
+        );
+        drop(client);
+        shutdown.send(()).expect("shutdown");
+        server.await.expect("join server");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_transaction_rejects_extra_results() {
+        let (client, control, shutdown, server) = start().await;
+        control.malformed_at.store(1, Ordering::SeqCst);
+        control.extra_result.store(true, Ordering::SeqCst);
+        let mut tx = client.transaction().await.expect("begin");
+        let error = tx
+            .execute_sql("SELECT name FROM tables", None)
+            .await
+            .expect_err("extra result");
+        assert_eq!(error.kind, ErrorKind::Protocol);
+        tx.rollback().await.expect("rollback malformed response");
+        drop(client);
+        shutdown.send(()).expect("shutdown");
+        server.await.expect("join server");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_concurrent_calls_apply_each_version_once() {
         let (client, _, shutdown, server) = start().await;
         concurrent_calls(&client).await;
@@ -284,8 +420,6 @@ mod remote {
     async fn remote_deadline_before_commit_rolls_back_staged_transformation() {
         let (client, control, shutdown, server) = start().await;
         client.migrate(&plan()[..1]).await.expect("initialize");
-        // Consume initialization's cleanup notification before observing this attempt.
-        control.cleaned.notified().await;
         control.stage.store(1, Ordering::SeqCst);
         let timed = client.clone().with_deadline(Duration::from_millis(500));
         let pending = tokio::spawn(async move { timed.migrate(&plan()).await });
@@ -327,7 +461,6 @@ mod remote {
     async fn remote_lost_commit_response_is_uncertain_and_follow_up_skips_transformation() {
         let (client, control, shutdown, server) = start().await;
         client.migrate(&plan()[..1]).await.expect("initialize");
-        control.cleaned.notified().await;
         control.stage.store(2, Ordering::SeqCst);
         let timed = client.clone().with_deadline(Duration::from_millis(500));
         let pending = tokio::spawn(async move { timed.migrate(&plan()).await });

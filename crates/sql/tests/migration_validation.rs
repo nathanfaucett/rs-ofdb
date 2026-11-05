@@ -44,11 +44,7 @@ async fn reject(client: &Client, plan: &[Migration], phase: MigrationPhase, vers
     assert_eq!(error.version, version);
     assert_eq!(error.source.kind, ErrorKind::Validation);
     assert!(!error.commit_outcome_unknown());
-    for message in [
-        error.to_string(),
-        format!("{error:?}"),
-        error.source.to_string(),
-    ] {
+    for message in [error.to_string(), format!("{error:?}")] {
         assert!(!message.contains("private-value"));
         assert!(!message.contains("UPDATE"));
     }
@@ -56,6 +52,53 @@ async fn reject(client: &Client, plan: &[Migration], phase: MigrationPhase, vers
         snapshot(client).await,
         before,
         "rejection must preserve schema, data and history"
+    );
+}
+
+#[test]
+fn invalid_plan_preserves_translation_detail_with_safe_migration_formatting() {
+    futures::executor::block_on(async {
+        let client = Database::in_memory().client();
+        let sql = "INVALID private-value";
+        let query_error = client
+            .execute_sql(sql, None)
+            .await
+            .expect_err("invalid query");
+        let error = client
+            .migrate(&[Migration::new(1, sql)])
+            .await
+            .expect_err("invalid plan");
+        assert_eq!(error.version, Some(1));
+        assert_eq!(error.phase, MigrationPhase::Plan);
+        assert_eq!(error.source, query_error);
+        for message in [error.to_string(), format!("{error:?}")] {
+            assert!(!message.contains("INVALID"));
+            assert!(!message.contains("private-value"));
+        }
+    });
+}
+
+#[test]
+fn timed_plan_validation_uses_the_normal_sql_deadline_runner() {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        time::Duration,
+    };
+
+    let client = Database::in_memory()
+        .client()
+        .with_deadline(Duration::from_secs(1));
+    let sql = "INVALID private-value";
+    let query = catch_unwind(AssertUnwindSafe(|| {
+        futures::executor::block_on(client.execute_sql(sql, None))
+    }));
+    assert!(query.is_err(), "native timed SQL requires a Tokio timer");
+    let migration = catch_unwind(AssertUnwindSafe(|| {
+        futures::executor::block_on(client.migrate(&[Migration::new(1, sql)]))
+    }));
+    assert!(
+        migration.is_err(),
+        "native timed plan validation has the same runtime requirement"
     );
 }
 
@@ -231,7 +274,39 @@ async fn rejects_metadata_collisions(client: &Client) {
     }
 }
 
+async fn rejects_history_changes_with_active_version(client: &Client) {
+    for tamper in [
+        "ALTER TABLE _ofdb_migrations ADD COLUMN extra TEXT",
+        "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 1",
+    ] {
+        fixture(client).await;
+        let first = Migration::new(1, FIRST);
+        client
+            .migrate(core::slice::from_ref(&first))
+            .await
+            .expect("initialize history");
+        let second = Migration::new(2, format!("UPDATE items SET amount = 99; {tamper}"));
+        reject(
+            client,
+            &[first.clone(), second],
+            MigrationPhase::Record,
+            Some(2),
+        )
+        .await;
+        assert!(
+            client
+                .migrate(&[first])
+                .await
+                .expect("original history survives")
+                .applied_versions
+                .is_empty()
+        );
+        execute(client, "DROP TABLE _ofdb_migrations; DROP TABLE items").await;
+    }
+}
+
 async fn validation_suite(client: &Client) {
+    rejects_history_changes_with_active_version(client).await;
     rejects_invalid_plans(client).await;
     rejects_changed_and_newer_history(client).await;
     rejects_malformed_history(client).await;

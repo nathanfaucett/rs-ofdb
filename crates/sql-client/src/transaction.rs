@@ -71,12 +71,16 @@ impl Transaction {
         &mut self,
         statements: Vec<Statement>,
     ) -> Result<Vec<QueryResult>, QueryError> {
+        let expected_results = statements.len();
         match self
             .exchange(Command::Execute(ExecuteRequest {
                 statements: statements.into_iter().map(statement_to_proto).collect(),
             }))
             .await?
         {
+            Outcome::Executed(response) if response.results.len() != expected_results => {
+                Err(protocol_error("transaction execute result count mismatch"))
+            }
             Outcome::Executed(response) => response
                 .results
                 .into_iter()

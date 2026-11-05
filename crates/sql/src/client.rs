@@ -593,7 +593,7 @@ impl Client {
         })
     }
 
-    async fn run<F, T>(&self, operation: F) -> Result<T, QueryError>
+    pub(crate) async fn run<F, T>(&self, operation: F) -> Result<T, QueryError>
     where
         F: Future<Output = Result<T, QueryError>>,
     {
