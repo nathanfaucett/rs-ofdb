@@ -39,6 +39,7 @@ client.close(): void
 
 transaction.execute(sql: string, params?: QueryParams): Promise<Result[]>
 transaction.executeSql(sql: string, params?: QueryParams): Promise<Result[]>
+transaction.select<T>(sql: string, parser: RowParser<T>, params?: QueryParams): Promise<T[]>
 transaction.commit(): Promise<void>
 transaction.rollback(): Promise<void>
 transaction.close(): void
@@ -78,7 +79,8 @@ try {
 
 ## Typed reads
 
-`Client.select(sql, parser, params?)` uses `execute` and returns an array inferred
+`Client.select(sql, parser, params?)` and `Transaction.select(sql, parser, params?)`
+use their handle's existing `execute` method and return an array inferred
 from the parser return type. Supply a synchronous parser; async parsing is not
 supported. Import `Row`, `RowParser`, and `SelectError` from either `@ofsdk/sql`
 or `@ofsdk/sql/browser`. `Database` has no query methods.
@@ -160,8 +162,63 @@ transport-validation errors are unchanged and occur before application parsing.
 Result-count checks and parsing happen **after execution**. `select` is not a
 read-only guard or a pre-execution batch guard. A rejected batch or parser does
 not undo completed writes. Use raw `execute` / `executeSql` for batches and
-lossless data transfer. This client API does not commit, roll back, or close a
-caller's transaction.
+lossless data transfer. Neither method commits, rolls back, or closes a caller's
+transaction.
+
+### Typed reads in a transaction
+
+Transactions use the same parser, parameters, tagged cells, and `SelectError`
+contract as clients. They can read their own pending writes. Each execution uses
+the inherited client deadline and the existing one-operation-at-a-time rule.
+Parsing runs after that Query Operation; it does not extend the execution deadline.
+
+```ts
+import { SelectError } from "@ofsdk/sql";
+import type { Row } from "@ofsdk/sql";
+
+const transaction = await client.transaction();
+try {
+  await transaction.execute("INSERT INTO entries VALUES ($1, $2)", [
+    { type: "integer", value: "1" },
+    { type: "text", value: "encrypted-data" },
+  ]);
+  const entries = await transaction.select(
+    "SELECT id,text FROM entries WHERE id = :id",
+    (row: Row) => {
+      if (row["id"]?.type !== "integer" || row["text"]?.type !== "text") {
+        throw new TypeError("invalid entry");
+      }
+      return {
+        recordId: BigInt(row["id"].value),
+        ciphertext: row["text"].value,
+      };
+    },
+    { id: { type: "integer", value: "1" } },
+  );
+  // Inferred: { recordId: bigint; ciphertext: string }[].
+  console.log(entries.length);
+  await transaction.commit();
+} catch (error) {
+  if (error instanceof SelectError) {
+    // Parsing/mapping did not consume the transaction or discard its writes.
+    // This application chooses explicit rollback instead of continuing.
+    await transaction.rollback();
+  }
+  throw error;
+} finally {
+  // Also discards pending work if execution failed before commit.
+  // A failed commit has an uncertain outcome; close does not prove rollback.
+  transaction.close();
+}
+```
+
+A parser failure returns no partial array. Prior work and writes from the failed
+statement remain pending. The caller can continue, commit, roll back, or close.
+A result-count failure also leaves the transaction open, but the whole batch has
+already executed. It is not safe to assume no writes occurred or to retry it
+automatically. `commit()` and `rollback()` consume the transaction; later
+`select` calls reject as closed. Closing during execution does not cancel that
+execution; it releases the handle after the in-flight call settles.
 
 ## Explicit application migrations
 

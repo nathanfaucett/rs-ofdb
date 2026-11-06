@@ -56,7 +56,9 @@ type Equal<A, B> =
     : false;
 type Assert<T extends true> = T;
 
-export async function typedReads(client: import("@ofsdk/sql").Client) {
+export async function typedReads(
+  client: import("@ofsdk/sql").Client | import("@ofsdk/sql").Transaction,
+) {
   const parse = (row: Row) => {
     if (row["id"]?.type !== "integer") throw new Error("expected integer id");
     return { recordId: BigInt(row["id"].value) };
@@ -101,28 +103,35 @@ export async function rejectedTypes(): Promise<void> {
     // @ts-expect-error Integers use decimal strings, never JS numbers.
     { type: "integer", value: 1 },
   ]);
-  // @ts-expect-error A parser callback is required, not query parameters.
-  await client.select("SELECT id FROM items", []);
-  // @ts-expect-error Parsers must be synchronous.
-  await client.select("SELECT id FROM items", async () => ({ id: 1 }));
-  // @ts-expect-error Thenable parser results are asynchronous too.
-  await client.select("SELECT id FROM items", () => Promise.resolve(1));
-  const sometimesAsync = () => (Math.random() > 0.5 ? 1 : Promise.resolve(1));
-  // @ts-expect-error A parser cannot sometimes return a promise.
-  await client.select("SELECT id FROM items", sometimesAsync);
-  // @ts-expect-error A parser cannot require an application-specific input shape.
-  await client.select("SELECT id FROM items", (row: { id: number }) => row.id);
-  // @ts-expect-error The output must match the parser; it is not an unchecked generic cast.
-  await client.select<string>("SELECT id FROM items", () => 1);
-  // @ts-expect-error Query parameters must contain tagged cells.
-  await client.select("SELECT id FROM items WHERE id = $1", () => 1, [1]);
-  // @ts-expect-error The parser precedes parameters.
-  await client.select("SELECT id FROM items", [], () => 1);
-  await client.select("SELECT id FROM items", (row) => {
-    // @ts-expect-error Parser input keys are readonly.
-    row["id"] = { type: "null" };
-    return row;
-  });
+  const tx = await client.transaction();
+  for (const handle of [client, tx]) {
+    // @ts-expect-error A parser callback is required, not query parameters.
+    await handle.select("SELECT id FROM items", []);
+    // @ts-expect-error Parsers must be synchronous.
+    await handle.select("SELECT id FROM items", async () => ({ id: 1 }));
+    // @ts-expect-error Thenable parser results are asynchronous too.
+    await handle.select("SELECT id FROM items", () => Promise.resolve(1));
+    const sometimesAsync = () => (Math.random() > 0.5 ? 1 : Promise.resolve(1));
+    // @ts-expect-error A parser cannot sometimes return a promise.
+    await handle.select("SELECT id FROM items", sometimesAsync);
+    await handle.select(
+      "SELECT id FROM items",
+      // @ts-expect-error A parser cannot require an application-specific input shape.
+      (row: { id: number }) => row.id,
+    );
+    // @ts-expect-error The output must match the parser; it is not an unchecked generic cast.
+    await handle.select<string>("SELECT id FROM items", () => 1);
+    // @ts-expect-error Query parameters must contain tagged cells.
+    await handle.select("SELECT id FROM items WHERE id = $1", () => 1, [1]);
+    // @ts-expect-error The parser precedes parameters.
+    await handle.select("SELECT id FROM items", [], () => 1);
+    await handle.select("SELECT id FROM items", (row) => {
+      // @ts-expect-error Parser input keys are readonly.
+      row["id"] = { type: "null" };
+      return row;
+    });
+  }
+  tx.close();
   client.close();
   db.close();
 }

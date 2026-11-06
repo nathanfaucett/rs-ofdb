@@ -2,6 +2,7 @@ import { CommitError, Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
 import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
+import { parseRows, type RowParser } from "./select.js";
 import type { WasmSqlTransaction } from "./wasm.js";
 
 /** SQL transaction — holds statements until commit or rollback. */
@@ -32,6 +33,15 @@ export class Transaction {
     } catch (error) {
       throw wrapError(error, Error);
     }
+  }
+
+  /** Parse one statement result after execution. Failure leaves cleanup to the caller. */
+  async select<T>(
+    sql: string,
+    parser: RowParser<T>,
+    params?: QueryParams,
+  ): Promise<T[]> {
+    return parseRows(await this.execute(sql, params), parser);
   }
 
   /** Alias for execute(). */

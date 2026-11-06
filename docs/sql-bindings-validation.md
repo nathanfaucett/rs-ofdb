@@ -161,3 +161,52 @@ sync/subscriptions, or the existing KV JS conversion. Quota and interrupted-comm
 coverage have the controlled injection/restart scope stated above. All SQL handle
 cleanup and connection-release assertions passed; they are not a general heap
 leak or background-task profiler.
+
+## Typed SQL responses — 2026-11-06
+
+Tickets 01 and 02 add matching `Client.select` and `Transaction.select` methods.
+Ticket 02 starts from integration commit `3194a76`. Both methods use the internal
+`parseRows` implementation and their existing `execute` path. No Rust, WASM,
+transport, storage, or runtime dependency changes were needed.
+
+Measured TDD sequence: the first public transaction typed-read test failed with
+`tx.select is not a function`. Adding the shared-path method made it pass.
+Existing mapping, tagged-value, and constructor-boundary transport tests now run
+against both Query Handles. Additional real-browser tests cover pending writes,
+parameters, empty results, independent ownership, parser failure followed by
+explicit rollback/commit/close, post-execution batch rejection, busy operations,
+consumed handles, and close during an in-flight typed read.
+
+Validation used Node 26.5.0, TypeScript 5.9.3, Playwright 1.49.0, and the existing
+Chromium 156 cache build. The existing Ticket 01 WASM artifact was reused; no new
+WASM compilation was needed. An ignored local CommonJS Playwright config used
+the existing HTTP test server because the Portless setup had timed out. An ESM
+local config also timed out before test discovery. Neither local config nor any
+infrastructure override is part of the change.
+
+Results:
+
+- `pnpm --filter @ofsdk/sql run check` and `run build`: passed.
+- `node browser-tests/package.mjs`: passed for each supported entry point.
+  Offline tarball installation, strict positive/negative declaration checks for
+  both entries, and Vite production builds passed. Consumer assertions cover
+  both Query Handles, parser return inference, readonly inputs, asynchronous
+  parser rejection, argument order, and tagged parameters.
+- All **21 typed-read tests passed** through each packed entry:
+  `@ofsdk/sql` and `@ofsdk/sql/browser`.
+- Full direct browser suite and full packed suites for both entries: each had
+  **44 passes and 2 failures**. The same two reported baseline failures remain
+  in `migration-validation.test.ts`: invalid input reports an undefined version
+  instead of 0; history validation reports version 2 instead of 1. No typed-read
+  or transaction test failed.
+- `pnpm --filter @ofsdk/sql run lint`: the same five existing
+  `noShadowRestrictedNames` errors for the package's `Error` name. No lint fixes
+  were included.
+- `timeout --kill-after=5 120 cargo hack test --feature-powerset --all-targets`:
+  failed in existing `ofdb-btree` sharded no-default-feature tests with unresolved
+  imports and missing `ToString`; cargo-hack exit 1. The matrix did not complete.
+- `timeout --kill-after=5 120 just crap`: timed out, exit 124, during coverage
+  compilation for crate 6 of 33 (`ofdb-value`). No final CRAP score was produced.
+
+These results do not qualify a fresh WASM build, another browser engine, or app
+adoption. Ticket status was not changed.
