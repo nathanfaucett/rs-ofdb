@@ -2438,6 +2438,11 @@ pub(crate) fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) ->
     index.unique && index.table_name == schema.name && columns == primary_columns
 }
 
+/// Single-column UUID primary key index. When present, the UUID value serves
+/// directly as the row identity (no separate internal UUID is generated) and
+/// omitted UUID primary keys are auto-filled with UUIDv7 on insert. Prefer
+/// `id UUID PRIMARY KEY` for new tables unless a natural or composite key is
+/// required.
 pub(crate) fn uuid_primary_key(schema: &TableSchema) -> Option<usize> {
     let mut keys = schema
         .columns

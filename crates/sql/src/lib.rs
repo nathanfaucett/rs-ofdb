@@ -37,7 +37,7 @@ mod migration;
         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
     )
 ))]
-pub use migration::{Migration, MigrationError, MigrationPhase, MigrationResult};
+pub use migration::{Migration, MigrationError, MigrationPhase, MigrationRecord, MigrationResult};
 
 pub use api::*;
 #[cfg(any(

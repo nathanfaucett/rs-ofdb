@@ -3,6 +3,7 @@ import { Error as SqlError } from "./error.js";
 /** One forward SQL batch. Versions start at one and must be contiguous. */
 export interface Migration {
   readonly version: number;
+  readonly description: string;
   readonly sql: string;
 }
 
@@ -12,12 +13,7 @@ export interface MigrationResult {
 }
 
 export type MigrationPhase =
-  | "Plan"
-  | "Begin"
-  | "History"
-  | "Execute"
-  | "Record"
-  | "Commit";
+  "Plan" | "Begin" | "History" | "Execute" | "Record" | "Commit";
 export type MigrationQueryKind =
   | "Validation"
   | "Rejected"

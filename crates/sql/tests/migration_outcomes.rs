@@ -6,10 +6,12 @@ fn plan() -> [Migration; 2] {
     [
         Migration::new(
             1,
+            "m1",
             "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER, pending INTEGER); INSERT INTO items VALUES (1,10,11)",
         ),
         Migration::new(
             2,
+            "m2",
             "UPDATE items SET amount = pending; UPDATE items SET pending = 0",
         ),
     ]

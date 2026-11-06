@@ -29,8 +29,12 @@ fn parse_plan(text: &str) -> Result<Vec<Migration>, MigrationError> {
                 .and_then(Json::as_u64)
                 .and_then(|version| u32::try_from(version).ok())
                 .ok_or_else(invalid)?;
+            let description = item
+                .get("description")
+                .and_then(Json::as_str)
+                .ok_or_else(invalid)?;
             let sql = item.get("sql").and_then(Json::as_str).ok_or_else(invalid)?;
-            Ok(Migration::new(version, sql))
+            Ok(Migration::new(version, description, sql))
         })
         .collect()
 }

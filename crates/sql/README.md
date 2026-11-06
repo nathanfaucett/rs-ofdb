@@ -22,8 +22,8 @@ With `sql`, embedded and remote Query Handles use the same Rust runner:
 use ofdb_sql::Migration;
 
 let migrations = [
-    Migration::new(1, "CREATE TABLE entries (id INTEGER PRIMARY KEY, text TEXT)"),
-    Migration::new(2, "ALTER TABLE entries ADD COLUMN label TEXT DEFAULT 'untitled'"),
+    Migration::new(1, "create entries", "CREATE TABLE entries (id UUID PRIMARY KEY, text TEXT)"),
+    Migration::new(2, "add label", "ALTER TABLE entries ADD COLUMN label TEXT DEFAULT 'untitled'"),
 ];
 let result = client.migrate(&migrations).await?;
 assert_eq!(result.current_version, 2);
@@ -31,16 +31,19 @@ assert_eq!(result.current_version, 2);
 ```
 
 Call this before queries that need the new schema. `Database` construction and
-open never run migrations. Supply the complete list each time, with contiguous
-`u32` versions starting at one and nonempty SQL batches. Applied SQL is immutable:
+open never run migrations. Supply the complete list each time, in ascending
+version order, with unique strictly increasing `u32` versions and nonempty SQL
+batches. Applied SQL is immutable:
 SHA-256 fingerprints cover the exact UTF-8 text, including whitespace.
 The complete list is translated before any mutation. Empty, comment-only, and
 semicolon-only batches, invalid SQL, duplicate versions, gaps, and out-of-order
 versions fail during `Plan`, even when the invalid entry is after pending work.
 
 The runner owns the ordinary SQL table `_ofdb_migrations`, with columns
-`version INTEGER PRIMARY KEY` and `fingerprint TEXT` (lowercase SHA-256 hex).
-Do not change this table or its records in application code or migration SQL.
+`id UUID PRIMARY KEY`, `version INTEGER`, `description TEXT`,
+`fingerprint BLOB` (raw SHA-256), and `execution_time INTEGER` (milliseconds).
+Do not change this table or its records in application code or
+migration SQL.
 History is read in each decision transaction. The runner rejects incompatible
 history rather than resetting it or inferring completion from application tables.
 An empty list returns version zero without creating metadata on an unmigrated

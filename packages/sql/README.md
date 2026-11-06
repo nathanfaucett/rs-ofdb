@@ -83,10 +83,12 @@ TypeScript has no separate execution or history implementation.
 const result = await client.migrate([
   {
     version: 1,
-    sql: "CREATE TABLE entries (id INTEGER PRIMARY KEY, text TEXT)",
+    description: "create entries",
+    sql: "CREATE TABLE entries (id UUID PRIMARY KEY, text TEXT)",
   },
   {
     version: 2,
+    description: "add label",
     sql: "ALTER TABLE entries ADD COLUMN label TEXT DEFAULT 'untitled'",
   },
 ]);
@@ -94,11 +96,13 @@ const result = await client.migrate([
 // An already-current call returns { currentVersion: 2, appliedVersions: [] }.
 ```
 
-`Migration` has a `version` number (positive `u32` integer) and a nonempty `sql`
-batch. Supply the full contiguous list starting at one, not just pending entries.
+`Migration` has a `version` number (unique `u32`, strictly increasing across the
+list), a nonempty `description` label, and a nonempty `sql`
+batch. Supply the full list in ascending version order, not just pending entries.
 Do not edit applied SQL, including whitespace: history stores SHA-256 of the exact
-UTF-8 text. The runner owns `_ofdb_migrations` (`version INTEGER PRIMARY KEY`,
-`fingerprint TEXT`). Do not change its schema or records. Existing application
+UTF-8 text. The runner owns `_ofdb_migrations` (`id UUID PRIMARY KEY`,
+`version INTEGER`, `description TEXT`, `fingerprint BLOB`, `execution_time INTEGER`).
+Do not change its schema or records. Existing application
 tables do not imply applied history. An empty list creates no metadata in an
 unmigrated database and cannot accept unknown applied versions.
 

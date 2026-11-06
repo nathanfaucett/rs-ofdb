@@ -16,10 +16,12 @@ test("concurrent migration rejects a stale IndexedDB snapshot without partial wr
     const loser = otherDb.client();
     const initial = {
       version: 1,
+      description: "m1",
       sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER, pending INTEGER); INSERT INTO items VALUES (1,10,11)",
     };
     const upgrade = {
       version: 2,
+      description: "m2",
       sql: "UPDATE items SET amount = pending; UPDATE items SET pending = 0; CREATE TABLE upgraded (id INTEGER PRIMARY KEY)",
     };
     try {
@@ -93,13 +95,15 @@ for (const mode of ["throw", "abort"]) {
       const plan = [
         {
           version: 1,
+          description: "m1",
           sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER, pending INTEGER); INSERT INTO items VALUES (1,10,11)",
         },
         {
           version: 2,
+          description: "m2",
           sql: "UPDATE items SET amount = pending; UPDATE items SET pending = 0; CREATE TABLE staged (id INTEGER PRIMARY KEY)",
         },
-        { version: 3, sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+        { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
       ];
       try {
         await client.migrate(plan.slice(0, 1));
@@ -166,13 +170,15 @@ for (const stage of ["readonly", "readwrite"]) {
       const plan = [
         {
           version: 1,
+          description: "m1",
           sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER, pending INTEGER); INSERT INTO items VALUES (1,10,11)",
         },
         {
           version: 2,
+          description: "m2",
           sql: "UPDATE items SET amount = pending; UPDATE items SET pending = 0",
         },
-        { version: 3, sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+        { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
       ];
       let hold;
       try {

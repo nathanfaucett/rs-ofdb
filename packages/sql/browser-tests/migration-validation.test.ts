@@ -16,19 +16,23 @@ test("invalid inputs and statement-free tails reject before any migration commit
       await client.execute(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
       );
-      const first = { version: 1, sql: "UPDATE items SET amount = 99" };
+      const first = {
+        version: 1,
+        description: "m1",
+        sql: "UPDATE items SET amount = 99",
+      };
       const plans = [
         null,
         {},
         [null],
         [{ version: 1 }],
-        [{ version: 1, sql: 123 }],
-        ...[0, -1, 1.5, NaN, Infinity, 4294967296, "1", 2, 4294967295].map(
-          (version) => [{ ...first, version }],
-        ),
+        [{ version: 1, description: "m1", sql: 123 }],
+        ...[-1, 1.5, NaN, Infinity, 4294967296, "1"].map((version) => [
+          { ...first, version },
+        ]),
         [first, { ...first }],
-        [first, { ...first, version: 3 }],
-        [first, { ...first, version: 2 }, { ...first }],
+        [first, { ...first, version: 0 }],
+        [first, { ...first, version: 1 }, { ...first }],
         ...[
           "",
           " \n\t",
@@ -36,7 +40,7 @@ test("invalid inputs and statement-free tails reject before any migration commit
           "-- private-value\n",
           "/* private-value */ ;",
           "INVALID private-value",
-        ].map((sql) => [first, { version: 2, sql }]),
+        ].map((sql) => [first, { version: 2, description: "m2", sql }]),
       ];
       const snapshot = async () =>
         Promise.all([
@@ -104,6 +108,7 @@ test("post-execution history failures identify the active version and roll back"
     const timed = client.withDeadline(5000n);
     const first = {
       version: 1,
+      description: "m1",
       sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
     };
     const snapshot = async () =>
@@ -118,13 +123,17 @@ test("post-execution history failures identify the active version and roll back"
       const before = await snapshot();
       for (const sql of [
         "ALTER TABLE _ofdb_migrations ADD COLUMN extra TEXT",
-        "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 1",
+        "UPDATE _ofdb_migrations SET description = 'private-value' WHERE version = 1",
       ]) {
         let failure;
         try {
           await timed.migrate([
             first,
-            { version: 2, sql: `UPDATE items SET amount = 99; ${sql}` },
+            {
+              version: 2,
+              description: "m2",
+              sql: `UPDATE items SET amount = 99; ${sql}`,
+            },
           ]);
         } catch (error) {
           failure = {
@@ -178,13 +187,19 @@ test("exact SQL, complete history and metadata are validated without repair", as
     const { Database, MigrationError } = (window as any).sql;
     const db = await Database.open("migration-invalid-history");
     const client = db.client();
-    const initial = { version: 1, sql: "UPDATE items SET amount = 20" };
+    const initial = {
+      version: 1,
+      description: "m1",
+      sql: "UPDATE items SET amount = 20",
+    };
     const second = {
       version: 2,
+      description: "m2",
       sql: "ALTER TABLE items ADD COLUMN note TEXT DEFAULT 'kept'",
     };
     const pending = {
       version: 3,
+      description: "m3",
       sql: "UPDATE items SET amount = 99; CREATE TABLE forbidden (id INTEGER PRIMARY KEY)",
     };
     const results: any[] = [];
@@ -240,18 +255,19 @@ test("exact SQL, complete history and metadata are validated without repair", as
         throw new Error("replayed original plan");
       await reset();
       for (const [tamper, version] of [
-        ["UPDATE _ofdb_migrations SET fingerprint = NULL WHERE version = 1", 1],
+        ["UPDATE _ofdb_migrations SET description = NULL WHERE version = 1", 1],
+        ["UPDATE _ofdb_migrations SET fingerprint = NULL WHERE version = 2", 2],
         [
-          "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 2",
-          2,
+          "UPDATE _ofdb_migrations SET execution_time = NULL WHERE version = 1",
+          1,
         ],
         ["DELETE FROM _ofdb_migrations WHERE version = 1", 1],
         [
-          "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations VALUES (0,'private-value')",
+          "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations (version, description, fingerprint, execution_time) VALUES (0,'x',X'00',0)",
           1,
         ],
         [
-          "DELETE FROM _ofdb_migrations WHERE version = 2; INSERT INTO _ofdb_migrations VALUES (4294967296,'private-value')",
+          "DELETE FROM _ofdb_migrations WHERE version = 2; INSERT INTO _ofdb_migrations (version, description, fingerprint, execution_time) VALUES (4294967296,'x',X'00',0)",
           2,
         ],
       ] as const) {
@@ -263,10 +279,13 @@ test("exact SQL, complete history and metadata are validated without repair", as
       for (const schema of [
         "version INTEGER, fingerprint TEXT PRIMARY KEY",
         "version TEXT PRIMARY KEY, fingerprint TEXT",
-        "version INTEGER PRIMARY KEY, fingerprint INTEGER",
-        "version INTEGER PRIMARY KEY, fingerprint TEXT, extra TEXT",
-        "version INTEGER PRIMARY KEY, fingerprint TEXT DEFAULT 'private-value'",
-        "version INTEGER, fingerprint TEXT, PRIMARY KEY (version, fingerprint)",
+        "id UUID, version INTEGER PRIMARY KEY, description TEXT, fingerprint BLOB, execution_time INTEGER",
+        "id INTEGER PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint TEXT, execution_time INTEGER",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time TEXT",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER, extra TEXT",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB DEFAULT X'00', execution_time INTEGER",
+        "version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER, PRIMARY KEY (version, fingerprint)",
       ]) {
         await client.execute(
           `CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10); CREATE TABLE _ofdb_migrations (${schema})`,
@@ -276,7 +295,7 @@ test("exact SQL, complete history and metadata are validated without repair", as
             "INSERT INTO _ofdb_migrations VALUES (1,'private-value'),(1,'other-private-value')",
           );
         }
-        await reject([{ version: 1, sql: pending.sql }]);
+        await reject([{ version: 1, description: "m1", sql: pending.sql }]);
         await reject([]);
         await reset();
       }

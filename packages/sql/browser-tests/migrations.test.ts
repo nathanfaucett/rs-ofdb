@@ -20,10 +20,12 @@ test("explicit migrations initialize, upgrade, skip work and survive reopen", as
       const plan = [
         {
           version: 1,
+          description: "m1",
           sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
         },
         {
           version: 2,
+          description: "m2",
           sql: "ALTER TABLE items ADD COLUMN note TEXT DEFAULT 'kept'; UPDATE items SET amount = 20",
         },
       ];
@@ -78,6 +80,7 @@ test("a failed batch rolls back schema, data and history and stops later work", 
     const client = db.client();
     const initial = {
       version: 1,
+      description: "m1",
       sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
     };
     try {
@@ -87,9 +90,10 @@ test("a failed batch rolls back schema, data and history and stops later work", 
           initial,
           {
             version: 2,
+            description: "m2",
             sql: "UPDATE items SET amount = 99; CREATE TABLE discarded (id INTEGER PRIMARY KEY); INSERT INTO missing VALUES ('private-value')",
           },
-          { version: 3, sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+          { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
         ]);
       } catch (error) {
         failure = {
@@ -110,7 +114,7 @@ test("a failed batch rolls back schema, data and history and stops later work", 
       );
       const resumed = await client.migrate([
         initial,
-        { version: 2, sql: "UPDATE items SET amount = 20" },
+        { version: 2, description: "m2", sql: "UPDATE items SET amount = 20" },
       ]);
       return { failure, rows, tables, history, resumed };
     } finally {

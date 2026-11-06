@@ -65,7 +65,7 @@ fn invalid_plan_preserves_translation_detail_with_safe_migration_formatting() {
             .await
             .expect_err("invalid query");
         let error = client
-            .migrate(&[Migration::new(1, sql)])
+            .migrate(&[Migration::new(1, "m1", sql)])
             .await
             .expect_err("invalid plan");
         assert_eq!(error.version, Some(1));
@@ -94,7 +94,7 @@ fn timed_plan_validation_uses_the_normal_sql_deadline_runner() {
     }));
     assert!(query.is_err(), "native timed SQL requires a Tokio timer");
     let migration = catch_unwind(AssertUnwindSafe(|| {
-        futures::executor::block_on(client.migrate(&[Migration::new(1, sql)]))
+        futures::executor::block_on(client.migrate(&[Migration::new(1, "m1", sql)]))
     }));
     assert!(
         migration.is_err(),
@@ -118,24 +118,22 @@ async fn rejects_invalid_plans(client: &Client) {
     ] {
         reject(
             client,
-            &[Migration::new(1, FIRST), Migration::new(2, sql)],
+            &[Migration::new(1, "m1", FIRST), Migration::new(2, "m2", sql)],
             MigrationPhase::Plan,
             Some(2),
         )
         .await;
     }
     for (versions, rejected) in [
-        (vec![0], 0),
-        (vec![2], 2),
-        (vec![u32::MAX], u32::MAX),
         (vec![1, 1], 1),
-        (vec![1, 3], 3),
+        (vec![5, 3], 3),
         (vec![1, 2, 1], 1),
         (vec![1, 0], 0),
+        (vec![10, 20, 15], 15),
     ] {
         let plan: Vec<_> = versions
             .into_iter()
-            .map(|version| Migration::new(version, PENDING))
+            .map(|version| Migration::new(version, "m", PENDING))
             .collect();
         reject(client, &plan, MigrationPhase::Plan, Some(rejected)).await;
     }
@@ -152,6 +150,7 @@ async fn rejects_invalid_plans(client: &Client) {
     let error = client
         .migrate(&[Migration::new(
             1,
+            "m1",
             "CREATE TABLE items (id INTEGER PRIMARY KEY)",
         )])
         .await
@@ -173,7 +172,10 @@ async fn rejects_invalid_plans(client: &Client) {
 
 async fn rejects_changed_and_newer_history(client: &Client) {
     fixture(client).await;
-    let plan = [Migration::new(1, FIRST), Migration::new(2, SECOND)];
+    let plan = [
+        Migration::new(1, "m1", FIRST),
+        Migration::new(2, "m2", SECOND),
+    ];
     client.migrate(&plan).await.expect("initialize history");
     reject(client, &[], MigrationPhase::History, Some(1)).await;
     reject(client, &plan[..1], MigrationPhase::History, Some(2)).await;
@@ -185,9 +187,9 @@ async fn rejects_changed_and_newer_history(client: &Client) {
         reject(
             client,
             &[
-                Migration::new(1, changed),
-                Migration::new(2, SECOND),
-                Migration::new(3, PENDING),
+                Migration::new(1, "m1", changed),
+                Migration::new(2, "m2", SECOND),
+                Migration::new(3, "m3", PENDING),
             ],
             MigrationPhase::History,
             Some(1),
@@ -204,19 +206,20 @@ async fn rejects_changed_and_newer_history(client: &Client) {
 
 async fn rejects_malformed_history(client: &Client) {
     for tamper in [
-        "UPDATE _ofdb_migrations SET fingerprint = NULL WHERE version = 1",
-        "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 2",
-        "UPDATE _ofdb_migrations SET fingerprint = '0000000000000000000000000000000000000000000000000000000000000000' WHERE version = 1",
+        "UPDATE _ofdb_migrations SET description = NULL WHERE version = 1",
+        "UPDATE _ofdb_migrations SET fingerprint = NULL WHERE version = 2",
+        "UPDATE _ofdb_migrations SET fingerprint = X'0000' WHERE version = 1",
+        "UPDATE _ofdb_migrations SET execution_time = NULL WHERE version = 1",
         "DELETE FROM _ofdb_migrations WHERE version = 1",
-        "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations VALUES (0,'private-value')",
-        "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations VALUES ($1,'private-value')",
-        "DELETE FROM _ofdb_migrations WHERE version = 2; INSERT INTO _ofdb_migrations VALUES (4294967296,'private-value')",
+        "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations (version, description, fingerprint, execution_time) VALUES (0,'x',X'00',0)",
+        "DELETE FROM _ofdb_migrations WHERE version = 1; INSERT INTO _ofdb_migrations (version, description, fingerprint, execution_time) VALUES ($1,'x',X'00',0)",
+        "DELETE FROM _ofdb_migrations WHERE version = 2; INSERT INTO _ofdb_migrations (version, description, fingerprint, execution_time) VALUES (4294967296,'x',X'00',0)",
     ] {
         fixture(client).await;
         let plan = [
-            Migration::new(1, FIRST),
-            Migration::new(2, SECOND),
-            Migration::new(3, PENDING),
+            Migration::new(1, "m1", FIRST),
+            Migration::new(2, "m2", SECOND),
+            Migration::new(3, "m3", PENDING),
         ];
         client
             .migrate(&plan[..2])
@@ -248,10 +251,13 @@ async fn rejects_metadata_collisions(client: &Client) {
     for schema in [
         "version INTEGER, fingerprint TEXT PRIMARY KEY",
         "version TEXT PRIMARY KEY, fingerprint TEXT",
-        "version INTEGER PRIMARY KEY, fingerprint INTEGER",
-        "version INTEGER PRIMARY KEY, fingerprint TEXT, extra TEXT",
-        "version INTEGER PRIMARY KEY, fingerprint TEXT DEFAULT 'private-value'",
-        "version INTEGER, fingerprint TEXT, PRIMARY KEY (version, fingerprint)",
+        "id UUID, version INTEGER PRIMARY KEY, description TEXT, fingerprint BLOB, execution_time INTEGER",
+        "id INTEGER PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint TEXT, execution_time INTEGER",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time TEXT",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER, extra TEXT",
+        "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB DEFAULT X'00', execution_time INTEGER",
+        "version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER, PRIMARY KEY (version, fingerprint)",
     ] {
         fixture(client).await;
         execute(client, &format!("CREATE TABLE _ofdb_migrations ({schema})")).await;
@@ -264,7 +270,7 @@ async fn rejects_metadata_collisions(client: &Client) {
         }
         reject(
             client,
-            &[Migration::new(1, PENDING)],
+            &[Migration::new(1, "m1", PENDING)],
             MigrationPhase::History,
             None,
         )
@@ -277,15 +283,15 @@ async fn rejects_metadata_collisions(client: &Client) {
 async fn rejects_history_changes_with_active_version(client: &Client) {
     for tamper in [
         "ALTER TABLE _ofdb_migrations ADD COLUMN extra TEXT",
-        "UPDATE _ofdb_migrations SET fingerprint = 'private-value' WHERE version = 1",
+        "UPDATE _ofdb_migrations SET description = 'private-value' WHERE version = 1",
     ] {
         fixture(client).await;
-        let first = Migration::new(1, FIRST);
+        let first = Migration::new(1, "m1", FIRST);
         client
             .migrate(core::slice::from_ref(&first))
             .await
             .expect("initialize history");
-        let second = Migration::new(2, format!("UPDATE items SET amount = 99; {tamper}"));
+        let second = Migration::new(2, "m2", format!("UPDATE items SET amount = 99; {tamper}"));
         reject(
             client,
             &[first.clone(), second],

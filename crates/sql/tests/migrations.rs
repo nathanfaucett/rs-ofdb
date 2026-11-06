@@ -19,7 +19,10 @@ async fn initialize_and_upgrade(client: &Client) {
         .expect("inspect metadata absence");
     assert!(tables[0].rows.is_empty());
 
-    let plan = [Migration::new(1, INITIAL), Migration::new(2, UPGRADE)];
+    let plan = [
+        Migration::new(1, "m1", INITIAL),
+        Migration::new(2, "m2", UPGRADE),
+    ];
     let first = client.migrate(&plan[..1]).await.expect("initialize schema");
     assert_eq!(first.current_version, 1);
     assert_eq!(first.applied_versions, vec![1]);
@@ -56,12 +59,13 @@ async fn initialize_and_upgrade(client: &Client) {
 
 async fn failure_rolls_back_and_stops(client: &Client) {
     let plan = [
-        Migration::new(1, INITIAL),
+        Migration::new(1, "m1", INITIAL),
         Migration::new(
             2,
+            "m2",
             "UPDATE items SET amount = 99; ALTER TABLE items ADD COLUMN discarded TEXT; INSERT INTO missing VALUES (1)",
         ),
-        Migration::new(3, "CREATE TABLE later (id INTEGER PRIMARY KEY)"),
+        Migration::new(3, "m3", "CREATE TABLE later (id INTEGER PRIMARY KEY)"),
     ];
     let error = client
         .migrate(&plan)
@@ -93,7 +97,10 @@ async fn failure_rolls_back_and_stops(client: &Client) {
         .expect("failed migration has no history");
     assert_eq!(history[0].rows, vec![Row::from([1_i64])]);
     let resumed = client
-        .migrate(&[Migration::new(1, INITIAL), Migration::new(2, UPGRADE)])
+        .migrate(&[
+            Migration::new(1, "m1", INITIAL),
+            Migration::new(2, "m2", UPGRADE),
+        ])
         .await
         .expect("resume after failure");
     assert_eq!(resumed.applied_versions, vec![2]);
@@ -113,6 +120,7 @@ fn failed_first_migration_does_not_create_metadata() {
         client
             .migrate(&[Migration::new(
                 1,
+                "m1",
                 "CREATE TABLE discarded (id INTEGER PRIMARY KEY); INSERT INTO missing VALUES (1)",
             )])
             .await
@@ -127,7 +135,7 @@ fn failed_first_migration_does_not_create_metadata() {
         assert!(result[0].rows.is_empty());
         assert_eq!(
             client
-                .migrate(&[Migration::new(1, INITIAL)])
+                .migrate(&[Migration::new(1, "m1", INITIAL)])
                 .await
                 .expect("retry after rollback")
                 .applied_versions,
@@ -142,9 +150,9 @@ fn failed_history_insertion_rolls_back_application_changes() {
         let client = Database::in_memory().client();
         let first = "CREATE TABLE items (id INTEGER PRIMARY KEY); CREATE UNIQUE INDEX history_fingerprint ON _ofdb_migrations (fingerprint)";
         let plan = [
-            Migration::new(1, first),
-            Migration::new(2, "DELETE FROM items"),
-            Migration::new(3, "DELETE FROM items"),
+            Migration::new(1, "m1", first),
+            Migration::new(2, "m2", "DELETE FROM items"),
+            Migration::new(3, "m3", "DELETE FROM items"),
         ];
         client
             .migrate(&plan[..2])
@@ -192,7 +200,10 @@ fn history_and_upgrades_survive_reopening() {
         let database = Database::open(&path).expect("reopen database");
         let client = database.client();
         let result = client
-            .migrate(&[Migration::new(1, INITIAL), Migration::new(2, UPGRADE)])
+            .migrate(&[
+                Migration::new(1, "m1", INITIAL),
+                Migration::new(2, "m2", UPGRADE),
+            ])
             .await
             .expect("persisted history");
         assert!(result.applied_versions.is_empty());

@@ -14,7 +14,7 @@ export async function contract(): Promise<Result[]> {
   const value: DbValue = { type: "integer", value: "9223372036854775807" };
   const params: QueryParams = { id: value };
   const migration = await timed.migrate([
-    { version: 1, sql: "CREATE TABLE items (id INTEGER PRIMARY KEY)" },
+    { version: 1, description: "m1", sql: "CREATE TABLE items (id INTEGER PRIMARY KEY)" },
   ]);
   const version: number = migration.currentVersion;
   const applied: number[] = migration.appliedVersions;
