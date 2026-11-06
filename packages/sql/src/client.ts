@@ -7,6 +7,7 @@ import {
 } from "./migration.js";
 import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
+import { parseRows, type RowParser } from "./select.js";
 import { Transaction } from "./transaction.js";
 import type { WasmSqlClient } from "./wasm.js";
 
@@ -35,6 +36,15 @@ export class Client {
     } catch (error) {
       throw wrapError(error, Error);
     }
+  }
+
+  /** Parse one statement result after execution. Parsing does not undo writes. */
+  async select<T>(
+    sql: string,
+    parser: RowParser<T>,
+    params?: QueryParams,
+  ): Promise<T[]> {
+    return parseRows(await this.execute(sql, params), parser);
   }
 
   /** Apply the complete migration list. Each pending version commits with its history record. */

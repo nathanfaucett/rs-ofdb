@@ -1,10 +1,10 @@
-import { SqlDatabase } from "../browser/index.js";
+import { Database } from "../browser/index.js";
 
 self.onmessage = async ({ data: name }) => {
   let db;
   let client;
   try {
-    db = await SqlDatabase.open(name);
+    db = await Database.open(name);
     client = db.client();
     const tx = await client.transaction();
     try {

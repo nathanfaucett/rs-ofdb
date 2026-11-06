@@ -14,8 +14,8 @@ function run(command, args, cwd) {
 }
 await rm("artifacts/consumer", { recursive: true, force: true });
 await mkdir("artifacts/consumer", { recursive: true });
-run("pnpm", ["pack", "--pack-destination", "artifacts"], ".");
 const tarball = "ofdb-sql-0.1.0.tgz";
+run("pnpm", ["pack", "--out", `artifacts/${tarball}`], ".");
 const digest = createHash("sha256")
   .update(await readFile(`artifacts/${tarball}`))
   .digest("hex");
@@ -40,9 +40,11 @@ run(
   ],
   "artifacts/consumer",
 );
+const consumer = await readFile("browser-tests/consumer.ts", "utf8");
+await writeFile("artifacts/consumer/check.ts", consumer);
 await writeFile(
-  "artifacts/consumer/check.ts",
-  await readFile("browser-tests/consumer.ts", "utf8"),
+  "artifacts/consumer/check-browser.ts",
+  consumer.replaceAll('"@ofsdk/sql"', '"@ofsdk/sql/browser"'),
 );
 run(
   "pnpm",
@@ -60,19 +62,24 @@ run(
     "--lib",
     "ES2022,DOM,ESNext.Disposable",
     "artifacts/consumer/check.ts",
+    "artifacts/consumer/check-browser.ts",
   ],
   ".",
 );
+const entry = process.env.SQL_TEST_ENTRY ?? "@ofsdk/sql";
+if (entry !== "@ofsdk/sql" && entry !== "@ofsdk/sql/browser") {
+  throw new Error("SQL_TEST_ENTRY must be a supported package entry point");
+}
 const html = await readFile("browser-tests/index.html", "utf8");
 await writeFile(
   "artifacts/consumer/index.html",
-  html.replace("../browser/index.js", "@ofsdk/sql"),
+  html.replace("../browser/index.js", entry),
 );
 await writeFile(
   "artifacts/consumer/worker.js",
   (await readFile("browser-tests/worker.js", "utf8")).replace(
     "../browser/index.js",
-    "@ofsdk/sql",
+    entry,
   ),
 );
 await build({

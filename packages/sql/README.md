@@ -30,6 +30,7 @@ database.close(): void
 
 client.execute(sql: string, params?: QueryParams): Promise<Result[]>
 client.executeSql(sql: string, params?: QueryParams): Promise<Result[]>
+client.select<T>(sql: string, parser: RowParser<T>, params?: QueryParams): Promise<T[]>
 client.transaction(): Promise<Transaction>
 client.migrate(migrations: readonly Migration[]): Promise<MigrationResult>
 client.clone(): Client
@@ -44,6 +45,8 @@ transaction.close(): void
 
 type QueryParams = DbValue[] | { [name: string]: DbValue }
 interface Result { columns: string[]; rows: DbValue[][] }
+type Row = Readonly<Record<string, DbValue>>
+// RowParser<T> accepts Row and returns a synchronous T, not a PromiseLike.
 ```
 
 `executeSql` is an alias. Use `$1` positional or `:name` named parameters.
@@ -72,6 +75,93 @@ try {
   database.close();
 }
 ```
+
+## Typed reads
+
+`Client.select(sql, parser, params?)` uses `execute` and returns an array inferred
+from the parser return type. Supply a synchronous parser; async parsing is not
+supported. Import `Row`, `RowParser`, and `SelectError` from either `@ofsdk/sql`
+or `@ofsdk/sql/browser`. `Database` has no query methods.
+
+The parser receives all projected columns keyed by their exact, case-sensitive
+result names. Projection order does not change field meaning. Names such as
+`__proto__`, `constructor`, and `prototype` remain own data properties, not
+prototype changes. Names are those returned by raw `execute`; `select` does not
+add SQL alias support to the engine. Cells retain their `DbValue` tags. Missing
+columns stay absent; SQL NULL stays `{ type: "null" }`. No values are unwrapped,
+converted, or replaced with defaults.
+
+The parser owns required fields, extra fields, nullability, renaming, conversions,
+and domain checks. For example, an application can check a migration count:
+
+```ts
+import type { Row } from "@ofsdk/sql";
+
+const counts = await client.select(
+  "SELECT COUNT(*) FROM entries",
+  (row: Row) => {
+    const cells = Object.values(row);
+    if (cells.length !== 1 || cells[0]?.type !== "integer") {
+      throw new TypeError("expected one tagged count");
+    }
+    return { count: BigInt(cells[0].value) };
+  },
+);
+// Inferred: { count: bigint }[]. No conversion through a JS number.
+```
+
+Use an existing application schema library without an adapter. This Zod example
+validates tagged encrypted records and renames application fields. Zod is supplied
+by the application; this package has no runtime npm dependencies.
+
+```ts
+import { z } from "zod";
+
+const encryptedRecord = z
+  .object({
+    id: z.object({ type: z.literal("uuid"), value: z.string().uuid() }),
+    cipher: z.object({ type: z.literal("blob"), value: z.string() }),
+  })
+  .transform(({ id, cipher }) => ({
+    recordId: id.value,
+    ciphertext: cipher.value,
+  }));
+
+const records = await client.select(
+  "SELECT cipher,id FROM records WHERE id = :id",
+  (row) => encryptedRecord.parse(row),
+  { id: { type: "uuid", value: recordId } },
+);
+// Inferred: { recordId: string; ciphertext: string }[].
+```
+
+Valibot works the same way: pass `(row) => v.parse(yourSchema, row)`. Use a
+synchronous schema. Integers remain i64 decimal strings, floats remain exact bit
+strings, blobs remain base64, and JSON retains nested lossless tags until the
+parser explicitly converts them. Text and UUID stay distinct.
+
+Rows are parsed in result order. Zero rows return `[]` without calling the
+parser, so schema-required fields are **not checked** against column metadata
+for an empty result. The first parser failure rejects the entire call; no partial
+array is returned and no automatic retry occurs.
+
+`SelectError` extends the package `Error` (`kind: "query"`). Its `reason` is:
+
+- `"result-count"`: execution returned zero or multiple statement results.
+- `"duplicate-column"`: exact duplicate column names, even with zero rows.
+- `"parser"`: the parser threw; `rowIndex` is zero-based and `cause` is the
+  original thrown value. For mapping errors, `rowIndex` is `undefined`.
+
+Use these fields, not message matching. Package-generated mapping and parser
+messages contain no SQL, column names, or cell contents. **Parser causes can
+contain sensitive data. Do not log them automatically.** Existing execution and
+transport-validation errors are unchanged and occur before application parsing.
+
+Result-count checks and parsing happen **after execution**. `select` is not a
+read-only guard or a pre-execution batch guard. A rejected batch or parser does
+not undo completed writes. Use raw `execute` / `executeSql` for batches and
+lossless data transfer. This client API does not commit, roll back, or close a
+caller's transaction.
 
 ## Explicit application migrations
 
@@ -261,7 +351,11 @@ The build script bounds WASM compilation to 240 seconds. An existing
 select an existing Chromium executable. Each browser test is bounded to 30
 seconds. `test:package` packs the tarball, writes `artifacts/SHA256SUMS`, installs
 it offline into an isolated consumer, checks installed declarations, builds with
-Vite, then repeats the real-browser suite. It replaces only its generated
+Vite, then repeats the real-browser suite. Installed declaration checks cover
+both package entry points. To repeat the packed browser suite with the prebuilt
+entry point, use `SQL_TEST_ENTRY=@ofsdk/sql/browser pnpm --filter @ofsdk/sql run test:package`.
+The pack command uses an explicit output name for the documented tarball.
+It replaces only its generated
 `artifacts/consumer/` directory.
 
 Output: `packages/sql/artifacts/ofdb-sql-0.1.0.tgz`. The raw binary is
