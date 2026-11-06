@@ -143,7 +143,7 @@ for (const handle of ["Client", "Transaction"]) {
               ["constructor", { type: "text", value: "ctor-data" }],
               ["prototype", { type: "text", value: "prototype-data" }],
             ],
-            safe: true,
+            safe: false,
             own: true,
             missing: true,
           },

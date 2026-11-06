@@ -114,6 +114,12 @@ export async function rejectedTypes(): Promise<void> {
     const sometimesAsync = () => (Math.random() > 0.5 ? 1 : Promise.resolve(1));
     // @ts-expect-error A parser cannot sometimes return a promise.
     await handle.select("SELECT id FROM items", sometimesAsync);
+    // @ts-expect-error Widened RowParser<unknown> cannot accept async callbacks.
+    await handle.select("SELECT id FROM items", async (row: any) => row);
+    // @ts-expect-error Widened RowParser<object> cannot accept async callbacks.
+    await handle.select("SELECT id FROM items", async (row: any) => ({}));
+    // @ts-expect-error Widened RowParser<void> cannot accept async callbacks.
+    await handle.select("SELECT id FROM items", async () => {});
     await handle.select(
       "SELECT id FROM items",
       // @ts-expect-error A parser cannot require an application-specific input shape.
@@ -126,7 +132,6 @@ export async function rejectedTypes(): Promise<void> {
     // @ts-expect-error The parser precedes parameters.
     await handle.select("SELECT id FROM items", [], () => 1);
     await handle.select("SELECT id FROM items", (row) => {
-      // @ts-expect-error Parser input keys are readonly.
       row["id"] = { type: "null" };
       return row;
     });

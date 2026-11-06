@@ -3,7 +3,12 @@ import type { Result } from "./result.js";
 import type { DbValue } from "./value.js";
 
 /** Exact projected column names and lossless tagged cells. Missing columns stay absent. */
-export type Row = Readonly<Record<string, DbValue>>;
+export type Row = Readonly<Record<string, DbValue>> & {
+  [k: string]: DbValue | undefined;
+};
+
+/** Internal row builder type for constructing rows with null prototype. */
+type RowBuilder = Record<string, DbValue>;
 
 /** A synchronous parser; the returned value determines the selected element type. */
 export type RowParser<T> = (
@@ -44,11 +49,32 @@ export function parseRows<T>(results: Result[], parser: RowParser<T>): T[] {
     throw new SelectError("duplicate-column");
   }
   return result.rows.map((cells, rowIndex) => {
-    const row = Object.fromEntries(
-      cells.map((cell, index) => [result.columns[index], cell]),
-    );
+    const row: RowBuilder = Object.create(null);
+    for (let i = 0; i < cells.length; i++) {
+      const column = result.columns[i];
+      if (column !== undefined) {
+        Object.defineProperty(row, column, {
+          value: cells[i]!,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
     try {
-      return parser(row);
+      const parsed = parser(row as Row);
+      if (parsed !== null && typeof parsed === "object" && "then" in parsed) {
+        const p = parsed as PromiseLike<unknown>;
+        p.then(undefined, (reason) => {
+          throw new SelectError("parser", rowIndex, { cause: reason });
+        });
+        throw new SelectError("parser", rowIndex, {
+          cause: new Error(
+            "Parser returned a promise; synchronous parser required",
+          ),
+        });
+      }
+      return parsed;
     } catch (cause) {
       throw new SelectError("parser", rowIndex, { cause });
     }
