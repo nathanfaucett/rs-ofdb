@@ -1,5 +1,9 @@
 export type DbErrorKind =
-  "timeout" | "query" | "connect" | "transport" | "internal";
+  | "timeout"
+  | "query"
+  | "connect"
+  | "transport"
+  | "internal";
 
 /** Base error for all @ofsdk/sql operations. */
 export class DbError extends globalThis.Error {

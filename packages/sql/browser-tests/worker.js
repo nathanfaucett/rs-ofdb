@@ -8,12 +8,12 @@ self.onmessage = async ({ data: name }) => {
     client = db.client();
     const tx = await client.transaction();
     try {
-      await tx.execute("INSERT INTO items VALUES (7, 'worker')");
+      await tx.execute_raw("INSERT INTO items VALUES (7, 'worker')");
       await tx.commit();
     } finally {
       tx.close();
     }
-    self.postMessage(await client.execute("SELECT id,text FROM items"));
+    self.postMessage(await client.execute_raw("SELECT id,text FROM items"));
   } catch (error) {
     self.postMessage({ error: String(error) });
   } finally {

@@ -12,22 +12,22 @@ test("atomic commit, rollback, stale writers and consumed handles survive page r
     const { Database, CommitError } = (window as any).sql;
     const db = await Database.open("transactions");
     const client = db.client();
-    await client.execute(
+    await client.execute_raw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, text TEXT)",
     );
     const tx = await client.transaction();
-    await tx.execute("INSERT INTO items VALUES (1,'YWJj')");
-    await tx.execute("INSERT INTO items VALUES (2,'')");
-    const invisible = await client.execute("SELECT id FROM items");
+    await tx.execute_raw("INSERT INTO items VALUES (1,'YWJj')");
+    await tx.execute_raw("INSERT INTO items VALUES (2,'')");
+    const invisible = await client.execute_raw("SELECT id FROM items");
     await tx.commit();
     const rollback = await client.transaction();
-    await rollback.execute(
+    await rollback.execute_raw(
       "DELETE FROM items; INSERT INTO items VALUES (3,'discard')",
     );
     await rollback.rollback();
     const stale = await client.transaction();
-    await stale.execute("INSERT INTO items VALUES (4,'stale')");
-    await client.execute("INSERT INTO items VALUES (5,'winner')");
+    await stale.execute_raw("INSERT INTO items VALUES (4,'stale')");
+    await client.execute_raw("INSERT INTO items VALUES (5,'winner')");
     let conflict;
     try {
       await stale.commit();
@@ -59,7 +59,7 @@ test("atomic commit, rollback, stale writers and consumed handles survive page r
     const db = await (window as any).sql.Database.open("transactions");
     const client = db.client();
     try {
-      return await client.execute("SELECT id,text FROM items ORDER BY id");
+      return await client.execute_raw("SELECT id,text FROM items ORDER BY id");
     } finally {
       client.close();
       db.close();
@@ -89,9 +89,9 @@ for (const mode of ["throw", "abort"]) {
       const { Database, CommitError } = (window as any).sql;
       const db = await Database.open(`failure-${mode}`);
       const client = db.client();
-      await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
-      await tx.execute(
+      await tx.execute_raw(
         "INSERT INTO items VALUES (1); INSERT INTO items VALUES (2)",
       );
       (window as any).faults.failNextCommit(mode);
@@ -110,7 +110,10 @@ for (const mode of ["throw", "abort"]) {
       const reopened = await Database.open(`failure-${mode}`);
       const reader = reopened.client();
       try {
-        return { failure, rows: await reader.execute("SELECT id FROM items") };
+        return {
+          failure,
+          rows: await reader.execute_raw("SELECT id FROM items"),
+        };
       } finally {
         reader.close();
         reopened.close();
@@ -163,11 +166,11 @@ test("close during an in-flight call defers free and concurrent transaction call
     const { Database } = (window as any).sql;
     const db = await Database.open("busy");
     const client = db.client();
-    await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
-    const execution = tx.execute("INSERT INTO items VALUES (1)");
+    const execution = tx.execute_raw("INSERT INTO items VALUES (1)");
     const overlap = [
-      tx.execute("SELECT id FROM items"),
+      tx.execute_raw("SELECT id FROM items"),
       tx.commit(),
       tx.rollback(),
     ];
@@ -181,8 +184,8 @@ test("close during an in-flight call defers free and concurrent transaction call
       ),
     );
     await execution;
-    const rows = await client.execute("SELECT id FROM items");
-    const pending = client.execute("SELECT id FROM items");
+    const rows = await client.execute_raw("SELECT id FROM items");
+    const pending = client.execute_raw("SELECT id FROM items");
     client.close();
     db.close();
     await pending;
@@ -200,9 +203,9 @@ for (const stage of ["before-commit", "after-native-commit"]) {
     await page.evaluate(async (stage) => {
       const db = await (window as any).sql.Database.open("interrupted");
       const client = db.client();
-      await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
-      await tx.execute(
+      await tx.execute_raw(
         "INSERT INTO items VALUES (1); INSERT INTO items VALUES (2)",
       );
       (window as any).pendingTransaction = tx;
@@ -218,7 +221,7 @@ for (const stage of ["before-commit", "after-native-commit"]) {
       const db = await (window as any).sql.Database.open("interrupted");
       const client = db.client();
       try {
-        return await client.execute("SELECT id FROM items ORDER BY id");
+        return await client.execute_raw("SELECT id FROM items ORDER BY id");
       } finally {
         client.close();
         db.close();

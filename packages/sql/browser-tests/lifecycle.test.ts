@@ -40,7 +40,7 @@ test("the built package runs in a dedicated module worker and persists to a new 
   await page.evaluate(async () => {
     const db = await (window as any).sql.Database.open("worker");
     const client = db.client();
-    await client.execute(
+    await client.execute_raw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, text TEXT)",
     );
     client.close();
@@ -84,7 +84,7 @@ test("the built package runs in a dedicated module worker and persists to a new 
     const db = await (window as any).sql.Database.open("worker");
     const client = db.client();
     try {
-      return await client.execute("SELECT id,text FROM items");
+      return await client.execute_raw("SELECT id,text FROM items");
     } finally {
       client.close();
       db.close();

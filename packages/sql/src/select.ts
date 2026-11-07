@@ -15,15 +15,15 @@ export type RowParser<T> = (
   row: Row,
 ) => T & (Extract<T, PromiseLike<unknown>> extends never ? unknown : never);
 
-export type SelectErrorReason = "result-count" | "duplicate-column" | "parser";
+export type ExecuteErrorReason = "result-count" | "duplicate-column" | "parser";
 
 /** Mapping or parsing failed after SQL execution. Causes can contain caller data. */
-export class SelectError extends SqlError {
-  readonly reason: SelectErrorReason;
+export class ExecuteError extends SqlError {
+  readonly reason: ExecuteErrorReason;
   readonly rowIndex: number | undefined;
 
   constructor(
-    reason: SelectErrorReason,
+    reason: ExecuteErrorReason,
     rowIndex?: number,
     options?: ErrorOptions,
   ) {
@@ -34,7 +34,7 @@ export class SelectError extends SqlError {
         : `SQL row mapping failed: ${reason}`,
       options,
     );
-    this.name = "SelectError";
+    this.name = "ExecuteError";
     this.reason = reason;
     this.rowIndex = rowIndex;
   }
@@ -43,22 +43,25 @@ export class SelectError extends SqlError {
 export function parseRows<T>(results: Result[], parser: RowParser<T>): T[] {
   const result = results[0];
   if (results.length !== 1 || result === undefined) {
-    throw new SelectError("result-count");
+    throw new ExecuteError("result-count");
   }
   if (new Set(result.columns).size !== result.columns.length) {
-    throw new SelectError("duplicate-column");
+    throw new ExecuteError("duplicate-column");
   }
   return result.rows.map((cells, rowIndex) => {
     const row: RowBuilder = Object.create(null);
     for (let i = 0; i < cells.length; i++) {
       const column = result.columns[i];
       if (column !== undefined) {
-        Object.defineProperty(row, column, {
-          value: cells[i]!,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
+        const cell = cells[i];
+        if (cell !== undefined) {
+          Object.defineProperty(row, column, {
+            value: cell,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        }
       }
     }
     try {
@@ -66,9 +69,9 @@ export function parseRows<T>(results: Result[], parser: RowParser<T>): T[] {
       if (parsed !== null && typeof parsed === "object" && "then" in parsed) {
         const p = parsed as PromiseLike<unknown>;
         p.then(undefined, (reason) => {
-          throw new SelectError("parser", rowIndex, { cause: reason });
+          throw new ExecuteError("parser", rowIndex, { cause: reason });
         });
-        throw new SelectError("parser", rowIndex, {
+        throw new ExecuteError("parser", rowIndex, {
           cause: new Error(
             "Parser returned a promise; synchronous parser required",
           ),
@@ -76,7 +79,7 @@ export function parseRows<T>(results: Result[], parser: RowParser<T>): T[] {
       }
       return parsed;
     } catch (cause) {
-      throw new SelectError("parser", rowIndex, { cause });
+      throw new ExecuteError("parser", rowIndex, { cause });
     }
   });
 }

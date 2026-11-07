@@ -7,7 +7,7 @@ for (const handle of ["Client", "Transaction"]) {
       await page.waitForFunction(() => "sql" in window);
     });
 
-    test("select maps reordered projections by name into application rows", async ({
+    test("execute maps reordered projections by name into application rows", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
@@ -15,12 +15,13 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute(
+          await client.execute_raw(
             "CREATE TABLE records (id INTEGER PRIMARY KEY, cipher BLOB)",
           );
-          await client.execute("INSERT INTO records VALUES (2, $1), (1, $1)", [
-            { type: "blob", value: "AP8BgA==" },
-          ]);
+          await client.execute_raw(
+            "INSERT INTO records VALUES (2, $1), (1, $1)",
+            [{ type: "blob", value: "AP8BgA==" }],
+          );
           const parse = (row: any) => {
             if (row.id?.type !== "integer" || row.cipher?.type !== "blob")
               throw new Error("invalid record");
@@ -29,11 +30,11 @@ for (const handle of ["Client", "Transaction"]) {
               ciphertext: row.cipher.value,
             };
           };
-          const first = await client.select(
+          const first = await client.execute(
             "SELECT cipher, id FROM records ORDER BY id",
             parse,
           );
-          const reordered = await client.select(
+          const reordered = await client.execute(
             "SELECT id, cipher FROM records ORDER BY id",
             parse,
           );
@@ -51,16 +52,18 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result).toEqual({ first: rows, reordered: rows });
     });
 
-    test("select rejects duplicate columns even with no rows and rejects batches after execution", async ({
+    test("execute rejects duplicate columns even with no rows and rejects batches after execution", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
-        const { Database, SelectError, Error: SqlError } = (window as any).sql;
+        const { Database, ExecuteError, Error: SqlError } = (window as any).sql;
         const db = await Database.open("typed-mapping-errors");
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+          await client.execute_raw(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+          );
           let calls = 0;
           const failures = [];
           for (const sql of [
@@ -69,14 +72,14 @@ for (const handle of ["Client", "Transaction"]) {
             "SELECT id,id FROM items",
           ]) {
             try {
-              await client.select(sql, () => {
+              await client.execute(sql, () => {
                 calls++;
                 return null;
               });
             } catch (error: any) {
               failures.push({
                 typed:
-                  error instanceof SelectError && error instanceof SqlError,
+                  error instanceof ExecuteError && error instanceof SqlError,
                 reason: error.reason,
                 rowIndex: error.rowIndex,
                 message: error.message,
@@ -86,7 +89,7 @@ for (const handle of ["Client", "Transaction"]) {
           return {
             calls,
             failures,
-            rows: await client.execute("SELECT id FROM items"),
+            rows: await client.execute_raw("SELECT id FROM items"),
           };
         } finally {
           client.close();
@@ -111,23 +114,25 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result.rows[0].rows).toEqual([[{ type: "integer", value: "1" }]]);
     });
 
-    test("select keeps the first parser cause and row index without a partial array or rollback", async ({
+    test("execute keeps the first parser cause and row index without a partial array or rollback", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
-        const { Database, SelectError } = (window as any).sql;
+        const { Database, ExecuteError } = (window as any).sql;
         const db = await Database.open("typed-parser-errors");
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-          await client.execute("INSERT INTO items VALUES (1),(2),(3)");
+          await client.execute_raw(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+          );
+          await client.execute_raw("INSERT INTO items VALUES (1),(2),(3)");
           const cause = new Error("private-parser-payload");
           let calls = 0;
           let rows;
           let failure;
           try {
-            rows = await client.select(
+            rows = await client.execute(
               "SELECT id FROM items ORDER BY id",
               (row: any) => {
                 calls++;
@@ -137,7 +142,7 @@ for (const handle of ["Client", "Transaction"]) {
             );
           } catch (error: any) {
             failure = {
-              typed: error instanceof SelectError,
+              typed: error instanceof ExecuteError,
               reason: error.reason,
               rowIndex: error.rowIndex,
               sameCause: error.cause === cause,
@@ -146,7 +151,7 @@ for (const handle of ["Client", "Transaction"]) {
           }
           let writeFailure;
           try {
-            await client.select(
+            await client.execute(
               "INSERT INTO items VALUES (4) RETURNING id",
               () => {
                 throw cause;
@@ -160,7 +165,7 @@ for (const handle of ["Client", "Transaction"]) {
             partial: rows !== undefined,
             failure,
             writeFailure,
-            rows: await client.execute("SELECT id FROM items ORDER BY id"),
+            rows: await client.execute_raw("SELECT id FROM items ORDER BY id"),
           };
         } finally {
           client.close();
@@ -183,17 +188,19 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result.rows[0].rows).toHaveLength(4);
     });
 
-    test("select rejects async parser results on first row without partial array or unhandled rejection", async ({
+    test("execute rejects async parser results on first row without partial array or unhandled rejection", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
-        const { Database, SelectError } = (window as any).sql;
+        const { Database, ExecuteError } = (window as any).sql;
         const db = await Database.open("typed-async-parser");
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-          await client.execute("INSERT INTO items VALUES (1),(2)");
+          await client.execute_raw(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+          );
+          await client.execute_raw("INSERT INTO items VALUES (1),(2)");
           const failure = {
             typed: false,
             reason: "",
@@ -201,20 +208,20 @@ for (const handle of ["Client", "Transaction"]) {
             message: "",
           };
           try {
-            await client.select(
+            await client.execute(
               "SELECT id FROM items ORDER BY id",
               async () => {
                 throw new Error("async parser should be rejected");
               },
             );
           } catch (error: any) {
-            failure.typed = error instanceof SelectError;
+            failure.typed = error instanceof ExecuteError;
             failure.cause = error.cause;
             failure.reason = error.reason;
             failure.rowIndex = error.rowIndex;
             failure.message = error.message;
           }
-          const after = await client.execute(
+          const after = await client.execute_raw(
             "SELECT id FROM items ORDER BY id",
           );
           return { failure, after: after[0].rows.length };
@@ -231,7 +238,7 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result.after).toBe(2);
     });
 
-    test("select row objects have no prototype and missing special names are undefined", async ({
+    test("execute row objects have no prototype and missing special names are undefined", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
@@ -240,10 +247,12 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-          await client.execute("INSERT INTO items VALUES (42)");
+          await client.execute_raw(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+          );
+          await client.execute_raw("INSERT INTO items VALUES (42)");
           const captured = [];
-          await client.select("SELECT id FROM items", (row: any) => {
+          await client.execute("SELECT id FROM items", (row: any) => {
             captured.push({
               id: row.id,
               constructor: row.constructor,
@@ -257,10 +266,7 @@ for (const handle of ["Client", "Transaction"]) {
                 row,
                 "toString",
               ),
-              hasOwnProto: Object.prototype.hasOwnProperty.call(
-                row,
-                "proto",
-              ),
+              hasOwnProto: Object.prototype.hasOwnProperty.call(row, "proto"),
             });
             return row.id;
           });
@@ -282,7 +288,7 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result.hasOwnProto).toBe(false);
     });
 
-    test("select preserves projected special names as own properties with tagged values", async ({
+    test("execute preserves projected special names as own properties with tagged values", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
@@ -291,16 +297,16 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute(
+          await client.execute_raw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY, constructor TEXT, toString TEXT, proto TEXT)",
           );
-          await client.execute("INSERT INTO items VALUES (1, $1, $2, $3)", [
+          await client.execute_raw("INSERT INTO items VALUES (1, $1, $2, $3)", [
             { type: "text", value: "ctor" },
             { type: "text", value: "str" },
             { type: "text", value: "pro" },
           ]);
           const captured = [];
-          await client.select(
+          await client.execute(
             "SELECT constructor, toString, proto FROM items",
             (row: any) => {
               captured.push({
@@ -315,10 +321,7 @@ for (const handle of ["Client", "Transaction"]) {
                   row,
                   "toString",
                 ),
-                hasOwnProto: Object.prototype.hasOwnProperty.call(
-                  row,
-                  "proto",
-                ),
+                hasOwnProto: Object.prototype.hasOwnProperty.call(row, "proto"),
               });
               return row;
             },

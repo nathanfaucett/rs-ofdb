@@ -46,15 +46,15 @@ test("concurrent migration rejects a stale IndexedDB snapshot without partial wr
         const applied = await winner.migrate([initial, upgrade]);
         hold.release();
         const failure = await pending;
-        const rows = await winner.execute("SELECT amount FROM items");
-        const history = await winner.execute(
+        const rows = await winner.execute_raw("SELECT amount FROM items");
+        const history = await winner.execute_raw(
           "SELECT version FROM _ofdb_migrations ORDER BY version",
         );
-        const discarded = await winner.execute(
+        const discarded = await winner.execute_raw(
           "SELECT name FROM tables WHERE name = 'discarded'",
         );
         const repeated = await loser.migrate([initial, upgrade]);
-        await loser.execute("INSERT INTO upgraded VALUES (1)");
+        await loser.execute_raw("INSERT INTO upgraded VALUES (1)");
         return { applied, failure, rows, history, discarded, repeated };
       } finally {
         hold.release();
@@ -103,7 +103,11 @@ for (const mode of ["throw", "abort"]) {
           description: "m2",
           sql: "UPDATE items SET amount = pending; UPDATE items SET pending = 0; CREATE TABLE staged (id INTEGER PRIMARY KEY)",
         },
-        { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+        {
+          version: 3,
+          description: "m3",
+          sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)",
+        },
       ];
       try {
         await client.migrate(plan.slice(0, 1));
@@ -121,11 +125,13 @@ for (const mode of ["throw", "abort"]) {
             message: String(error),
           };
         }
-        const rows = await client.execute("SELECT amount,pending FROM items");
-        const tables = await client.execute(
+        const rows = await client.execute_raw(
+          "SELECT amount,pending FROM items",
+        );
+        const tables = await client.execute_raw(
           "SELECT name FROM tables WHERE name = 'staged' OR name = 'later'",
         );
-        const history = await client.execute(
+        const history = await client.execute_raw(
           "SELECT version FROM _ofdb_migrations",
         );
         const retried = await client.migrate(plan);
@@ -178,7 +184,11 @@ for (const stage of ["readonly", "readwrite"]) {
           description: "m2",
           sql: "UPDATE items SET amount = pending; UPDATE items SET pending = 0",
         },
-        { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+        {
+          version: 3,
+          description: "m3",
+          sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)",
+        },
       ];
       let hold;
       try {
@@ -202,12 +212,12 @@ for (const stage of ["readonly", "readwrite"]) {
         const reopened = await Database.open(`migration-deadline-${stage}`);
         const reader = reopened.client();
         try {
-          const before = await reader.execute("SELECT amount FROM items");
-          const later = await reader.execute(
+          const before = await reader.execute_raw("SELECT amount FROM items");
+          const later = await reader.execute_raw(
             "SELECT name FROM tables WHERE name = 'later'",
           );
           const followUp = await reader.migrate(plan);
-          const after = await reader.execute("SELECT amount FROM items");
+          const after = await reader.execute_raw("SELECT amount FROM items");
           const repeated = await reader.migrate(plan);
           return { failure, before, later, followUp, after, repeated };
         } finally {

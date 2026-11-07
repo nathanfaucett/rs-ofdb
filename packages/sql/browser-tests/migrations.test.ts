@@ -14,7 +14,7 @@ test("explicit migrations initialize, upgrade, skip work and survive reopen", as
     const client = db.client();
     try {
       const empty = await client.migrate([]);
-      const absent = await client.execute(
+      const absent = await client.execute_raw(
         "SELECT name FROM tables WHERE name = '_ofdb_migrations'",
       );
       const plan = [
@@ -31,7 +31,7 @@ test("explicit migrations initialize, upgrade, skip work and survive reopen", as
       ];
       const initialized = await client.migrate(plan.slice(0, 1));
       const upgraded = await client.migrate(plan);
-      await client.execute("UPDATE items SET amount = 30");
+      await client.execute_raw("UPDATE items SET amount = 30");
       const repeated = await client.migrate(plan);
       return { empty, absent, initialized, upgraded, repeated, plan };
     } finally {
@@ -55,7 +55,7 @@ test("explicit migrations initialize, upgrade, skip work and survive reopen", as
     try {
       return {
         result: await client.migrate(plan),
-        rows: await client.execute("SELECT amount,note FROM items"),
+        rows: await client.execute_raw("SELECT amount,note FROM items"),
       };
     } finally {
       client.close();
@@ -93,7 +93,11 @@ test("a failed batch rolls back schema, data and history and stops later work", 
             description: "m2",
             sql: "UPDATE items SET amount = 99; CREATE TABLE discarded (id INTEGER PRIMARY KEY); INSERT INTO missing VALUES ('private-value')",
           },
-          { version: 3, description: "m3", sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)" },
+          {
+            version: 3,
+            description: "m3",
+            sql: "CREATE TABLE later (id INTEGER PRIMARY KEY)",
+          },
         ]);
       } catch (error) {
         failure = {
@@ -105,11 +109,11 @@ test("a failed batch rolls back schema, data and history and stops later work", 
           message: String(error),
         };
       }
-      const rows = await client.execute("SELECT amount FROM items");
-      const tables = await client.execute(
+      const rows = await client.execute_raw("SELECT amount FROM items");
+      const tables = await client.execute_raw(
         "SELECT name FROM tables WHERE name = 'discarded' OR name = 'later'",
       );
-      const history = await client.execute(
+      const history = await client.execute_raw(
         "SELECT version FROM _ofdb_migrations",
       );
       const resumed = await client.migrate([

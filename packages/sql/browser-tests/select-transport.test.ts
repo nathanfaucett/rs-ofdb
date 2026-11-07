@@ -8,13 +8,13 @@ for (const handle of ["Client", "Transaction"]) {
     });
 
     // Faults enter at the existing public constructor's generated-binding boundary.
-    test("select rejects impossible result counts and malformed transport before parsing", async ({
+    test("execute rejects impossible result counts and malformed transport before parsing", async ({
       page,
     }) => {
       const results = await page.evaluate(async (handle) => {
         const {
           [handle]: Client,
-          SelectError,
+          ExecuteError,
           Error: SqlError,
         } = (window as any).sql;
         const malformed = [
@@ -29,6 +29,7 @@ for (const handle of ["Client", "Transaction"]) {
         for (const raw of ["[]", ...malformed]) {
           let calls = 0;
           let freed = 0;
+          // Mock the WASM execute method (called by execute_raw internally)
           const client = new Client({
             execute: async () => raw,
             free: () => {
@@ -37,13 +38,13 @@ for (const handle of ["Client", "Transaction"]) {
           });
           let failure;
           try {
-            await client.select("private-sql", () => {
+            await client.execute("private-sql", () => {
               calls++;
             });
           } catch (error: any) {
             failure = {
               typed: error instanceof SqlError,
-              mapping: error instanceof SelectError,
+              mapping: error instanceof ExecuteError,
               reason: error.reason,
             };
           } finally {
@@ -67,14 +68,14 @@ for (const handle of ["Client", "Transaction"]) {
       }
     });
 
-    test("select preserves the exact execution error and arbitrary thrown parser causes", async ({
+    test("execute preserves the exact execution error and arbitrary thrown parser causes", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
         const {
           [handle]: Client,
           Error: SqlError,
-          SelectError,
+          ExecuteError,
         } = (window as any).sql;
         const executionError = new SqlError(
           "timeout",
@@ -88,7 +89,7 @@ for (const handle of ["Client", "Transaction"]) {
         });
         let sameError = false;
         try {
-          await failedClient.select("private-sql", () => null);
+          await failedClient.execute("private-sql", () => null);
         } catch (error) {
           sameError = error === executionError;
         } finally {
@@ -107,12 +108,12 @@ for (const handle of ["Client", "Transaction"]) {
             free() {},
           });
           try {
-            await client.select("private-sql", () => {
+            await client.execute("private-sql", () => {
               throw cause;
             });
           } catch (error: any) {
             failures.push(
-              error instanceof SelectError &&
+              error instanceof ExecuteError &&
                 error.reason === "parser" &&
                 error.rowIndex === 0 &&
                 error.cause === cause &&

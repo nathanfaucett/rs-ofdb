@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 
 for (const handle of ["Client", "Transaction"]) {
   test.describe(handle, () => {
-    test("select preserves lossless tagged cells, including nested JSON and value types", async ({
+    test("execute preserves lossless tagged cells, including nested JSON and value types", async ({
       page,
     }) => {
       const values = [
@@ -48,18 +48,18 @@ for (const handle of ["Client", "Transaction"]) {
           const client =
             handle === "Client" ? owner : await owner.transaction();
           try {
-            await client.execute(
+            await client.execute_raw(
               "CREATE TABLE typed_values (id UUID PRIMARY KEY, text TEXT, empty_text TEXT, cipher BLOB, empty_blob BLOB, lo INTEGER, hi INTEGER, f FLOAT, b BOOLEAN, n TEXT, j JSON)",
             );
-            await client.execute(
+            await client.execute_raw(
               "INSERT INTO typed_values VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
               values,
             );
-            const rows = await client.select(
+            const rows = await client.execute(
               "SELECT id,text,empty_text,cipher,empty_blob,lo,hi,f,b,n,j FROM typed_values",
               (row: any) => row,
             );
-            const converted = await client.select(
+            const converted = await client.execute(
               "SELECT hi FROM typed_values",
               (row: any) => {
                 if (row.hi?.type !== "integer")
@@ -67,7 +67,7 @@ for (const handle of ["Client", "Transaction"]) {
                 return BigInt(row.hi.value);
               },
             );
-            const types = await client.select(
+            const types = await client.execute(
               "SELECT type FROM table_fields WHERE table = 'typed_values' AND name = 'cipher'",
               (row: any) => row.type,
             );
@@ -99,7 +99,7 @@ for (const handle of ["Client", "Transaction"]) {
       expect(result.types).toEqual([{ type: "type", value: "Blob" }]);
     });
 
-    test("select preserves case and special keys, leaves missing fields absent, and maps computed aliases", async ({
+    test("execute preserves case and special keys, leaves missing fields absent, and maps computed aliases", async ({
       page,
     }) => {
       const result = await page.evaluate(async (handle) => {
@@ -107,13 +107,13 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute(
+          await client.execute_raw(
             'CREATE TABLE names (id INTEGER PRIMARY KEY, "Name" TEXT, "name" TEXT, "__proto__" TEXT, "constructor" TEXT, "prototype" TEXT)',
           );
-          await client.execute(
+          await client.execute_raw(
             "INSERT INTO names VALUES (1, 'upper', 'lower', 'proto-data', 'ctor-data', 'prototype-data')",
           );
-          const rows = await client.select(
+          const rows = await client.execute(
             'SELECT "Name", "name", "__proto__", "constructor", "prototype" FROM names',
             (row: any) => ({
               entries: Object.entries(row),
@@ -122,7 +122,7 @@ for (const handle of ["Client", "Transaction"]) {
               missing: !Object.hasOwn(row, "missing"),
             }),
           );
-          const alias = await client.select(
+          const alias = await client.execute(
             "SELECT \"name\" || '!' AS decorated FROM names",
             (row: any) => row.decorated,
           );
@@ -154,11 +154,11 @@ for (const handle of ["Client", "Transaction"]) {
   });
 }
 
-test("select reuses parameters and handle ownership and skips parsers for empty reads", async ({
+test("execute reuses parameters and handle ownership and skips parsers for empty reads", async ({
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { Database, SelectError, Error: SqlError } = (window as any).sql;
+    const { Database, ExecuteError, Error: SqlError } = (window as any).sql;
     const db = await Database.open("typed-parameters");
     const client = db.client();
     const clone = client.clone();
@@ -166,11 +166,11 @@ test("select reuses parameters and handle ownership and skips parsers for empty 
     db.close();
     client.close();
     try {
-      await timed.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-      await timed.execute("INSERT INTO items VALUES (1)");
+      await timed.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await timed.execute_raw("INSERT INTO items VALUES (1)");
       let calls = 0;
       const empty =
-        await timed.select("SELECT id FROM items WHERE id = $1", () => {
+        await timed.execute("SELECT id FROM items WHERE id = $1", () => {
           calls++;
           throw new Error("must not run");
         }, [{ type: "integer", value: "2" }]);
@@ -180,7 +180,7 @@ test("select reuses parameters and handle ownership and skips parsers for empty 
           throw new Error("expected count");
         return { count: BigInt(cells[0].value).toString() };
       };
-      const count = await timed.select(
+      const count = await timed.execute(
         "SELECT COUNT(*) FROM items WHERE id = :id",
         parseCount,
         { id: { type: "integer", value: "1" } },
@@ -188,15 +188,15 @@ test("select reuses parameters and handle ownership and skips parsers for empty 
       const errors = [];
       for (const operation of [
         () =>
-          client.select("SELECT id FROM items", () => {
+          client.execute("SELECT id FROM items", () => {
             calls++;
           }),
         () =>
-          timed.select("SELECT id FROM missing", () => {
+          timed.execute("SELECT id FROM missing", () => {
             calls++;
           }),
         () =>
-          timed.select("SELECT id FROM items WHERE id = $1", () => {
+          timed.execute("SELECT id FROM items WHERE id = $1", () => {
             calls++;
           }, [1]),
       ]) {
@@ -204,7 +204,7 @@ test("select reuses parameters and handle ownership and skips parsers for empty 
           await operation();
         } catch (error: any) {
           errors.push(
-            error instanceof SqlError && !(error instanceof SelectError),
+            error instanceof SqlError && !(error instanceof ExecuteError),
           );
         }
       }

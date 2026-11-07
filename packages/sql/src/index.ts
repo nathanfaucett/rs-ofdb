@@ -10,8 +10,8 @@ export type {
 } from "./migration.js";
 export { MigrationError } from "./migration.js";
 export type { QueryParams, Result } from "./result.js";
-export type { Row, RowParser, SelectErrorReason } from "./select.js";
-export { SelectError } from "./select.js";
+export type { Row, RowParser, ExecuteErrorReason } from "./select.js";
+export { ExecuteError } from "./select.js";
 export { Transaction } from "./transaction.js";
 export type { DbValue, JsonValue, ValueType } from "./value.js";
 

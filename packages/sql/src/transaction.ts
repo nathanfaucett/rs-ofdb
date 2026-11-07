@@ -18,11 +18,37 @@ export class Transaction {
     this.handle.close();
   }
 
-  /** Run SQL text within the transaction.
-   * @param sql SQL text, optionally with `$1` or `:name` placeholders.
-   * @param params Positional values (array) or named values (object).
+  /**
+   * Execute SQL and parse the single statement result.
+   * Works with SELECT, or INSERT/UPDATE/DELETE with RETURNING.
+   * @param sql SQL text (one statement)
+   * @param parser Synchronous row → T
+   * @param params Optional positional/named parameters
    */
-  async execute(sql: string, params?: QueryParams): Promise<Result[]> {
+  async execute<T>(
+    sql: string,
+    parser: RowParser<T>,
+    params?: QueryParams,
+  ): Promise<T[]> {
+    try {
+      const encoded = encodeParams(params);
+      const raw = await this.handle.run(
+        (wasm) => wasm.execute(sql, encoded),
+        true,
+      );
+      return parseRows(decodeResults(raw), parser);
+    } catch (error) {
+      throw wrapError(error, Error);
+    }
+  }
+
+  /**
+   * Execute SQL and return raw results for all statements.
+   * Use for multi-statement batches or when typed parsing is not needed.
+   * @param sql SQL text (one or more statements)
+   * @param params Optional positional/named parameters
+   */
+  async execute_raw(sql: string, params?: QueryParams): Promise<Result[]> {
     try {
       const encoded = encodeParams(params);
       const raw = await this.handle.run(
@@ -33,20 +59,6 @@ export class Transaction {
     } catch (error) {
       throw wrapError(error, Error);
     }
-  }
-
-  /** Parse one statement result after execution. Failure leaves cleanup to the caller. */
-  async select<T>(
-    sql: string,
-    parser: RowParser<T>,
-    params?: QueryParams,
-  ): Promise<T[]> {
-    return parseRows(await this.execute(sql, params), parser);
-  }
-
-  /** Alias for execute(). */
-  async executeSql(sql: string, params?: QueryParams): Promise<Result[]> {
-    return this.execute(sql, params);
   }
 
   /** Consumes the transaction. Rejection does not prove rollback: reopen and read. */

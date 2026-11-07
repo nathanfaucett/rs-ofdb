@@ -5,14 +5,14 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(() => "sql" in window);
 });
 
-test("transaction select maps pending rows with positional and named parameters", async ({
+test("transaction execute maps pending rows with positional and named parameters", async ({
   page,
 }) => {
   const result = await page.evaluate(async () => {
     const db = await (window as any).sql.Database.open("transaction-select");
     const client = db.client();
     const timed = client.withDeadline(1000n);
-    await timed.execute(
+    await timed.execute_raw(
       "CREATE TABLE records (id INTEGER PRIMARY KEY, cipher BLOB)",
     );
     const tx = await timed.transaction();
@@ -20,7 +20,7 @@ test("transaction select maps pending rows with positional and named parameters"
     client.close();
     db.close();
     try {
-      await tx.execute("INSERT INTO records VALUES (2, $1), (1, $1)", [
+      await tx.execute_raw("INSERT INTO records VALUES (2, $1), (1, $1)", [
         { type: "blob", value: "AP8BgA==" },
       ]);
       const parse = (row: any) => {
@@ -31,18 +31,18 @@ test("transaction select maps pending rows with positional and named parameters"
           ciphertext: row.cipher.value,
         };
       };
-      const positional = await tx.select(
+      const positional = await tx.execute(
         "SELECT cipher,id FROM records WHERE id = $1",
         parse,
         [{ type: "integer", value: "1" }],
       );
-      const named = await tx.select(
+      const named = await tx.execute(
         "SELECT id,cipher FROM records WHERE id = :id",
         parse,
         { id: { type: "integer", value: "2" } },
       );
       let calls = 0;
-      const empty = await tx.select(
+      const empty = await tx.execute(
         "SELECT id FROM records WHERE id = 3",
         () => {
           calls++;
@@ -68,19 +68,19 @@ for (const cleanup of ["rollback", "commit", "close"] as const) {
     page,
   }) => {
     const result = await page.evaluate(async (cleanup) => {
-      const { Database, SelectError } = (window as any).sql;
+      const { Database, ExecuteError } = (window as any).sql;
       const db = await Database.open(`transaction-parser-${cleanup}`);
       const client = db.client();
-      await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
       try {
-        await tx.execute("INSERT INTO items VALUES (1), (2), (3)");
+        await tx.execute_raw("INSERT INTO items VALUES (1), (2), (3)");
         const cause = new Error("private-parser-data");
         let calls = 0;
         let failure;
         let parsed;
         try {
-          parsed = await tx.select(
+          parsed = await tx.execute(
             "SELECT id FROM items ORDER BY id",
             (row: any) => {
               if (++calls === 2) throw cause;
@@ -89,7 +89,7 @@ for (const cleanup of ["rollback", "commit", "close"] as const) {
           );
         } catch (error: any) {
           failure = {
-            typed: error instanceof SelectError,
+            typed: error instanceof ExecuteError,
             reason: error.reason,
             rowIndex: error.rowIndex,
             sameCause: error.cause === cause,
@@ -98,11 +98,11 @@ for (const cleanup of ["rollback", "commit", "close"] as const) {
             ),
           };
         }
-        const pending = await tx.select(
+        const pending = await tx.execute(
           "SELECT id FROM items ORDER BY id",
           (row: any) => row.id.value,
         );
-        const invisible = await client.select(
+        const invisible = await client.execute(
           "SELECT id FROM items",
           (row: any) => row.id.value,
         );
@@ -113,7 +113,7 @@ for (const cleanup of ["rollback", "commit", "close"] as const) {
           failure,
           pending,
           invisible,
-          persisted: await client.select(
+          persisted: await client.execute(
             "SELECT id FROM items ORDER BY id",
             (row: any) => row.id.value,
           ),
@@ -145,16 +145,16 @@ test("result-count failure runs the batch once and leaves commit under caller co
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { Database, SelectError } = (window as any).sql;
+    const { Database, ExecuteError } = (window as any).sql;
     const db = await Database.open("transaction-batch");
     const client = db.client();
-    await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
     try {
       let calls = 0;
       let failure;
       try {
-        await tx.select(
+        await tx.execute(
           "INSERT INTO items VALUES (1); SELECT id FROM items",
           () => {
             calls++;
@@ -162,9 +162,9 @@ test("result-count failure runs the batch once and leaves commit under caller co
         );
       } catch (error: any) {
         failure =
-          error instanceof SelectError && error.reason === "result-count";
+          error instanceof ExecuteError && error.reason === "result-count";
       }
-      const pending = await tx.select(
+      const pending = await tx.execute(
         "SELECT id FROM items",
         (row: any) => row.id.value,
       );
@@ -173,7 +173,7 @@ test("result-count failure runs the batch once and leaves commit under caller co
         calls,
         failure,
         pending,
-        persisted: await client.select(
+        persisted: await client.execute(
           "SELECT id FROM items",
           (row: any) => row.id.value,
         ),
@@ -192,14 +192,14 @@ test("result-count failure runs the batch once and leaves commit under caller co
   });
 });
 
-test("transaction select preserves busy, closed, consumed and in-flight close behavior", async ({
+test("transaction execute preserves busy, closed, consumed and in-flight close behavior", async ({
   page,
 }) => {
   const result = await page.evaluate(async () => {
-    const { Database, SelectError, Error: SqlError } = (window as any).sql;
+    const { Database, ExecuteError, Error: SqlError } = (window as any).sql;
     const db = await Database.open("transaction-select-lifecycle");
     const client = db.client();
-    await client.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
     let calls = 0;
     const parse = (row: any) => {
@@ -208,11 +208,11 @@ test("transaction select preserves busy, closed, consumed and in-flight close be
     };
     const errors = [];
     try {
-      await tx.execute("INSERT INTO items VALUES (1)");
-      const pending = tx.select("SELECT id FROM items", parse);
+      await tx.execute_raw("INSERT INTO items VALUES (1)");
+      const pending = tx.execute("SELECT id FROM items", parse);
       const overlaps = [
-        tx.select("SELECT id FROM items", parse),
-        tx.execute("SELECT id FROM items"),
+        tx.execute("SELECT id FROM items", parse),
+        tx.execute_raw("SELECT id FROM items"),
         tx.commit(),
         tx.rollback(),
       ];
@@ -222,7 +222,7 @@ test("transaction select preserves busy, closed, consumed and in-flight close be
             () => false,
             (error: any) =>
               error instanceof SqlError &&
-              !(error instanceof SelectError) &&
+              !(error instanceof ExecuteError) &&
               /busy/.test(error.message),
           ),
         ),
@@ -233,11 +233,11 @@ test("transaction select preserves busy, closed, consumed and in-flight close be
         const consumed = await client.transaction();
         await consumed[cleanup]();
         try {
-          await consumed.select("SELECT id FROM items", parse);
+          await consumed.execute("SELECT id FROM items", parse);
         } catch (error: any) {
           errors.push(
             error instanceof SqlError &&
-              !(error instanceof SelectError) &&
+              !(error instanceof ExecuteError) &&
               /closed/.test(error.message),
           );
         } finally {
@@ -245,7 +245,7 @@ test("transaction select preserves busy, closed, consumed and in-flight close be
         }
       }
       try {
-        await tx.select("SELECT id FROM items", parse);
+        await tx.execute("SELECT id FROM items", parse);
       } catch (error: any) {
         errors.push(error instanceof SqlError && /closed/.test(error.message));
       }
@@ -254,7 +254,7 @@ test("transaction select preserves busy, closed, consumed and in-flight close be
         busy,
         errors,
         calls,
-        persisted: await client.select("SELECT id FROM items", parse),
+        persisted: await client.execute("SELECT id FROM items", parse),
       };
     } finally {
       tx.close();
