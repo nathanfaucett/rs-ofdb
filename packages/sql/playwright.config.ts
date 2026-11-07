@@ -1,8 +1,5 @@
 import { defineConfig } from "@playwright/test";
 
-const CHROME_PATH =
-  "/home/nathan/.cache/ms-playwright/chromium-1254/chrome-linux64/chrome";
-
 export default defineConfig({
   testDir: "./browser-tests",
   timeout: 30000,
@@ -11,9 +8,9 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:8091",
     ignoreHTTPSErrors: false,
-    launchOptions: {
-      executablePath: CHROME_PATH,
-    },
+    launchOptions: process.env.BROWSER_PATH
+      ? { executablePath: process.env.BROWSER_PATH }
+      : {},
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
   webServer: {
