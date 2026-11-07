@@ -46,15 +46,15 @@ test("concurrent migration rejects a stale IndexedDB snapshot without partial wr
         const applied = await winner.migrate([initial, upgrade]);
         hold.release();
         const failure = await pending;
-        const rows = await winner.execute_raw("SELECT amount FROM items");
-        const history = await winner.execute_raw(
+        const rows = await winner.executeRaw("SELECT amount FROM items");
+        const history = await winner.executeRaw(
           "SELECT version FROM _ofdb_migrations ORDER BY version",
         );
-        const discarded = await winner.execute_raw(
+        const discarded = await winner.executeRaw(
           "SELECT name FROM tables WHERE name = 'discarded'",
         );
         const repeated = await loser.migrate([initial, upgrade]);
-        await loser.execute_raw("INSERT INTO upgraded VALUES (1)");
+        await loser.executeRaw("INSERT INTO upgraded VALUES (1)");
         return { applied, failure, rows, history, discarded, repeated };
       } finally {
         hold.release();
@@ -125,13 +125,13 @@ for (const mode of ["throw", "abort"]) {
             message: String(error),
           };
         }
-        const rows = await client.execute_raw(
+        const rows = await client.executeRaw(
           "SELECT amount,pending FROM items",
         );
-        const tables = await client.execute_raw(
+        const tables = await client.executeRaw(
           "SELECT name FROM tables WHERE name = 'staged' OR name = 'later'",
         );
-        const history = await client.execute_raw(
+        const history = await client.executeRaw(
           "SELECT version FROM _ofdb_migrations",
         );
         const retried = await client.migrate(plan);
@@ -212,12 +212,12 @@ for (const stage of ["readonly", "readwrite"]) {
         const reopened = await Database.open(`migration-deadline-${stage}`);
         const reader = reopened.client();
         try {
-          const before = await reader.execute_raw("SELECT amount FROM items");
-          const later = await reader.execute_raw(
+          const before = await reader.executeRaw("SELECT amount FROM items");
+          const later = await reader.executeRaw(
             "SELECT name FROM tables WHERE name = 'later'",
           );
           const followUp = await reader.migrate(plan);
-          const after = await reader.execute_raw("SELECT amount FROM items");
+          const after = await reader.executeRaw("SELECT amount FROM items");
           const repeated = await reader.migrate(plan);
           return { failure, before, later, followUp, after, repeated };
         } finally {

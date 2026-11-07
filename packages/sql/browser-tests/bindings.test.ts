@@ -17,10 +17,10 @@ test("generated clone and u64 deadline signatures work through the public wrappe
     const clone = client.clone();
     const timed = clone.withDeadline(1000n);
     try {
-      await timed.execute_raw(
+      await timed.executeRaw(
         "CREATE TABLE signatures (id INTEGER PRIMARY KEY)",
       );
-      return await timed.execute_raw("SELECT id FROM signatures");
+      return await timed.executeRaw("SELECT id FROM signatures");
     } finally {
       timed.close();
       clone.close();
@@ -59,15 +59,15 @@ test("lossless tagged values preserve text, UUID, ciphertext and integer limits"
   const result = await page.evaluate(async (values) => {
     const db = await (window as any).sql.Database.open("values");
     const client = db.client();
-    await client.execute_raw(
+    await client.executeRaw(
       "CREATE TABLE values_test (id UUID PRIMARY KEY, text TEXT, empty_text TEXT, cipher BLOB, empty_blob BLOB, lo INTEGER, hi INTEGER, f FLOAT, b BOOLEAN, n TEXT, j JSON)",
     );
-    await client.execute_raw(
+    await client.executeRaw(
       "INSERT INTO values_test VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
       values,
     );
     try {
-      return await client.execute_raw(
+      return await client.executeRaw(
         "SELECT id,text,empty_text,cipher,empty_blob,lo,hi,f,b,n,j FROM values_test",
       );
     } finally {
@@ -88,16 +88,16 @@ test("handles close deterministically, retain independent clients, and discard p
     db.close();
     db.close();
 
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
-    await tx.execute_raw("INSERT INTO items VALUES (1)");
+    await tx.executeRaw("INSERT INTO items VALUES (1)");
     tx.close();
     tx.close();
 
     const errors = [];
     for (const operation of [
       () => db.client(),
-      () => tx.execute_raw("SELECT id FROM items"),
+      () => tx.executeRaw("SELECT id FROM items"),
       () => tx.commit(),
     ]) {
       try {
@@ -114,7 +114,7 @@ test("handles close deterministically, retain independent clients, and discard p
     } catch (error) {
       errors.push(String(error));
     }
-    const rows = await clone.execute_raw("SELECT id FROM items");
+    const rows = await clone.executeRaw("SELECT id FROM items");
     clone.close();
     return { errors, rows };
   });
@@ -132,7 +132,7 @@ test("invalid values and deadlines are rejected without a partial write", async 
     const { Database } = (window as any).sql;
     const db = await Database.open("invalid");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const invalid = [
       null,
       "YWJj",
@@ -159,7 +159,7 @@ test("invalid values and deadlines are rejected without a partial write", async 
     let rejected = 0;
     for (const value of invalid) {
       try {
-        await client.execute_raw(
+        await client.executeRaw(
           "INSERT INTO items VALUES (1); INSERT INTO items VALUES ($1)",
           [value],
         );
@@ -175,7 +175,7 @@ test("invalid values and deadlines are rejected without a partial write", async 
         deadlines++;
       }
     }
-    const rows = await client.execute_raw("SELECT id FROM items");
+    const rows = await client.executeRaw("SELECT id FROM items");
     client.close();
     db.close();
     return { rejected, expected: invalid.length, deadlines, rows };
@@ -192,10 +192,10 @@ test("typed execute parses rows with exact column mapping", async ({
     const { Database } = (window as any).sql;
     const db = await Database.open("typed");
     const client = db.client();
-    await client.execute_raw(
+    await client.executeRaw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, data BLOB)",
     );
-    await client.execute_raw(
+    await client.executeRaw(
       "INSERT INTO items (id, name, data) VALUES ($1, $2, $3), ($4, $5, $6)",
       [
         { type: "integer", value: "1" },
@@ -232,7 +232,7 @@ test("typed execute with RETURNING works for inserts", async ({ page }) => {
     const { Database } = (window as any).sql;
     const db = await Database.open("returning");
     const client = db.client();
-    await client.execute_raw(
+    await client.executeRaw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)",
     );
     try {
@@ -261,8 +261,8 @@ test("typed execute rejects multiple statements", async ({ page }) => {
     const { Database } = (window as any).sql;
     const db = await Database.open("multi");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-    await client.execute_raw("INSERT INTO items VALUES (1)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("INSERT INTO items VALUES (1)");
     try {
       await client.execute(
         "SELECT id FROM items; SELECT id FROM items",
@@ -287,8 +287,8 @@ test("typed execute rejects duplicate columns", async ({ page }) => {
     const { Database } = (window as any).sql;
     const db = await Database.open("dup");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-    await client.execute_raw("INSERT INTO items VALUES (1)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("INSERT INTO items VALUES (1)");
     try {
       await client.execute("SELECT id, id as id2 FROM items", (row) => ({
         id: BigInt(row.id.value),
@@ -312,10 +312,10 @@ test("typed execute preserves NULL and missing columns", async ({ page }) => {
     const { Database } = (window as any).sql;
     const db = await Database.open("nulls");
     const client = db.client();
-    await client.execute_raw(
+    await client.executeRaw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)",
     );
-    await client.execute_raw("INSERT INTO items (id) VALUES (1)");
+    await client.executeRaw("INSERT INTO items (id) VALUES (1)");
     try {
       const rows = await client.execute(
         "SELECT id, name FROM items",
@@ -338,7 +338,7 @@ test("typed execute returns empty array for no rows", async ({ page }) => {
     const { Database } = (window as any).sql;
     const db = await Database.open("empty");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     try {
       const rows = await client.execute(
         "SELECT id FROM items WHERE id = 999",

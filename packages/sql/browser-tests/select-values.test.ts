@@ -48,10 +48,10 @@ for (const handle of ["Client", "Transaction"]) {
           const client =
             handle === "Client" ? owner : await owner.transaction();
           try {
-            await client.execute_raw(
+            await client.executeRaw(
               "CREATE TABLE typed_values (id UUID PRIMARY KEY, text TEXT, empty_text TEXT, cipher BLOB, empty_blob BLOB, lo INTEGER, hi INTEGER, f FLOAT, b BOOLEAN, n TEXT, j JSON)",
             );
-            await client.execute_raw(
+            await client.executeRaw(
               "INSERT INTO typed_values VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
               values,
             );
@@ -107,10 +107,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             'CREATE TABLE names (id INTEGER PRIMARY KEY, "Name" TEXT, "name" TEXT, "__proto__" TEXT, "constructor" TEXT, "prototype" TEXT)',
           );
-          await client.execute_raw(
+          await client.executeRaw(
             "INSERT INTO names VALUES (1, 'upper', 'lower', 'proto-data', 'ctor-data', 'prototype-data')",
           );
           const rows = await client.execute(
@@ -166,8 +166,8 @@ test("execute reuses parameters and handle ownership and skips parsers for empty
     db.close();
     client.close();
     try {
-      await timed.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
-      await timed.execute_raw("INSERT INTO items VALUES (1)");
+      await timed.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await timed.executeRaw("INSERT INTO items VALUES (1)");
       let calls = 0;
       const empty =
         await timed.execute("SELECT id FROM items WHERE id = $1", () => {

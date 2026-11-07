@@ -29,7 +29,7 @@ for (const handle of ["Client", "Transaction"]) {
         for (const raw of ["[]", ...malformed]) {
           let calls = 0;
           let freed = 0;
-          // Mock the WASM execute method (called by execute_raw internally)
+          // Mock the WASM execute method (called by executeRaw internally)
           const client = new Client({
             execute: async () => raw,
             free: () => {

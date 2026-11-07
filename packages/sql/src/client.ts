@@ -51,7 +51,7 @@ export class Client {
    * @param sql SQL text (one or more statements)
    * @param params Optional positional/named parameters
    */
-  async execute_raw(sql: string, params?: QueryParams): Promise<Result[]> {
+  async executeRaw(sql: string, params?: QueryParams): Promise<Result[]> {
     try {
       const encoded = encodeParams(params);
       const raw = await this.handle.run((wasm) => wasm.execute(sql, encoded));

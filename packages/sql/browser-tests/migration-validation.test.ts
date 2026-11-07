@@ -15,7 +15,7 @@ test("invalid inputs and statement-free tails reject before any migration commit
     const db = await Database.open("migration-invalid-plans");
     const client = db.client();
     try {
-      await client.execute_raw(
+      await client.executeRaw(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
       );
       const first = {
@@ -46,11 +46,11 @@ test("invalid inputs and statement-free tails reject before any migration commit
       ];
       const snapshot = async () =>
         Promise.all([
-          client.execute_raw("SELECT * FROM tables ORDER BY name"),
-          client.execute_raw(
+          client.executeRaw("SELECT * FROM tables ORDER BY name"),
+          client.executeRaw(
             "SELECT * FROM table_fields ORDER BY table, position",
           ),
-          client.execute_raw("SELECT * FROM items"),
+          client.executeRaw("SELECT * FROM items"),
         ]);
       const before = await snapshot();
       const results = [];
@@ -117,11 +117,11 @@ test("post-execution history failures identify the active version and roll back"
     };
     const snapshot = async () =>
       Promise.all([
-        client.execute_raw(
+        client.executeRaw(
           "SELECT * FROM table_fields ORDER BY table, position",
         ),
-        client.execute_raw("SELECT * FROM items"),
-        client.execute_raw("SELECT * FROM _ofdb_migrations ORDER BY version"),
+        client.executeRaw("SELECT * FROM items"),
+        client.executeRaw("SELECT * FROM _ofdb_migrations ORDER BY version"),
       ]);
     const results = [];
     try {
@@ -211,12 +211,12 @@ test("exact SQL, complete history and metadata are validated without repair", as
     const results: any[] = [];
     const snapshot = async () =>
       Promise.all([
-        client.execute_raw("SELECT * FROM tables ORDER BY name"),
-        client.execute_raw(
+        client.executeRaw("SELECT * FROM tables ORDER BY name"),
+        client.executeRaw(
           "SELECT * FROM table_fields ORDER BY table, position",
         ),
-        client.execute_raw("SELECT * FROM items"),
-        client.execute_raw("SELECT * FROM _ofdb_migrations ORDER BY version"),
+        client.executeRaw("SELECT * FROM items"),
+        client.executeRaw("SELECT * FROM _ofdb_migrations ORDER BY version"),
       ]);
     const reject = async (plan: any, version?: number) => {
       const before = await snapshot();
@@ -240,13 +240,13 @@ test("exact SQL, complete history and metadata are validated without repair", as
       });
     };
     const fixture = async () => {
-      await client.execute_raw(
+      await client.executeRaw(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10)",
       );
       await client.migrate([initial, second]);
     };
     const reset = async () =>
-      client.execute_raw("DROP TABLE items; DROP TABLE _ofdb_migrations");
+      client.executeRaw("DROP TABLE items; DROP TABLE _ofdb_migrations");
     try {
       await fixture();
       await reject([], 1);
@@ -282,7 +282,7 @@ test("exact SQL, complete history and metadata are validated without repair", as
       // ] as const) {
       //   await fixture();
       //   console.log("tamper:", tamper);
-      //   await client.execute_raw(tamper);
+      //   await client.executeRaw(tamper);
       //   await reject([initial, second, pending], version);
       //   await reset();
       // }
@@ -297,11 +297,11 @@ test("exact SQL, complete history and metadata are validated without repair", as
         "id UUID PRIMARY KEY, version INTEGER, description TEXT, fingerprint BLOB DEFAULT X'00', execution_time INTEGER",
         "version INTEGER, description TEXT, fingerprint BLOB, execution_time INTEGER, PRIMARY KEY (version, fingerprint)",
       ]) {
-        await client.execute_raw(
+        await client.executeRaw(
           `CREATE TABLE items (id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO items VALUES (1,10); CREATE TABLE _ofdb_migrations (${schema})`,
         );
         if (schema === "version INTEGER, fingerprint TEXT PRIMARY KEY") {
-          await client.execute_raw(
+          await client.executeRaw(
             "INSERT INTO _ofdb_migrations VALUES (1,'private-value'),(1,'other-private-value')",
           );
         }

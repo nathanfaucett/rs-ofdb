@@ -22,12 +22,12 @@ test("named transaction parameters, nested JSON numbers, and executeSql aliases 
   const result = await page.evaluate(async (value) => {
     const db = await (window as any).sql.Database.open("named");
     const client = db.client();
-    await client.execute_raw(
+    await client.executeRaw(
       "CREATE TABLE items (id INTEGER PRIMARY KEY, data JSON)",
     );
     const tx = await client.transaction();
     try {
-      await tx.execute_raw("INSERT INTO items VALUES (:id,:data)", {
+      await tx.executeRaw("INSERT INTO items VALUES (:id,:data)", {
         id: { type: "integer", value: "9007199254740993" },
         data: value,
       });
@@ -40,7 +40,7 @@ test("named transaction parameters, nested JSON numbers, and executeSql aliases 
       } catch {
         rejected = true;
       }
-      const visible = await tx.execute_raw(
+      const visible = await tx.executeRaw(
         "SELECT id,data FROM items WHERE id = :id",
         { id: { type: "integer", value: "9007199254740993" } },
       );
@@ -48,7 +48,7 @@ test("named transaction parameters, nested JSON numbers, and executeSql aliases 
       return {
         rejected,
         visible,
-        committed: await client.execute_raw("SELECT id,data FROM items"),
+        committed: await client.executeRaw("SELECT id,data FROM items"),
       };
     } finally {
       tx.close();

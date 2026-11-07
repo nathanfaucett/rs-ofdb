@@ -12,7 +12,7 @@ test("transaction execute maps pending rows with positional and named parameters
     const db = await (window as any).sql.Database.open("transaction-select");
     const client = db.client();
     const timed = client.withDeadline(1000n);
-    await timed.execute_raw(
+    await timed.executeRaw(
       "CREATE TABLE records (id INTEGER PRIMARY KEY, cipher BLOB)",
     );
     const tx = await timed.transaction();
@@ -20,7 +20,7 @@ test("transaction execute maps pending rows with positional and named parameters
     client.close();
     db.close();
     try {
-      await tx.execute_raw("INSERT INTO records VALUES (2, $1), (1, $1)", [
+      await tx.executeRaw("INSERT INTO records VALUES (2, $1), (1, $1)", [
         { type: "blob", value: "AP8BgA==" },
       ]);
       const parse = (row: any) => {
@@ -71,10 +71,10 @@ for (const cleanup of ["rollback", "commit", "close"] as const) {
       const { Database, ExecuteError } = (window as any).sql;
       const db = await Database.open(`transaction-parser-${cleanup}`);
       const client = db.client();
-      await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+      await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
       const tx = await client.transaction();
       try {
-        await tx.execute_raw("INSERT INTO items VALUES (1), (2), (3)");
+        await tx.executeRaw("INSERT INTO items VALUES (1), (2), (3)");
         const cause = new Error("private-parser-data");
         let calls = 0;
         let failure;
@@ -148,7 +148,7 @@ test("result-count failure runs the batch once and leaves commit under caller co
     const { Database, ExecuteError } = (window as any).sql;
     const db = await Database.open("transaction-batch");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
     try {
       let calls = 0;
@@ -199,7 +199,7 @@ test("transaction execute preserves busy, closed, consumed and in-flight close b
     const { Database, ExecuteError, Error: SqlError } = (window as any).sql;
     const db = await Database.open("transaction-select-lifecycle");
     const client = db.client();
-    await client.execute_raw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
+    await client.executeRaw("CREATE TABLE items (id INTEGER PRIMARY KEY)");
     const tx = await client.transaction();
     let calls = 0;
     const parse = (row: any) => {
@@ -208,11 +208,11 @@ test("transaction execute preserves busy, closed, consumed and in-flight close b
     };
     const errors = [];
     try {
-      await tx.execute_raw("INSERT INTO items VALUES (1)");
+      await tx.executeRaw("INSERT INTO items VALUES (1)");
       const pending = tx.execute("SELECT id FROM items", parse);
       const overlaps = [
         tx.execute("SELECT id FROM items", parse),
-        tx.execute_raw("SELECT id FROM items"),
+        tx.executeRaw("SELECT id FROM items"),
         tx.commit(),
         tx.rollback(),
       ];

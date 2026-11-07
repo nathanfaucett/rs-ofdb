@@ -15,10 +15,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE records (id INTEGER PRIMARY KEY, cipher BLOB)",
           );
-          await client.execute_raw(
+          await client.executeRaw(
             "INSERT INTO records VALUES (2, $1), (1, $1)",
             [{ type: "blob", value: "AP8BgA==" }],
           );
@@ -61,7 +61,7 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           );
           let calls = 0;
@@ -89,7 +89,7 @@ for (const handle of ["Client", "Transaction"]) {
           return {
             calls,
             failures,
-            rows: await client.execute_raw("SELECT id FROM items"),
+            rows: await client.executeRaw("SELECT id FROM items"),
           };
         } finally {
           client.close();
@@ -123,10 +123,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           );
-          await client.execute_raw("INSERT INTO items VALUES (1),(2),(3)");
+          await client.executeRaw("INSERT INTO items VALUES (1),(2),(3)");
           const cause = new Error("private-parser-payload");
           let calls = 0;
           let rows;
@@ -165,7 +165,7 @@ for (const handle of ["Client", "Transaction"]) {
             partial: rows !== undefined,
             failure,
             writeFailure,
-            rows: await client.execute_raw("SELECT id FROM items ORDER BY id"),
+            rows: await client.executeRaw("SELECT id FROM items ORDER BY id"),
           };
         } finally {
           client.close();
@@ -197,10 +197,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           );
-          await client.execute_raw("INSERT INTO items VALUES (1),(2)");
+          await client.executeRaw("INSERT INTO items VALUES (1),(2)");
           const failure = {
             typed: false,
             reason: "",
@@ -221,7 +221,7 @@ for (const handle of ["Client", "Transaction"]) {
             failure.rowIndex = error.rowIndex;
             failure.message = error.message;
           }
-          const after = await client.execute_raw(
+          const after = await client.executeRaw(
             "SELECT id FROM items ORDER BY id",
           );
           return { failure, after: after[0].rows.length };
@@ -247,10 +247,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           );
-          await client.execute_raw("INSERT INTO items VALUES (42)");
+          await client.executeRaw("INSERT INTO items VALUES (42)");
           const captured = [];
           await client.execute("SELECT id FROM items", (row: any) => {
             captured.push({
@@ -297,10 +297,10 @@ for (const handle of ["Client", "Transaction"]) {
         const owner = db.client();
         const client = handle === "Client" ? owner : await owner.transaction();
         try {
-          await client.execute_raw(
+          await client.executeRaw(
             "CREATE TABLE items (id INTEGER PRIMARY KEY, constructor TEXT, toString TEXT, proto TEXT)",
           );
-          await client.execute_raw("INSERT INTO items VALUES (1, $1, $2, $3)", [
+          await client.executeRaw("INSERT INTO items VALUES (1, $1, $2, $3)", [
             { type: "text", value: "ctor" },
             { type: "text", value: "str" },
             { type: "text", value: "pro" },

@@ -29,7 +29,7 @@ export async function contract(): Promise<Result[]> {
   console.log(version, applied);
   const tx = await timed.transaction();
   try {
-    const result = await tx.execute_raw(
+    const result = await tx.executeRaw(
       "SELECT id FROM items WHERE id = :id",
       params,
     );
@@ -98,8 +98,8 @@ export async function rejectedTypes(): Promise<void> {
   // @ts-expect-error Generated u64 binding requires bigint, not number.
   client.withDeadline(1000);
   // @ts-expect-error Values must be tagged; numbers cannot enter the value transport.
-  await client.execute_raw("INSERT INTO items VALUES ($1)", [9007199254740992]);
-  await client.execute_raw("INSERT INTO items VALUES ($1)", [
+  await client.executeRaw("INSERT INTO items VALUES ($1)", [9007199254740992]);
+  await client.executeRaw("INSERT INTO items VALUES ($1)", [
     // @ts-expect-error Integers use decimal strings, never JS numbers.
     { type: "integer", value: 1 },
   ]);
