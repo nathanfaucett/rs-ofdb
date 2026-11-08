@@ -27,7 +27,7 @@ test.describe("ofdb browser example", () => {
     await page.click("#retrieve");
     await expect(page.locator("#status")).toHaveText(
       "Retrieved committed value.",
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
     await expect(page.locator("#result")).toHaveText(DISTINCTIVE);
     await expect(page.locator("#result img")).toHaveCount(0);
@@ -42,7 +42,7 @@ test.describe("ofdb browser example", () => {
     await page.click("#add");
     await expect(page.locator("#sql-status")).toHaveText(
       "Added and committed.",
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
 
     // Add second record (duplicate test)
@@ -50,7 +50,7 @@ test.describe("ofdb browser example", () => {
     await page.click("#add");
     await expect(page.locator("#sql-status")).toHaveText(
       "Added and committed.",
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
 
     // Reload and list
@@ -61,7 +61,7 @@ test.describe("ofdb browser example", () => {
     await page.click("#list");
     await expect(page.locator("#sql-status")).toHaveText(
       "Listed committed records.",
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
 
     const rows = page.locator("#sql-result li");
@@ -83,7 +83,7 @@ test.describe("ofdb browser example", () => {
       indexedDB.open = () => {
         throw new DOMException(
           "Storage denied by smoke check",
-          "SecurityError",
+          "SecurityError"
         );
       };
     });
@@ -91,12 +91,12 @@ test.describe("ofdb browser example", () => {
     await page.reload();
     await expect(page.locator("#status")).toHaveText(
       /Error:.*storage.*reload/i,
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
     await expect(page.locator("#controls")).toBeDisabled();
     await expect(page.locator("#sql-status")).toHaveText(
       /Error:.*storage.*reload/i,
-      { timeout: 15000 },
+      { timeout: 15000 }
     );
     await expect(page.locator("#sql-controls")).toBeDisabled();
   });

@@ -139,7 +139,7 @@ export class KvPeerNetwork {
           }
 
           const others = [...this.peers.values()].filter(
-            (p) => p.id !== peer.id && p.online,
+            (p) => p.id !== peer.id && p.online
           );
           for (const target of others) {
             if (aborted || !peer.online || !target.online) break;
@@ -176,7 +176,7 @@ export class KvPeerNetwork {
 
   private async syncWithAll(source: KvPeer): Promise<void> {
     const others = [...this.peers.values()].filter(
-      (p) => p.id !== source.id && p.online,
+      (p) => p.id !== source.id && p.online
     );
     for (const target of others) {
       await this.syncPair(source, target);
@@ -223,13 +223,13 @@ export class KvPeerNetwork {
           new JsKvSyncTransport(tA),
           roleA,
           makeConfig(),
-          checkFn,
+          checkFn
         ),
         b.db.synchronize_checked(
           new JsKvSyncTransport(tB),
           roleB,
           makeConfig(),
-          checkFn,
+          checkFn
         ),
       ]);
       const now = new Date().toLocaleTimeString();

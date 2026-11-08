@@ -17,7 +17,7 @@ export interface NetworkState<TPeer, TState> {
 }
 
 export function createNetworkState<TPeer, TState>(
-  initialStatus: string,
+  initialStatus: string
 ): NetworkState<TPeer, TState> {
   return {
     network: null,
@@ -32,7 +32,7 @@ export function createNetworkState<TPeer, TState>(
 export function ensureState<TState>(
   editorState: Record<string, TState>,
   peerId: string,
-  defaultState: TState,
+  defaultState: TState
 ): void {
   if (!(peerId in editorState)) {
     editorState[peerId] = defaultState;

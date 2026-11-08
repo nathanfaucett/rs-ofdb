@@ -10,7 +10,7 @@ if (wasmFiles.length < 2) {
   console.error("ERROR: Missing WASM files in build output");
   console.error(
     "Expected at least 2 WASM files (kv + sql), found:",
-    wasmFiles.length,
+    wasmFiles.length
   );
   process.exit(1);
 }

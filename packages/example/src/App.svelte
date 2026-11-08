@@ -20,12 +20,12 @@ import { type SqlPeer, SqlPeerNetwork } from "./sync/sql-network.js";
 let activeTab = $state<"kv" | "sql">("kv");
 
 let kvState = $state(
-  createNetworkState<KvPeerNetwork, { value: string }>("Starting…"),
+  createNetworkState<KvPeerNetwork, { value: string }>("Starting…")
 );
 let sqlState = $state(
   createNetworkState<SqlPeerNetwork, { text: string; records: string[] }>(
-    "Starting…",
-  ),
+    "Starting…"
+  )
 );
 
 let kvKey = $state("theme");

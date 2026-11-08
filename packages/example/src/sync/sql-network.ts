@@ -56,7 +56,7 @@ export class SqlPeerNetwork {
     const db = await SqlDatabase.open(`${this.prefix}-${id}`);
     const client = db.client();
     await client.execute(
-      "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)",
+      "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)"
     );
     const peer: SqlPeer = {
       id,
@@ -145,7 +145,7 @@ export class SqlPeerNetwork {
             this.onChange();
 
             const others = [...this.peers.values()].filter(
-              (p) => p.id !== peer.id && p.online,
+              (p) => p.id !== peer.id && p.online
             );
             for (const target of others) {
               if (aborted || !peer.online || !target.online) break;
@@ -182,7 +182,7 @@ export class SqlPeerNetwork {
   private async getRecordCount(peer: SqlPeer): Promise<number> {
     try {
       const results = await peer.client.execute(
-        "SELECT COUNT(*) as cnt FROM records",
+        "SELECT COUNT(*) as cnt FROM records"
       );
       const first = results[0]?.rows?.[0]?.[0];
       if (first && typeof first === "object" && "value" in first) {
@@ -204,7 +204,7 @@ export class SqlPeerNetwork {
 
   async listRecords(peer: SqlPeer): Promise<string[]> {
     const results = await peer.client.execute(
-      "SELECT text FROM records ORDER BY id",
+      "SELECT text FROM records ORDER BY id"
     );
     return (results[0]?.rows ?? []).map((row) => {
       const first = row[0];
@@ -217,7 +217,7 @@ export class SqlPeerNetwork {
 
   private async syncWithAll(source: SqlPeer): Promise<void> {
     const others = [...this.peers.values()].filter(
-      (p) => p.id !== source.id && p.online,
+      (p) => p.id !== source.id && p.online
     );
     for (const target of others) {
       await this.syncPair(source, target);
@@ -264,13 +264,13 @@ export class SqlPeerNetwork {
           new JsSqlSyncTransport(tA),
           makeConfig(),
           roleA,
-          checkFn,
+          checkFn
         ),
         b.db.synchronize_checked(
           new JsSqlSyncTransport(tB),
           makeConfig(),
           roleB,
-          checkFn,
+          checkFn
         ),
       ]);
       const now = new Date().toLocaleTimeString();
