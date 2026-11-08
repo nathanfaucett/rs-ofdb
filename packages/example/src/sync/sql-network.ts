@@ -124,9 +124,7 @@ export class SqlPeerNetwork {
   async addRecord(id: string, text: string): Promise<void> {
     const peer = this.peers.get(id);
     if (!peer) return;
-    await peer.client.execute("INSERT INTO records (text) VALUES ($1)", [
-      { type: "text", value: text },
-    ]);
+    await peer.client.execute("INSERT INTO records (text) VALUES (?)", [text]);
     await this.refreshCount(peer);
     // Sync is handled automatically by the polling loop
   }
@@ -136,38 +134,22 @@ export class SqlPeerNetwork {
 
     let aborted = false;
     let lastRecordCount = peer.recordCount;
-    let lastPeriodicSync = 0;
 
     const loop = async () => {
       while (!aborted && peer.online) {
         try {
-          // Check for local changes by comparing record count
           const currentCount = await this.getRecordCount(peer);
           if (currentCount !== lastRecordCount) {
             lastRecordCount = currentCount;
             peer.recordCount = currentCount;
             this.onChange();
 
-            // Sync with all online peers
             const others = [...this.peers.values()].filter(
               (p) => p.id !== peer.id && p.online,
             );
             for (const target of others) {
               if (aborted || !peer.online || !target.online) break;
               await this.syncPair(peer, target);
-            }
-          } else {
-            // Periodic full sync every 10s to catch remote changes
-            const now = Date.now();
-            if (now - lastPeriodicSync > 10000) {
-              lastPeriodicSync = now;
-              const others = [...this.peers.values()].filter(
-                (p) => p.id !== peer.id && p.online,
-              );
-              for (const target of others) {
-                if (aborted || !peer.online || !target.online) break;
-                await this.syncPair(peer, target);
-              }
             }
           }
         } catch (error) {
@@ -218,7 +200,6 @@ export class SqlPeerNetwork {
     } catch {
       peer.recordCount = 0;
     }
-    this.onChange();
   }
 
   async listRecords(peer: SqlPeer): Promise<string[]> {
@@ -300,6 +281,7 @@ export class SqlPeerNetwork {
         const msg = error instanceof Error ? error.message : String(error);
         a.error = msg;
         b.error = msg;
+        this.onChange();
       }
     } finally {
       if (this.sessions.get(key) === session) {

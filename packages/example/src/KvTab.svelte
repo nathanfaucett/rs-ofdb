@@ -59,17 +59,15 @@
                 {onRemove}
             >
                 <div class="mb-2 border-t border-gray-200 pt-2 space-y-2">
-                    <label
-                        for={`kv-key-${peer.id}`}
-                        class="block text-sm font-medium">KV Key</label
-                    >
-                    <input
-                        id={`kv-key-${peer.id}`}
-                        bind:value={kvState.key}
-                        class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-                        placeholder="Enter key..."
-                        disabled={busy || !peer.online}
-                    />
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-gray-600"
+                            >Key:</span
+                        >
+                        <code
+                            class="px-2 py-1 bg-gray-100 rounded text-sm font-mono"
+                            >{kvState.key}</code
+                        >
+                    </div>
                     <label
                         for={`kv-value-${peer.id}`}
                         class="block text-sm font-medium">Value</label
@@ -80,23 +78,19 @@
                         rows="2"
                         class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
                         placeholder="Enter value..."
-                        disabled={busy || !peer.online}></textarea>
+                        disabled={busy}></textarea>
                     <div class="flex gap-2">
                         <button
                             class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                             onclick={() => onSave(peer.id)}
-                            disabled={busy ||
-                                !peer.online ||
-                                !kvState.key.trim()}
+                            disabled={busy}
                         >
-                            Save & Sync
+                            Save
                         </button>
                         <button
                             class="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 disabled:opacity-50"
                             onclick={() => onRetrieve(peer.id)}
-                            disabled={busy ||
-                                !peer.online ||
-                                !kvState.key.trim()}
+                            disabled={busy}
                         >
                             Read
                         </button>
@@ -114,13 +108,6 @@
                     <p class="mb-1 text-xs text-red-700">{peer.error}</p>
                 {:else if peer.lastSync}
                     <p class="mb-1 text-xs text-gray-500">{peer.lastSync}</p>
-                {/if}
-
-                {#if peer.syncing}
-                    <span
-                        class="rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-800"
-                        >Syncing…</span
-                    >
                 {/if}
             </PeerPanel>
         {/each}

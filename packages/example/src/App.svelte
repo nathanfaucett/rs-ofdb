@@ -39,11 +39,23 @@
     }
 
     function getKvState(peerId: string) {
-        return (kvEditorState[peerId] ??= { key: kvKey, value: "" });
+        return kvEditorState[peerId];
     }
 
     function getSqlState(peerId: string) {
-        return (sqlEditorState[peerId] ??= { text: "", records: [] });
+        return sqlEditorState[peerId];
+    }
+
+    function ensureKvState(peerId: string): void {
+        if (!(peerId in kvEditorState)) {
+            kvEditorState[peerId] = { key: kvKey, value: "" };
+        }
+    }
+
+    function ensureSqlState(peerId: string): void {
+        if (!(peerId in sqlEditorState)) {
+            sqlEditorState[peerId] = { text: "", records: [] };
+        }
     }
 
     async function refreshKvValues(): Promise<void> {
@@ -64,32 +76,48 @@
         }
     }
 
-    async function startKv(): Promise<void> {
+    // Initialize KV network once at component creation
+    void (async () => {
         try {
-            kvNetwork = new KvPeerNetwork("ofdb-example-kv");
-            kvNetwork.setListener(() => {
-                kvPeers = kvNetwork!.getPeers();
+            const network = new KvPeerNetwork("ofdb-example-kv");
+            network.setListener(() => {
+                kvPeers = network.getPeers();
+                for (const peer of kvPeers) {
+                    ensureKvState(peer.id);
+                }
                 void refreshKvValues();
             });
-            await kvNetwork.addPeer();
-            kvPeers = kvNetwork.getPeers();
+            kvNetwork = network;
+            await network.addPeer();
+            kvPeers = network.getPeers();
+            for (const peer of kvPeers) {
+                ensureKvState(peer.id);
+            }
             kvBusy = false;
             await refreshKvValues();
             kvReport("Ready. Add peers and toggle them offline to test sync.");
         } catch (error) {
             kvReport(`Error: ${msg(error)}`, true);
         }
-    }
+    })();
 
-    async function startSql(): Promise<void> {
+    // Initialize SQL network once at component creation
+    void (async () => {
         try {
-            sqlNetwork = new SqlPeerNetwork("ofdb-example-sql");
-            sqlNetwork.setListener(() => {
-                sqlPeers = sqlNetwork!.getPeers();
+            const network = new SqlPeerNetwork("ofdb-example-sql");
+            network.setListener(() => {
+                sqlPeers = network.getPeers();
+                for (const peer of sqlPeers) {
+                    ensureSqlState(peer.id);
+                }
                 void refreshSqlRecords();
             });
-            await sqlNetwork.addPeer();
-            sqlPeers = sqlNetwork.getPeers();
+            sqlNetwork = network;
+            await network.addPeer();
+            sqlPeers = network.getPeers();
+            for (const peer of sqlPeers) {
+                ensureSqlState(peer.id);
+            }
             sqlBusy = false;
             await refreshSqlRecords();
             sqlStatus =
@@ -98,13 +126,11 @@
             sqlStatusError = true;
             sqlStatus = `Error: ${msg(error)}`;
         }
-    }
+    })();
 
     async function kvSave(peerId: string): Promise<void> {
-        console.log("[App] kvSave called for:", peerId);
         if (!kvNetwork || kvBusy) return;
         const state = getKvState(peerId);
-        console.log("[App] kvSave state:", state);
         if (!state.key.trim()) return;
         kvBusy = true;
         kvReport("Saving…");
@@ -170,15 +196,13 @@
     async function toggleKvPeer(id: string, online: boolean): Promise<void> {
         if (!kvNetwork) return;
         await kvNetwork.setOnline(id, online);
-        kvPeers = kvNetwork.getPeers();
+        // Peer object is same reference; UI reads online/syncing/error directly
         await refreshKvValues();
     }
 
     async function sqlAdd(peerId: string): Promise<void> {
-        console.log("[App] sqlAdd called for:", peerId);
         if (!sqlNetwork || sqlBusy) return;
         const state = getSqlState(peerId);
-        console.log("[App] sqlAdd state:", state);
         if (!state.text.trim()) return;
         sqlBusy = true;
         sqlStatusError = false;
@@ -186,7 +210,6 @@
         try {
             await sqlNetwork.addRecord(peerId, state.text);
             state.text = "";
-            sqlPeers = sqlNetwork.getPeers();
             await refreshSqlRecords();
             sqlStatus = "Added (sync runs automatically).";
         } catch (error) {
@@ -236,14 +259,9 @@
     async function toggleSqlPeer(id: string, online: boolean): Promise<void> {
         if (!sqlNetwork) return;
         await sqlNetwork.setOnline(id, online);
-        sqlPeers = sqlNetwork.getPeers();
+        // Peer object is same reference; UI reads online/syncing/error directly
         await refreshSqlRecords();
     }
-
-    $effect(() => {
-        void startKv();
-        void startSql();
-    });
 </script>
 
 <main class="mx-auto max-w-4xl px-4 py-8 font-sans text-base leading-relaxed">

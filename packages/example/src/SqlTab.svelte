@@ -66,14 +66,14 @@
                         bind:value={sqlState.text}
                         class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
                         placeholder="Enter record text..."
-                        disabled={busy || !peer.online}
+                        disabled={busy}
                     />
                     <button
                         class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                         onclick={() => onAddRecord(peer.id)}
-                        disabled={busy || !peer.online || !sqlState.text.trim()}
+                        disabled={busy || !sqlState.text.trim()}
                     >
-                        Add & Sync
+                        Add
                     </button>
                 </div>
 
@@ -96,13 +96,6 @@
                     <p class="mb-1 text-xs text-red-700">{peer.error}</p>
                 {:else if peer.lastSync}
                     <p class="mb-1 text-xs text-gray-500">{peer.lastSync}</p>
-                {/if}
-
-                {#if peer.syncing}
-                    <span
-                        class="rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-800"
-                        >Syncing…</span
-                    >
                 {/if}
             </PeerPanel>
         {/each}

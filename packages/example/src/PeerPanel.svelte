@@ -23,11 +23,7 @@
     } = $props();
 </script>
 
-<div
-    class="rounded-lg border border-gray-300 bg-gray-50 p-3 transition-opacity {peer.online
-        ? ''
-        : 'bg-gray-100 opacity-60'}"
->
+<div class="rounded-lg border border-gray-300 bg-gray-50 p-3">
     <div class="mb-2 flex items-center gap-2">
         <span class="font-semibold">{peer.name}</span>
         <span
@@ -37,12 +33,6 @@
         >
             {peer.online ? "Online" : "Offline"}
         </span>
-        {#if peer.syncing}
-            <span
-                class="rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-800"
-                >Syncing…</span
-            >
-        {/if}
     </div>
 
     {#if peer.error}

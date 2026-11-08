@@ -57,7 +57,6 @@ export class KvPeerNetwork {
     const db = await KvDatabase.open(`${this.prefix}-${id}`);
     const client = db.client();
     const subscription = await db.sync_changes();
-    console.log(`[${name}] created with subscription:`, !!subscription);
     const peer: KvPeer = {
       id,
       name,
@@ -122,52 +121,23 @@ export class KvPeerNetwork {
   async write(id: string, key: string, value: string): Promise<void> {
     const peer = this.peers.get(id);
     if (!peer) return;
-    console.log(`[${peer.name}] write:`, key, value);
     await peer.client.set(key, value);
-    console.log(`[${peer.name}] write done`);
     // Sync is handled automatically by the subscription loop
   }
 
   private startSyncLoop(peer: KvPeer): void {
-    console.log(
-      `[${peer.name}] startSyncLoop called, subscription:`,
-      !!peer.subscription,
-      "hasLoop:",
-      this.syncLoops.has(peer.id),
-    );
     if (!peer.subscription || this.syncLoops.has(peer.id)) return;
 
     let aborted = false;
-    let lastPeriodicSync = 0;
     const loop = async () => {
-      console.log(`[${peer.name}] sync loop started`);
       while (!aborted && peer.online && peer.subscription) {
         try {
           const work = peer.subscription.select();
-          console.log(
-            `[${peer.name}] select() returned:`,
-            work ? "work" : "null",
-          );
           if (!work) {
-            // No pending changes, do periodic full sync every 10s
-            const now = Date.now();
-            if (now - lastPeriodicSync > 10000) {
-              lastPeriodicSync = now;
-              console.log(`[${peer.name}] periodic full sync`);
-              const others = [...this.peers.values()].filter(
-                (p) => p.id !== peer.id && p.online,
-              );
-              for (const target of others) {
-                if (aborted || !peer.online || !target.online) break;
-                await this.syncPair(peer, target);
-              }
-            }
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 2000));
             continue;
           }
 
-          console.log(`[${peer.name}] syncing work with peers`);
-          // Sync with all online peers
           const others = [...this.peers.values()].filter(
             (p) => p.id !== peer.id && p.online,
           );
@@ -176,20 +146,16 @@ export class KvPeerNetwork {
             await this.syncPair(peer, target);
           }
 
-          // Acknowledge the work after successful sync
-          console.log(`[${peer.name}] acknowledging work`);
           peer.subscription.acknowledge(work);
         } catch (error) {
           if (!aborted) {
             const msg = error instanceof Error ? error.message : String(error);
-            console.error(`[${peer.name}] sync loop error:`, msg);
             peer.error = msg;
             this.onChange();
             await new Promise((r) => setTimeout(r, 1000));
           }
         }
       }
-      console.log(`[${peer.name}] sync loop ended`);
     };
 
     const abort = () => {
@@ -269,6 +235,7 @@ export class KvPeerNetwork {
       const now = new Date().toLocaleTimeString();
       a.lastSync = `Synced at ${now}`;
       b.lastSync = `Synced at ${now}`;
+      this.onChange();
     } catch (error) {
       if (!session.cancelled) {
         const msg = error instanceof Error ? error.message : String(error);
