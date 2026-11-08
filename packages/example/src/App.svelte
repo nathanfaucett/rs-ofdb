@@ -21,10 +21,8 @@
     let sqlStatusError = $state(false);
     let sqlBusy = $state(true);
 
-    // Per-peer editor state
-    const kvEditorState = $state<
-        Record<string, { key: string; value: string }>
-    >({});
+    // Per-peer editor state (KV value only; key is global)
+    const kvEditorState = $state<Record<string, { value: string }>>({});
     const sqlEditorState = $state<
         Record<string, { text: string; records: string[] }>
     >({});
@@ -39,7 +37,8 @@
     }
 
     function getKvState(peerId: string) {
-        return kvEditorState[peerId];
+        const state = kvEditorState[peerId] ?? { value: "" };
+        return { key: kvKey, value: state.value };
     }
 
     function getSqlState(peerId: string) {
@@ -48,7 +47,7 @@
 
     function ensureKvState(peerId: string): void {
         if (!(peerId in kvEditorState)) {
-            kvEditorState[peerId] = { key: kvKey, value: "" };
+            kvEditorState[peerId] = { value: "" };
         }
     }
 
@@ -61,17 +60,18 @@
     async function refreshKvValues(): Promise<void> {
         if (!kvNetwork) return;
         for (const peer of kvNetwork.getPeers()) {
-            const state = getKvState(peer.id);
+            const editorState = kvEditorState[peer.id];
+            if (!editorState) continue;
             try {
-                const val = await peer.client.get(state.key);
-                if (val === undefined) {
-                    state.value = "—";
-                } else {
-                    state.value =
-                        typeof val === "string" ? val : JSON.stringify(val);
-                }
+                const val = await peer.client.get(kvKey);
+                editorState.value =
+                    val === undefined
+                        ? "\u2014"
+                        : typeof val === "string"
+                          ? val
+                          : JSON.stringify(val);
             } catch {
-                state.value = "error";
+                editorState.value = "error";
             }
         }
     }
@@ -100,6 +100,14 @@
             kvReport(`Error: ${msg(error)}`, true);
         }
     })();
+
+    // Refresh KV values when global key changes
+    $effect(() => {
+        kvKey;
+        if (kvNetwork && !kvBusy) {
+            void refreshKvValues();
+        }
+    });
 
     // Initialize SQL network once at component creation
     void (async () => {
@@ -130,12 +138,12 @@
 
     async function kvSave(peerId: string): Promise<void> {
         if (!kvNetwork || kvBusy) return;
-        const state = getKvState(peerId);
-        if (!state.key.trim()) return;
+        if (!kvKey.trim()) return;
         kvBusy = true;
         kvReport("Saving…");
         try {
-            await kvNetwork.write(peerId, state.key, state.value);
+            const state = getKvState(peerId);
+            await kvNetwork.write(peerId, kvKey, state.value);
             await refreshKvValues();
             kvReport("Saved (sync runs automatically).");
         } catch (error) {
@@ -147,20 +155,22 @@
 
     async function kvRetrieve(peerId: string): Promise<void> {
         if (kvBusy) return;
-        const state = getKvState(peerId);
-        if (!state.key.trim()) return;
+        if (!kvKey.trim()) return;
         kvBusy = true;
-        kvReport("Reading…");
+        kvReport("Reading\u2026");
         try {
             const peer = kvNetwork!.getPeer(peerId);
             if (peer) {
-                const val = await peer.client.get(state.key);
-                state.value =
-                    val === undefined
-                        ? "—"
-                        : typeof val === "string"
-                          ? val
-                          : JSON.stringify(val);
+                const val = await peer.client.get(kvKey);
+                const editorState = kvEditorState[peerId];
+                if (editorState) {
+                    editorState.value =
+                        val === undefined
+                            ? "\u2014"
+                            : typeof val === "string"
+                              ? val
+                              : JSON.stringify(val);
+                }
                 kvReport("Read from peer.");
             }
         } catch (error) {
@@ -308,6 +318,9 @@
                 onToggle={toggleKvPeer}
                 onRemove={removeKvPeer}
                 getState={getKvState}
+                globalKey={kvKey}
+                onKeyChange={(k) => (kvKey = k)}
+                {kvEditorState}
             />
         </div>
     {/if}

@@ -21,6 +21,8 @@
         onRemove: (id: string) => void;
         children?: import("svelte").Snippet;
     } = $props();
+
+    let showDeleteDialog = $state(false);
 </script>
 
 <div class="rounded-lg border border-gray-300 bg-gray-50 p-3">
@@ -59,10 +61,47 @@
         {#if canRemove}
             <button
                 class="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
-                onclick={() => onRemove(peer.id)}
+                onclick={() => (showDeleteDialog = true)}
             >
                 Remove
             </button>
         {/if}
     </div>
 </div>
+
+{#if showDeleteDialog}
+    <div class="fixed inset-0 z-50 flex items-center justify-center">
+        <button
+            class="fixed inset-0 bg-black/50"
+            onclick={() => (showDeleteDialog = false)}
+            aria-label="Close dialog"
+        ></button>
+        <dialog
+            class="rounded-lg border border-gray-300 bg-white p-6 max-w-sm"
+            open
+        >
+            <h3 class="mb-2 text-lg font-semibold">Remove {peer.name}?</h3>
+            <p class="mb-4 text-sm text-gray-600">
+                This will delete the peer and its local database. This action
+                cannot be undone.
+            </p>
+            <div class="flex justify-end gap-2">
+                <button
+                    class="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
+                    onclick={() => (showDeleteDialog = false)}
+                >
+                    Cancel
+                </button>
+                <button
+                    class="rounded-md bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+                    onclick={() => {
+                        onRemove(peer.id);
+                        showDeleteDialog = false;
+                    }}
+                >
+                    Remove
+                </button>
+            </div>
+        </dialog>
+    </div>
+{/if}

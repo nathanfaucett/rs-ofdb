@@ -13,6 +13,9 @@
         onToggle: (id: string, online: boolean) => void;
         onRemove: (id: string) => void;
         getState: (peerId: string) => { key: string; value: string };
+        globalKey: string;
+        onKeyChange: (key: string) => void;
+        kvEditorState: Record<string, { value: string }>;
     }
 
     let {
@@ -26,6 +29,9 @@
         onToggle,
         onRemove,
         getState,
+        globalKey,
+        onKeyChange,
+        kvEditorState,
     }: Props = $props();
 </script>
 
@@ -49,9 +55,21 @@
         >
     </div>
 
+    <div class="mb-4 flex items-center gap-2">
+        <label for="global-key" class="text-sm font-medium">Global Key</label>
+        <input
+            id="global-key"
+            bind:value={globalKey}
+            oninput={() => onKeyChange(globalKey)}
+            class="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
+            placeholder="Enter key (e.g., theme)"
+            disabled={busy}
+        />
+    </div>
+
     <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {#each peers as peer (peer.id)}
-            {@const kvState = getState(peer.id)}
+            {@const editorValue = kvEditorState[peer.id]?.value ?? ""}
             <PeerPanel
                 {peer}
                 canRemove={peers.length > 1}
@@ -59,48 +77,30 @@
                 {onRemove}
             >
                 <div class="mb-2 border-t border-gray-200 pt-2 space-y-2">
-                    <div class="flex items-center gap-2">
-                        <span class="text-sm font-medium text-gray-600"
-                            >Key:</span
-                        >
-                        <code
-                            class="px-2 py-1 bg-gray-100 rounded text-sm font-mono"
-                            >{kvState.key}</code
-                        >
-                    </div>
                     <label
                         for={`kv-value-${peer.id}`}
                         class="block text-sm font-medium">Value</label
                     >
                     <textarea
                         id={`kv-value-${peer.id}`}
-                        bind:value={kvState.value}
+                        bind:value={kvEditorState[peer.id].value}
                         rows="2"
                         class="w-full rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
                         placeholder="Enter value..."
                         disabled={busy}></textarea>
-                    <div class="flex gap-2">
-                        <button
-                            class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                            onclick={() => onSave(peer.id)}
-                            disabled={busy}
-                        >
-                            Save
-                        </button>
-                        <button
-                            class="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 disabled:opacity-50"
-                            onclick={() => onRetrieve(peer.id)}
-                            disabled={busy}
-                        >
-                            Read
-                        </button>
-                    </div>
+                    <button
+                        class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                        onclick={() => onSave(peer.id)}
+                        disabled={busy}
+                    >
+                        Save
+                    </button>
                 </div>
 
                 <div class="flex items-center gap-1 text-xs">
                     <span class="font-mono text-gray-500">Current value:</span>
                     <span class="font-mono text-sm font-semibold"
-                        >{kvState.value ?? "—"}</span
+                        >{kvEditorState[peer.id]?.value ?? "\u2014"}</span
                     >
                 </div>
 
