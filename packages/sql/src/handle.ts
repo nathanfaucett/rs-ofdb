@@ -1,5 +1,3 @@
-import { Error } from "./error.js";
-
 /** Do not free a Rust handle while a generated async call still borrows it. */
 export class Handle<T extends { free(): void }> {
   private value: T | undefined;

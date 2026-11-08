@@ -1,4 +1,3 @@
-import { Error, wrapError } from "./error.js";
 import { Transaction } from "./transaction.js";
 import type { DbValue } from "./value.js";
 import type { WasmKvClient } from "./wasm.js";

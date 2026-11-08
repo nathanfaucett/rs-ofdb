@@ -1,5 +1,4 @@
 import { Client } from "./client.js";
-import { Error, wrapError } from "./error.js";
 import type { WasmKvDatabase } from "./wasm.js";
 import { loadWasm } from "./wasm.js";
 import {

@@ -1,5 +1,4 @@
 import { Client } from "./client.js";
-import { Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
 import type { WasmSqlDatabase } from "./wasm.js";
 import { loadWasm } from "./wasm.js";

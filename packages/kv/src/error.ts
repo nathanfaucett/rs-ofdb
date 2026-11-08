@@ -13,15 +13,15 @@ export class DbError extends globalThis.Error {
 }
 
 /** Error from a KV store operation. */
-export class Error extends DbError {
+export class KvError extends DbError {
   constructor(kind: DbErrorKind, message: string, options?: ErrorOptions) {
     super(kind, message, options);
-    this.name = "Error";
+    this.name = "KvError";
   }
 }
 
 /** Wrap a raw WASM/JS error into a typed DbError subclass. */
-export function wrapError(error: unknown, fallback: typeof Error): DbError {
+export function wrapError(error: unknown, fallback: typeof KvError): DbError {
   if (error instanceof DbError) return error;
   const message =
     error instanceof globalThis.Error ? error.message : String(error);

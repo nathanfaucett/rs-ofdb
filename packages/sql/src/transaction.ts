@@ -1,4 +1,3 @@
-import { CommitError, Error, wrapError } from "./error.js";
 import { Handle } from "./handle.js";
 import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
