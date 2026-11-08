@@ -1,7 +1,7 @@
 import {
-  Database as SqlDatabase,
-  type Client as SqlClient,
   JsSqlSyncTransport,
+  type Client as SqlClient,
+  Database as SqlDatabase,
   SqlSessionConfig,
   SqlSyncRole,
 } from "@ofsdk/sql";

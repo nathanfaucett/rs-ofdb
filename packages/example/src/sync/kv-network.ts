@@ -1,10 +1,10 @@
 import {
-  Database as KvDatabase,
-  type Client as KvClient,
   JsKvSyncTransport,
-  KvSyncRole,
-  KvSyncConfig,
   type KvChangeSubscription,
+  type Client as KvClient,
+  Database as KvDatabase,
+  KvSyncConfig,
+  KvSyncRole,
 } from "@ofsdk/kv";
 import { LoopbackTransport } from "./transport.js";
 

@@ -1,39 +1,58 @@
 <script lang="ts">
-    interface PeerLike {
-        id: string;
-        name: string;
-        online: boolean;
-        syncing: boolean;
-        lastSync: string;
-        error: string;
-    }
+interface PeerLike {
+  id: string;
+  name: string;
+  online: boolean;
+  syncing: boolean;
+  lastSync: string;
+  error: string;
+  recordCount: number;
+}
 
-    let {
-        peer,
-        canRemove,
-        onToggleOnline,
-        onRemove,
-        children,
-    }: {
-        peer: PeerLike;
-        canRemove: boolean;
-        onToggleOnline: (id: string, online: boolean) => void;
-        onRemove: (id: string) => void;
-        children?: import("svelte").Snippet;
-    } = $props();
+let {
+  peer,
+  canRemove,
+  onToggleOnline,
+  onRemove,
+  children,
+}: {
+  peer: PeerLike;
+  canRemove: boolean;
+  onToggleOnline: (id: string, online: boolean) => void;
+  onRemove: (id: string) => void;
+  children?: import("svelte").Snippet;
+} = $props();
 
-    let showDeleteDialog = $state(false);
+let showDeleteDialog = $state(false);
+
+function getStatusClass(): string {
+  return peer.online
+    ? "bg-green-100 text-green-800"
+    : "bg-red-100 text-red-800";
+}
+
+function getStatusText(): string {
+  return peer.online ? "Online" : "Offline";
+}
+
+function getToggleClass(): string {
+  return peer.online
+    ? "bg-orange-600 hover:bg-orange-700"
+    : "bg-green-600 hover:bg-green-700";
+}
+
+function getToggleText(): string {
+  return peer.online ? "Go Offline" : "Go Online";
+}
 </script>
 
 <div class="rounded-lg border border-gray-300 bg-gray-50 p-3">
     <div class="mb-2 flex items-center gap-2">
         <span class="font-semibold">{peer.name}</span>
         <span
-            class="rounded-full px-2 py-0.5 text-xs font-medium {peer.online
-                ? 'bg-green-100 text-green-800'
-                : 'bg-red-100 text-red-800'}"
+            class="rounded-full px-2 py-0.5 text-xs font-medium {getStatusClass()}"
         >
-            {peer.online ? "Online" : "Offline"}
+            {getStatusText()}
         </span>
     </div>
 
@@ -51,12 +70,10 @@
 
     <div class="mt-2 flex gap-2">
         <button
-            class="flex-1 rounded-md px-3 py-1.5 text-sm font-medium text-white transition-colors {peer.online
-                ? 'bg-orange-600 hover:bg-orange-700'
-                : 'bg-green-600 hover:bg-green-700'}"
+            class="flex-1 rounded-md px-3 py-1.5 text-sm font-medium text-white transition-colors {getToggleClass()}"
             onclick={() => onToggleOnline(peer.id, !peer.online)}
         >
-            {peer.online ? "Go Offline" : "Go Online"}
+            {getToggleText()}
         </button>
         {#if canRemove}
             <button
@@ -70,7 +87,12 @@
 </div>
 
 {#if showDeleteDialog}
-    <div class="fixed inset-0 z-50 flex items-center justify-center">
+    <div
+        class="fixed inset-0 z-50 flex items-center justify-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-dialog-title"
+    >
         <button
             class="fixed inset-0 bg-black/50"
             onclick={() => (showDeleteDialog = false)}
@@ -80,7 +102,9 @@
             class="rounded-lg border border-gray-300 bg-white p-6 max-w-sm"
             open
         >
-            <h3 class="mb-2 text-lg font-semibold">Remove {peer.name}?</h3>
+            <h3 id="delete-dialog-title" class="mb-2 text-lg font-semibold">
+                Remove {peer.name}?
+            </h3>
             <p class="mb-4 text-sm text-gray-600">
                 This will delete the peer and its local database. This action
                 cannot be undone.

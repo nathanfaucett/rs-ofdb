@@ -1,7 +1,5 @@
 # AGENTS.md
 
-For domain information, see [GLOSSARY.md](GLOSSARY.md).
-
 ## Refactoring Protocol
 
 - ALWAYS choose rewriting and deleting over modifying or wrapping old code.
@@ -49,12 +47,16 @@ For domain information, see [GLOSSARY.md](GLOSSARY.md).
 - Assess new features and changes for complexity, risk, and priority before implementation.
 - Run `just crap` as final validation after implementation is complete, not incrementally.
 
-## Agent skills
+## Agent Skills
 
 ### Issue tracker
 
 Issues live as Markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
 
-### Domain docs
+### Triage Labels
+
+Use the default canonical labels. See `docs/agents/triage-labels.md`.
+
+### Domain Docs
 
 Use a single-context `GLOSSARY.md` at the repo root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.

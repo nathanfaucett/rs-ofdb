@@ -5,8 +5,9 @@
   "type": "module",
   "description": "Svelte + Tailwind browser example for @ofsdk/kv and @ofsdk/sql (KV + SQL over IndexedDB)",
   "scripts": {
+    "predev": "[ -n \"$BUILD_WASM\" ] && pnpm --filter @ofsdk/kv run build:wasm && pnpm --filter @ofsdk/sql run build:wasm || true",
     "dev": "portless ofdb-example vite dev",
-    "build": "vite build",
+    "build": "vite build && node scripts/verify-wasm.js",
     "preview": "portless ofdb-example vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "biome check src/",
