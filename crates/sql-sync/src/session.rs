@@ -21,8 +21,8 @@ use value::Value;
 use crate::pre_apply::{ApplyError, Check, CheckFuture, check_apply};
 use crate::scope::TableScope;
 use crate::{
-    PROTOCOL_VERSION, SyncDirection, SyncHello, SyncIncrementalChange, SyncKey, SyncManifest,
-    SyncMessage, SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStage, SyncStageFactory,
+    PROTOCOL_VERSION, SyncHello, SyncIncrementalChange, SyncKey, SyncManifest, SyncMessage,
+    SyncRowCodec, SyncRowInventory, SyncSnapshotRequest, SyncStage, SyncStageFactory,
     SyncStateUnit, SyncTransport,
 };
 
@@ -47,9 +47,6 @@ pub enum SyncRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionConfig {
-    /// Scoped peers must declare complementary directions. Non-bidirectional
-    /// unscoped sessions reject; role only determines turn ordering.
-    pub direction: SyncDirection,
     pub max_units_per_frame: usize,
     pub max_session_bytes: usize,
 }
@@ -57,7 +54,6 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            direction: SyncDirection::Bidirectional,
             max_units_per_frame: 64,
             max_session_bytes: DEFAULT_MAX_SESSION_BYTES,
         }
@@ -206,10 +202,7 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    if config.max_units_per_frame == 0
-        || config.max_session_bytes == 0
-        || config.direction != SyncDirection::Bidirectional
-    {
+    if config.max_units_per_frame == 0 || config.max_session_bytes == 0 {
         return Err(SyncError::InvalidConfiguration);
     }
     let message = SyncMessage::Selection {
@@ -401,9 +394,8 @@ where
     }
     let mut scope = sync_stage(|| TableScope::new(engine, tables, &validate)).await?;
     scope.validate_candidate = validate_candidate;
-    scope.direction = config.direction;
-    let frame = postcard::to_allocvec(&(&scope.names, scope.direction))
-        .map_err(|e| SyncError::Protocol(e.to_string()))?;
+    let frame =
+        postcard::to_allocvec(&scope.names).map_err(|e| SyncError::Protocol(e.to_string()))?;
     if frame.len() > MAX_MESSAGE_BYTES {
         return Err(SyncError::InvalidConfiguration);
     }
@@ -421,7 +413,7 @@ where
     if remote.len() > MAX_MESSAGE_BYTES {
         return Err(SyncError::InvalidConfiguration);
     }
-    let ((names, direction), remaining): ((Vec<String>, SyncDirection), _) =
+    let (names, remaining): (Vec<String>, _) =
         postcard::take_from_bytes(&remote).map_err(|e| SyncError::Protocol(e.to_string()))?;
     if !remaining.is_empty() {
         return Err(SyncError::Protocol(String::from(
@@ -431,11 +423,7 @@ where
     if names != scope.names {
         return Err(SyncError::Protocol(String::from("table scopes differ")));
     }
-    if !scope.direction.complements(direction) {
-        return Err(SyncError::Protocol(String::from(
-            "incompatible scoped sync directions",
-        )));
-    }
+
     sync_stage(|| {
         synchronize_scoped(
             engine,
@@ -472,9 +460,6 @@ where
     F: SyncStageFactory,
     F::Stage: 'static,
 {
-    if scope.is_none() && config.direction != SyncDirection::Bidirectional {
-        return Err(SyncError::InvalidConfiguration);
-    }
     let authority = scope.clone();
     let mut check = || {
         let pending = sync_stage(&mut check);
@@ -493,7 +478,7 @@ where
         return Err(SyncError::InvalidConfiguration);
     }
 
-    if scope.is_some() && config.direction.sends_history() {
+    if scope.is_some() {
         // Preserve complete outgoing scoped history/candidate validation before publication.
         with_engine_abort(
             transport,
@@ -544,25 +529,21 @@ where
         .into_iter()
         .map(|inventory| (inventory.key(), inventory))
         .collect::<BTreeMap<_, _>>();
-    let outbound = if !config.direction.sends_history() {
-        Outbound::default()
-    } else {
-        with_engine_abort(
-            transport,
-            sync_stage(|| {
-                build_outbound(
-                    engine,
-                    summaries,
-                    &remote_manifest,
-                    remote_inventories,
-                    config.max_session_bytes,
-                    scope.as_ref(),
-                )
-            })
-            .await,
-        )
-        .await?
-    };
+    let outbound = with_engine_abort(
+        transport,
+        sync_stage(|| {
+            build_outbound(
+                engine,
+                summaries,
+                &remote_manifest,
+                remote_inventories,
+                config.max_session_bytes,
+                scope.as_ref(),
+            )
+        })
+        .await,
+    )
+    .await?;
 
     let (sent, mut received) = match role {
         SyncRole::Initiator => {
@@ -601,32 +582,20 @@ where
 
     let local_requests = core::mem::take(&mut received.requests);
     let remote_requests = exchange_snapshot_requests(transport, role, &local_requests).await?;
-    if !config.direction.sends_history() && !remote_requests.is_empty() {
-        return with_engine_abort(
-            transport,
-            Err(EngineError::InvalidQuery(
-                "Reverse recovery publication is forbidden",
-            )),
-        )
-        .await;
-    }
-    let recovery = if !config.direction.sends_history() {
-        Vec::new()
-    } else {
-        with_engine_abort(
-            transport,
-            sync_stage(|| {
-                recovery_snapshots(
-                    engine,
-                    remote_requests,
-                    config.max_session_bytes,
-                    scope.as_ref(),
-                )
-            })
-            .await,
-        )
-        .await?
-    };
+
+    let recovery = with_engine_abort(
+        transport,
+        sync_stage(|| {
+            recovery_snapshots(
+                engine,
+                remote_requests,
+                config.max_session_bytes,
+                scope.as_ref(),
+            )
+        })
+        .await,
+    )
+    .await?;
     let (sent_recovery, (received_recovery, retried_changes)) = match role {
         SyncRole::Initiator => {
             let sent = send_snapshots(transport, &recovery, config.max_units_per_frame).await?;
@@ -983,11 +952,6 @@ where
     K: Kernel,
     R: SyncRowCodec<K::Transaction>,
 {
-    if scope.is_some_and(|scope| !scope.direction.receives_history())
-        && (!snapshots.is_empty() || !changes.is_empty())
-    {
-        return Err(EngineError::InvalidQuery("Reverse history apply is forbidden").into());
-    }
     validate_state_batch(&snapshots)?;
     validate_change_batch(&changes)?;
     validate_row_addresses(&snapshots, &changes)?;
@@ -2082,19 +2046,6 @@ where
             max_session_bytes,
         )
         .await?;
-        if scope
-            .as_deref()
-            .is_some_and(|scope| !scope.direction.receives_history())
-            && matches!(&message, SyncMessage::State(_) | SyncMessage::Changes(_))
-        {
-            with_engine_abort(
-                transport,
-                Err::<(), _>(EngineError::InvalidQuery(
-                    "Reverse history apply is forbidden",
-                )),
-            )
-            .await?;
-        }
         match message {
             SyncMessage::State(batch) => {
                 for snapshot in batch {
@@ -2599,19 +2550,6 @@ where
             max_session_bytes,
         )
         .await?;
-        if scope
-            .as_deref()
-            .is_some_and(|scope| !scope.direction.receives_history())
-            && matches!(&message, SyncMessage::State(_) | SyncMessage::Changes(_))
-        {
-            with_engine_abort(
-                transport,
-                Err::<(), _>(EngineError::InvalidQuery(
-                    "Reverse history apply is forbidden",
-                )),
-            )
-            .await?;
-        }
         match message {
             SyncMessage::State(batch) => {
                 for unit in batch {

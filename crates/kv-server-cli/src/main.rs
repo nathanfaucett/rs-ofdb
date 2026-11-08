@@ -6,6 +6,8 @@ use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 use clap::Parser;
 #[cfg(feature = "p2p")]
 use iroh::EndpointId;
+#[cfg(feature = "p2p")]
+use std::str::FromStr;
 
 #[derive(Debug, Parser)]
 #[command(about = "Run an ofdb KV database server")]
@@ -26,12 +28,12 @@ struct Args {
     tls_client_ca: Option<PathBuf>,
 
     #[cfg(feature = "p2p")]
-    #[arg(long, env = "OFDB_SYNC_LISTEN")]
-    sync_listen: bool,
-
-    #[cfg(feature = "p2p")]
     #[arg(long = "sync-peer", env = "OFDB_SYNC_PEER", value_name = "NODE_ID")]
     sync_peers: Vec<EndpointId>,
+
+    #[cfg(feature = "p2p")]
+    #[arg(long, env = "OFDB_SYNC_PEERS_FILE", value_name = "FILE")]
+    sync_peers_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -47,12 +49,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     let client_ca = args.tls_client_ca.map(std::fs::read).transpose()?;
 
     #[cfg(feature = "p2p")]
-    let (shutdown_sender, p2p_task) = start_p2p(
-        Arc::clone(&database),
-        secret_path,
-        args.sync_listen,
-        args.sync_peers,
-    );
+    let sync_peers = merge_sync_peers(args.sync_peers, args.sync_peers_file)?;
+    let (shutdown_sender, p2p_task) = start_p2p(Arc::clone(&database), secret_path, sync_peers);
     let result = database
         .serve_tcp_with_client_ca(args.address, identity, client_ca, async {
             tokio::signal::ctrl_c()
@@ -87,14 +85,13 @@ fn load_identity(
 fn start_p2p(
     database: Arc<ofdb_kv::Database>,
     secret_path: PathBuf,
-    sync_listen: bool,
     sync_peers: Vec<EndpointId>,
 ) -> (
     tokio::sync::watch::Sender<bool>,
     Option<tokio::task::JoinHandle<Result<(), io::Error>>>,
 ) {
     let (shutdown_sender, shutdown_receiver) = tokio::sync::watch::channel(false);
-    let task = if !sync_listen && sync_peers.is_empty() {
+    let task = if sync_peers.is_empty() {
         None
     } else {
         Some(tokio::spawn(p2p::run(
@@ -119,11 +116,30 @@ async fn finish_p2p(
     Ok(())
 }
 
+#[cfg(feature = "p2p")]
+fn merge_sync_peers(
+    cli_peers: Vec<EndpointId>,
+    peers_file: Option<PathBuf>,
+) -> Result<Vec<EndpointId>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut peers = cli_peers;
+    if let Some(path) = peers_file {
+        let content = std::fs::read_to_string(&path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            peers.push(EndpointId::from_str(line)?);
+        }
+    }
+    Ok(peers)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::ErrorKind, path::PathBuf};
 
-    use super::load_identity;
+    use super::{load_identity, merge_sync_peers};
 
     #[test]
     fn tls_identity_requires_certificate_and_key_as_a_pair() {
@@ -136,5 +152,44 @@ mod tests {
                 .expect("no TLS files means plaintext transport")
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn merge_sync_peers_reads_file() {
+        use iroh::SecretKey;
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("peers.txt");
+        let key1 = SecretKey::generate().public();
+        let key2 = SecretKey::generate().public();
+        let mut f = std::fs::File::create(&file).unwrap();
+        writeln!(f, "{}", key1).unwrap();
+        writeln!(f, "# comment").unwrap();
+        writeln!(f, "{}", key2).unwrap();
+        writeln!(f, "").unwrap();
+        let peers = merge_sync_peers(vec![], Some(file)).unwrap();
+        assert_eq!(peers.len(), 2);
+        assert!(peers.contains(&key1));
+        assert!(peers.contains(&key2));
+    }
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn merge_sync_peers_combines_cli_and_file() {
+        use iroh::SecretKey;
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("peers.txt");
+        let key1 = SecretKey::generate().public();
+        let key2 = SecretKey::generate().public();
+        let key3 = SecretKey::generate().public();
+        let mut f = std::fs::File::create(&file).unwrap();
+        writeln!(f, "{}", key2).unwrap();
+        let peers = merge_sync_peers(vec![key1, key3], Some(file)).unwrap();
+        assert_eq!(peers.len(), 3);
+        assert!(peers.contains(&key1));
+        assert!(peers.contains(&key2));
+        assert!(peers.contains(&key3));
     }
 }

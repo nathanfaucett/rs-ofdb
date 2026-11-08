@@ -6,9 +6,9 @@ use ofdb_kv::{encode_value, parse_value};
 use ofdb_sql::{Client, Database, QueryParams, QueryResult, Transaction};
 #[cfg(feature = "sync")]
 use ofdb_sql::{
-    SessionConfig as OfdbSqlSessionConfig, SyncDirection as OfdbSqlSyncDirection,
-    SyncError as OfdbSqlSyncErrorEnum, SyncResult as OfdbSqlSyncResult,
-    SyncRole as OfdbSqlSyncRole, SyncTransport as OfdbSqlSyncTransport,
+    SessionConfig as OfdbSqlSessionConfig, SyncError as OfdbSqlSyncErrorEnum,
+    SyncResult as OfdbSqlSyncResult, SyncRole as OfdbSqlSyncRole,
+    SyncTransport as OfdbSqlSyncTransport,
 };
 use serde_json::Value as Json;
 use wasm_bindgen::JsError;
@@ -111,28 +111,6 @@ impl From<OfdbSqlSyncRole> for SqlSyncRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SqlSyncDirection {
     Bidirectional = 0,
-    SendOnly = 1,
-    ReceiveOnly = 2,
-}
-
-impl From<SqlSyncDirection> for OfdbSqlSyncDirection {
-    fn from(dir: SqlSyncDirection) -> Self {
-        match dir {
-            SqlSyncDirection::Bidirectional => OfdbSqlSyncDirection::Bidirectional,
-            SqlSyncDirection::SendOnly => OfdbSqlSyncDirection::SendOnly,
-            SqlSyncDirection::ReceiveOnly => OfdbSqlSyncDirection::ReceiveOnly,
-        }
-    }
-}
-
-impl From<OfdbSqlSyncDirection> for SqlSyncDirection {
-    fn from(dir: OfdbSqlSyncDirection) -> Self {
-        match dir {
-            OfdbSqlSyncDirection::Bidirectional => SqlSyncDirection::Bidirectional,
-            OfdbSqlSyncDirection::SendOnly => SqlSyncDirection::SendOnly,
-            OfdbSqlSyncDirection::ReceiveOnly => SqlSyncDirection::ReceiveOnly,
-        }
-    }
 }
 
 /// Sync configuration.
@@ -148,16 +126,6 @@ impl SqlSessionConfig {
         Self {
             inner: OfdbSqlSessionConfig::default(),
         }
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn direction(&self) -> SqlSyncDirection {
-        self.inner.direction.into()
-    }
-
-    #[wasm_bindgen(setter)]
-    pub fn set_direction(&mut self, value: SqlSyncDirection) {
-        self.inner.direction = value.into();
     }
 
     #[wasm_bindgen(getter)]

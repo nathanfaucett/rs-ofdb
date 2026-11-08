@@ -12,7 +12,6 @@ extern crate std;
 
 mod candidate;
 mod codec;
-mod direction;
 #[cfg(all(
     feature = "native-stage",
     not(all(target_arch = "wasm32", target_os = "unknown"))
@@ -40,7 +39,6 @@ pub use sync_runtime::ChangeSubscription;
 
 pub use candidate::{SyncCandidateView, SyncRowView, SyncTableView, SyncValidationDirection};
 pub use codec::{InspectedHistory, SyncRowCodec};
-pub use direction::SyncDirection;
 #[cfg(feature = "iroh")]
 pub use iroh_transport::IrohTransport;
 pub use protocol::{

@@ -14,7 +14,7 @@ use engine::{
 use value::{Row, Value, ValueType};
 
 use crate::candidate::CandidateValidator;
-use crate::{SyncCandidateView, SyncDirection, SyncKey, SyncRowCodec, SyncStateUnit};
+use crate::{SyncCandidateView, SyncKey, SyncRowCodec, SyncStateUnit};
 
 type Columns = Vec<(String, ValueType, Value, bool)>;
 type Index = (String, bool, Vec<String>);
@@ -28,7 +28,6 @@ type ValueValidator<'a> = dyn Fn(&str, &str, &Value) -> Result<(), String> + 'a;
 pub(crate) struct TableScope<'a> {
     validate_value: &'a ValueValidator<'a>,
     pub validate_candidate: Option<&'a CandidateValidator<'a>>,
-    pub direction: SyncDirection,
     pub names: Vec<String>,
     columns: BTreeMap<String, Columns>,
     indices: BTreeMap<String, Index>,
@@ -67,7 +66,6 @@ impl<'a> TableScope<'a> {
         let mut scope = Self {
             validate_value,
             validate_candidate: None,
-            direction: SyncDirection::Bidirectional,
             names: Vec::new(),
             columns: BTreeMap::new(),
             indices: BTreeMap::new(),

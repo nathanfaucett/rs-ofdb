@@ -2744,6 +2744,7 @@ dependencies = [
  "iroh",
  "iroh-relay",
  "ofdb-kv",
+ "tempfile",
  "tokio",
 ]
 
@@ -3001,6 +3002,7 @@ dependencies = [
  "iroh-relay",
  "ofdb-sql",
  "ofdb-sql-sync",
+ "tempfile",
  "tokio",
 ]
 
