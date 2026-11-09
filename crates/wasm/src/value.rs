@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ofdb_value::{JsonValue, Value};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
@@ -21,7 +22,7 @@ pub(crate) fn value_to_json(value: &Value) -> Json {
             .unwrap_or(Json::Null),
         Value::Text(s) => Json::String(s.clone()),
         Value::Json(j) => json_value_to_json(j),
-        Value::Blob(b) => Json::String(base64::encode(b)),
+        Value::Blob(b) => Json::String(STANDARD.encode(b)),
         Value::Uuid(u) => Json::String(u.to_string()),
         Value::Type(_) => Json::Null,
     }
@@ -66,7 +67,7 @@ pub(crate) fn value_from_json(value: &Json) -> Value {
             }
         }
         Json::String(s) => {
-            if let Ok(bytes) = base64::decode(s) {
+            if let Ok(bytes) = STANDARD.decode(s) {
                 Value::Blob(bytes)
             } else {
                 Value::Text(s.clone())
