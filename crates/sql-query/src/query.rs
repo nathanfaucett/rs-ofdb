@@ -136,7 +136,6 @@ pub struct QueryResultColumn {
     feature = "wasm",
     derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
 )]
-#[cfg_attr(feature = "wasm")]
 pub struct QueryResult {
     pub rows: Vec<Row>,
     pub columns: Vec<QueryResultColumn>,
