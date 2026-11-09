@@ -8,11 +8,7 @@ use value::{Value, ValueType};
 pub type ColumnSchemaIndex = u32;
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ColumnSchema {
     pub name: String,
     pub r#type: ValueType,
@@ -21,11 +17,7 @@ pub struct ColumnSchema {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct IndexSchema {
     pub name: String,
     pub table_name: String,
@@ -34,11 +26,7 @@ pub struct IndexSchema {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct TableSchema {
     pub name: String,
     pub columns: Vec<ColumnSchema>,

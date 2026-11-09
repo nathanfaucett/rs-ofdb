@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 js-sys = { version = "0.3", default-features = false }
-wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+wasm-bindgen = { version = "0.2", default-features = false }
 wasm-bindgen-futures = { version = "0.4", default-features = false }
 web-sys = { version = "0.3", default-features = false }
 uuid = { version = "1.29", default-features = false, features = ["v7", "js"] }

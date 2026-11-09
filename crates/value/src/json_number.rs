@@ -12,11 +12,7 @@ use core::{
     feature = "automerge",
     derive(autosurgeon::Hydrate, autosurgeon::Reconcile)
 )]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum JsonNumber {
     I64(i64),
     U64(u64),

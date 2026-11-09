@@ -7,11 +7,7 @@ use schema::{ColumnSchema, IndexSchema, TableSchema};
 use value::{Row, Value};
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryColumn {
     pub table: String,
     pub column: String,
@@ -24,11 +20,7 @@ impl QueryColumn {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryJoinKind {
     Inner,
     Left,
@@ -37,11 +29,7 @@ pub enum QueryJoinKind {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryJoin {
     pub kind: QueryJoinKind,
     pub table: String,
@@ -49,33 +37,21 @@ pub struct QueryJoin {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QuerySortDirection {
     Asc,
     Desc,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryOrderBy {
     pub by: QueryColumn,
     pub direction: QuerySortDirection,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryExprValue {
     Column(QueryColumn),
     ExcludedColumn(String),
@@ -83,11 +59,7 @@ pub enum QueryExprValue {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryExpr {
     Value(QueryExprValue),
     Not(Box<QueryExpr>),
@@ -119,11 +91,7 @@ pub enum QueryExpr {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryCountTarget {
     AllRows,                    // COUNT(*)
     Single(String),             // COUNT(col)
@@ -132,11 +100,7 @@ pub enum QueryCountTarget {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryAggregate {
     Count(QueryCountTarget),
     Sum(QueryColumn),
@@ -146,33 +110,21 @@ pub enum QueryAggregate {
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryFrom {
     pub table: String,
     pub joins: Vec<QueryJoin>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryUpdateAssignment {
     pub column: QueryColumn,
     pub value: QueryExprValue,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryResultColumn {
     pub name: String,
     pub source_table: Option<String>,
@@ -184,7 +136,7 @@ pub struct QueryResultColumn {
     feature = "wasm",
     derive(serde::Serialize, serde::Deserialize, tsify::Tsify)
 )]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "wasm")]
 pub struct QueryResult {
     pub rows: Vec<Row>,
     pub columns: Vec<QueryResultColumn>,
@@ -204,33 +156,21 @@ impl QueryResult {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryHavingCountOperator {
     GreaterThan,
     GreaterThanOrEquals,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryHavingCount {
     pub operator: QueryHavingCountOperator,
     pub value: i64,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryTextConcat {
     pub column: QueryColumn,
     pub literal: String,
@@ -238,11 +178,7 @@ pub struct QueryTextConcat {
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QuerySelect {
     pub from: QueryFrom,
     pub projection: Vec<QueryColumn>,
@@ -257,11 +193,7 @@ pub struct QuerySelect {
     pub having: Option<QueryHavingCount>,
 }
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryInsert {
     pub table: String,
     pub row: Row,
@@ -269,22 +201,14 @@ pub struct QueryInsert {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryInsertValue {
     Value(Value),
     Default,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryInsertValues {
     pub table: String,
     pub columns: Vec<String>,
@@ -294,11 +218,7 @@ pub struct QueryInsertValues {
     pub on_conflict_do_update: Option<(Vec<String>, Vec<QueryUpdateAssignment>)>,
 }
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryUpdate {
     pub from: QueryFrom,
     pub assignments: Vec<QueryUpdateAssignment>,
@@ -306,11 +226,7 @@ pub struct QueryUpdate {
     pub returning: Option<Vec<QueryColumn>>,
 }
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct QueryDelete {
     pub from: QueryFrom,
     pub predicate: Option<QueryExpr>,
@@ -318,11 +234,7 @@ pub struct QueryDelete {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Query {
     Select(QuerySelect),
     Insert(QueryInsert),
@@ -332,11 +244,7 @@ pub enum Query {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AlterTableOperation {
     AddColumn(ColumnSchema),
     DropColumn(String),
@@ -348,21 +256,13 @@ pub enum AlterTableOperation {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AlterIndexOperation {
     Rename { new_name: String },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum DataDefinition {
     CreateTable {
         schema: TableSchema,
@@ -407,11 +307,7 @@ pub enum DataDefinition {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Statement {
     Query(Query),
     DataDefinition(DataDefinition),

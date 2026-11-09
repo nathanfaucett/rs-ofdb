@@ -21,11 +21,7 @@ use crate::JsonValue;
     feature = "automerge",
     derive(autosurgeon::Hydrate, autosurgeon::Reconcile)
 )]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Value {
     #[default]
     Null,
@@ -298,11 +294,7 @@ impl Value {
     feature = "automerge",
     derive(autosurgeon::Hydrate, autosurgeon::Reconcile)
 )]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Row {
     pub values: Vec<Value>,
 }

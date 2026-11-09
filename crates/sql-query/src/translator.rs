@@ -16,11 +16,7 @@ use value::Value;
 use crate::Statement;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(
-    feature = "wasm",
-    derive(tsify::Tsify),
-    tsify(into_wasm_abi, from_wasm_abi)
-)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryParams {
     Positional(Vec<Value>),
     Named(BTreeMap<String, Value>),

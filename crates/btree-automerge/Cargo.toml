@@ -13,7 +13,7 @@ path = "src/lib.rs"
 name = "btree_automerge"
 
 [features]
-wasm = ["automerge/wasm"]
+wasm = []
 default = []
 
 [dependencies]
