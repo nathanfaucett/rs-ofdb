@@ -407,24 +407,14 @@ impl<'a> Stream for EventStream<'a> {
             .collect::<FuturesUnordered<_>>();
 
         // Poll each future to register waker
-        loop {
-            match Pin::new(&mut waiting).poll_next(cx) {
-                Poll::Ready(Some(Ok(_))) => {
-                    // New changes available, will be delivered on next poll
-                    return Poll::Pending;
-                }
-                Poll::Ready(Some(Err(_))) => {
-                    return Poll::Ready(None);
-                }
-                Poll::Ready(None) => {
-                    break;
-                }
-                Poll::Pending => {
-                    return Poll::Pending;
-                }
+        match Pin::new(&mut waiting).poll_next(cx) {
+            Poll::Ready(Some(Ok(_))) => {
+                // New changes available, will be delivered on next poll
+                Poll::Pending
             }
+            Poll::Ready(Some(Err(_))) => Poll::Ready(None),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
-
-        Poll::Ready(None)
     }
 }
