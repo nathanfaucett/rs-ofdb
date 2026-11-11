@@ -410,6 +410,12 @@ pub struct KvChangeSubscription {
     inner: ofdb_btree::ChangeSubscription,
 }
 
+impl KvChangeSubscription {
+    pub(crate) fn new(inner: ofdb_btree::ChangeSubscription) -> Self {
+        Self { inner }
+    }
+}
+
 #[wasm_bindgen]
 impl KvChangeSubscription {
     /// Get the next change event from the stream.
@@ -444,6 +450,12 @@ impl KvChangeSubscription {
 #[wasm_bindgen]
 pub struct SqlChangeSubscription {
     inner: ofdb_btree::ChangeSubscription,
+}
+
+impl SqlChangeSubscription {
+    pub(crate) fn new(inner: ofdb_btree::ChangeSubscription) -> Self {
+        Self { inner }
+    }
 }
 
 #[wasm_bindgen]

@@ -1,6 +1,5 @@
 use futures_util::future::FutureExt;
-use ofdb_btree::{ChangeEvent, StorageKey};
-use ofdb_kv::{Database, KvClient, KvTransaction, encode_value};
+use ofdb_kv::{Database, KvClient as InnerKvClient, KvTransaction as InnerKvTransaction, encode_value, KvEntry};
 use ofdb_sync::{
     PushConfig as OfdbPushConfig, PushResult as OfdbPushResult,
     PushSyncTransport as OfdbPushSyncTransport, PushSynchronizeConfig as OfdbPushSynchronizeConfig,
@@ -9,10 +8,9 @@ use ofdb_sync::{
 use serde_json::Value as Json;
 use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::value::{parse_json, write_json};
+use crate::value::{parse_json, value_to_json, write_json};
 
 #[wasm_bindgen]
 pub struct KvDatabase {
@@ -39,7 +37,7 @@ impl KvDatabase {
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> Result<crate::sync::KvChangeSubscription, JsError> {
         let subscription = self.database.sync_changes()?;
-        Ok(crate::sync::KvChangeSubscription { inner: subscription })
+        Ok(crate::sync::KvChangeSubscription::new(subscription))
     }
 
     /// Push-based synchronization with a remote peer.
@@ -60,17 +58,27 @@ impl KvDatabase {
 
 #[wasm_bindgen]
 pub struct KvClient {
-    client: ofdb_kv::KvClient,
+    client: InnerKvClient,
 }
 
 #[wasm_bindgen]
 impl KvClient {
     pub async fn get(&self, key: String) -> Result<Option<String>, JsError> {
-        Ok(self.client.get(&key).await?.map(|v| v.to_string()))
+        let value = self.client.get(&key).await?;
+        Ok(value.map(|v| write_json(&value_to_json(&v)).unwrap_or_default()))
     }
 
     pub async fn set(&self, key: String, value: String) -> Result<(), JsError> {
-        self.client.set(&key, &value).await?;
+        let json_val: Json = parse_json(&value)?;
+        let kv_value = crate::value::value_from_json(&json_val);
+        self.client.set(&key, kv_value, None).await?;
+        Ok(())
+    }
+
+    pub async fn set_with_expiry(&self, key: String, value: String, expiry_ms: u64) -> Result<(), JsError> {
+        let json_val: Json = parse_json(&value)?;
+        let kv_value = crate::value::value_from_json(&json_val);
+        self.client.set(&key, kv_value, Some(expiry_ms as i64)).await?;
         Ok(())
     }
 
@@ -79,24 +87,54 @@ impl KvClient {
         Ok(())
     }
 
-    pub async fn scan(&self, prefix: String) -> Result<String, JsError> {
-        let results = self.client.scan(&prefix).await?;
-        write_json(&results_to_json(&results))
+    pub async fn scan(&self, start: String, end: String) -> Result<String, JsError> {
+        let results = self.client.scan(&start, &end).await?;
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn scan_prefix(&self, prefix: String) -> Result<String, JsError> {
         let results = self.client.scan_prefix(&prefix).await?;
-        write_json(&results_to_json(&results))
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn scan_all(&self) -> Result<String, JsError> {
         let results = self.client.scan_all().await?;
-        write_json(&results_to_json(&results))
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn transaction(&self) -> Result<KvTransaction, JsError> {
         let tx = self.client.transaction().await?;
-        Ok(KvTransaction { tx })
+        Ok(KvTransaction { tx: Some(tx) })
     }
 
     pub fn with_deadline(&self, ms: u64) -> KvClient {
@@ -114,65 +152,91 @@ impl KvClient {
 
 #[wasm_bindgen]
 pub struct KvTransaction {
-    tx: ofdb_kv::KvTransaction,
+    tx: Option<InnerKvTransaction>,
 }
 
 #[wasm_bindgen]
 impl KvTransaction {
     pub async fn get(&mut self, key: String) -> Result<Option<String>, JsError> {
-        Ok(self.tx.get(&key).await?.map(|v| v.to_string()))
+        let value = self.tx.as_mut().unwrap().get(&key).await?;
+        Ok(value.map(|v| write_json(&value_to_json(&v)).unwrap_or_default()))
     }
 
     pub async fn set(&mut self, key: String, value: String) -> Result<(), JsError> {
-        self.tx.set(&key, &value).await?;
+        let json_val: Json = parse_json(&value)?;
+        let kv_value = crate::value::value_from_json(&json_val);
+        self.tx.as_mut().unwrap().set(&key, kv_value, None).await?;
+        Ok(())
+    }
+
+    pub async fn set_with_expiry(&mut self, key: String, value: String, expiry_ms: u64) -> Result<(), JsError> {
+        let json_val: Json = parse_json(&value)?;
+        let kv_value = crate::value::value_from_json(&json_val);
+        self.tx.as_mut().unwrap().set(&key, kv_value, Some(expiry_ms as i64)).await?;
         Ok(())
     }
 
     pub async fn delete(&mut self, key: String) -> Result<(), JsError> {
-        self.tx.delete(&key).await?;
+        self.tx.as_mut().unwrap().delete(&key).await?;
         Ok(())
     }
 
-    pub async fn scan(&mut self, prefix: String) -> Result<String, JsError> {
-        let results = self.tx.scan(&prefix).await?;
-        write_json(&results_to_json(&results))
+    pub async fn scan(&mut self, start: String, end: String) -> Result<String, JsError> {
+        let results = self.tx.as_mut().unwrap().scan(&start, &end).await?;
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn scan_prefix(&mut self, prefix: String) -> Result<String, JsError> {
-        let results = self.tx.scan_prefix(&prefix).await?;
-        write_json(&results_to_json(&results))
+        let results = self.tx.as_mut().unwrap().scan_prefix(&prefix).await?;
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn scan_all(&mut self) -> Result<String, JsError> {
-        let results = self.tx.scan_all().await?;
-        write_json(&results_to_json(&results))
+        let results = self.tx.as_mut().unwrap().scan_all().await?;
+        let json_results: Vec<Json> = results.iter().map(|(k, v)| {
+            Json::Object(
+                [
+                    ("key".to_owned(), Json::String(k.clone())),
+                    ("value".to_owned(), value_to_json(v)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }).collect();
+        write_json(&Json::Array(json_results))
     }
 
     pub async fn commit(&mut self) -> Result<(), JsError> {
-        self.tx.commit().await?;
+        if let Some(tx) = self.tx.take() {
+            tx.commit().await?;
+        }
         Ok(())
     }
 
     pub async fn rollback(&mut self) -> Result<(), JsError> {
-        self.tx.rollback().await?;
+        if let Some(tx) = self.tx.take() {
+            tx.rollback().await?;
+        }
         Ok(())
     }
-}
-
-fn results_to_json(results: &[ofdb_kv::KvEntry]) -> Json {
-    Json::Array(
-        results
-            .iter()
-            .map(|entry| {
-                Json::Object(
-                    [
-                        ("key".to_owned(), Json::String(entry.key.clone())),
-                        ("value".to_owned(), encode_value(&entry.value)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                )
-            })
-            .collect(),
-    )
 }

@@ -42,7 +42,7 @@ impl SqlDatabase {
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> Result<crate::sync::SqlChangeSubscription, JsError> {
         let subscription = self.database.sync_changes()?;
-        Ok(crate::sync::SqlChangeSubscription { inner: subscription })
+        Ok(crate::sync::SqlChangeSubscription::new(subscription))
     }
 
     /// Push-based synchronization with a remote peer.

@@ -1,3 +1,2 @@
-/target
-/node_modules
-.scratch/sql-typed-responses/worktrees/
+target/
+node_modules/

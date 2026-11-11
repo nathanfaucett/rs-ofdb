@@ -405,7 +405,7 @@ impl Database {
     /// DEPRECATED: Use push-based synchronization instead.
     pub async fn export_snapshots(&self) -> Result<Vec<crate::KvSnapshot>, Error> {
         Err(Error::Storage {
-            kind: ErrorKind::UnsupportedOperation,
+            kind: crate::ErrorKind::UnsupportedOperation,
             message: "export_snapshots is deprecated; use push-based synchronize".to_string(),
         })
     }
@@ -417,7 +417,7 @@ impl Database {
     /// DEPRECATED: Use push-based synchronization instead.
     pub async fn import_snapshots(&self, _snapshots: Vec<crate::KvSnapshot>) -> Result<(), Error> {
         Err(Error::Storage {
-            kind: ErrorKind::UnsupportedOperation,
+            kind: crate::ErrorKind::UnsupportedOperation,
             message: "import_snapshots is deprecated; use push-based synchronize".to_string(),
         })
     }
