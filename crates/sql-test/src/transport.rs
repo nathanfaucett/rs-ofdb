@@ -2,7 +2,7 @@ use core::fmt;
 
 use futures::{StreamExt, channel::mpsc};
 
-use sync::SyncTransport;
+use sync::{PushMessage, PushSyncTransport};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InMemoryTransportError {
@@ -25,24 +25,19 @@ impl fmt::Display for InMemoryTransportError {
     }
 }
 
+impl std::error::Error for InMemoryTransportError {}
+
 pub struct InMemoryTransport {
-    receiver: mpsc::UnboundedReceiver<Vec<u8>>,
-    sender: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    receiver: mpsc::UnboundedReceiver<PushMessage>,
+    sender: Option<mpsc::UnboundedSender<PushMessage>>,
     fail_at: Option<usize>,
     sent: usize,
 }
 
-impl SyncTransport for InMemoryTransport {
+impl PushSyncTransport for InMemoryTransport {
     type Error = InMemoryTransportError;
 
-    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
-        self.receiver
-            .next()
-            .await
-            .ok_or(InMemoryTransportError::Closed)
-    }
-
-    async fn send(&mut self, frame: Vec<u8>) -> Result<(), Self::Error> {
+    async fn send(&mut self, msg: PushMessage) -> Result<(), Self::Error> {
         if self.fail_at == Some(self.sent) {
             self.sender = None;
             return Err(InMemoryTransportError::Interrupted);
@@ -51,8 +46,15 @@ impl SyncTransport for InMemoryTransport {
         self.sender
             .as_ref()
             .ok_or(InMemoryTransportError::Closed)?
-            .unbounded_send(frame)
+            .unbounded_send(msg)
             .map_err(|_| InMemoryTransportError::Closed)
+    }
+
+    async fn receive(&mut self) -> Result<PushMessage, Self::Error> {
+        self.receiver
+            .next()
+            .await
+            .ok_or(InMemoryTransportError::Closed)
     }
 }
 
@@ -94,7 +96,7 @@ pub fn in_memory_transport_pair_failing(
 mod tests {
     use futures::executor::block_on;
 
-    use super::{InMemoryTransportError, SyncTransport, in_memory_transport_pair_failing_at};
+    use super::{InMemoryTransportError, PushSyncTransport, in_memory_transport_pair_failing_at};
 
     #[test]
     fn failed_send_closes_the_peer() {
@@ -102,7 +104,7 @@ mod tests {
             let (mut left, mut right) = in_memory_transport_pair_failing_at(Some(0));
 
             assert_eq!(
-                left.send(vec![]).await,
+                left.send(sync::PushMessage::Close).await,
                 Err(InMemoryTransportError::Interrupted)
             );
             assert_eq!(right.receive().await, Err(InMemoryTransportError::Closed));

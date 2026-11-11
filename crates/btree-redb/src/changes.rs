@@ -73,4 +73,18 @@ impl Mutations {
         );
         result
     }
+
+    pub(crate) fn take_events(&self) -> Vec<(String, Vec<u8>, Vec<u8>)> {
+        let mut keys = self.keys.lock().expect("transaction mutation lock");
+        let mut events = Vec::new();
+        keys.retain(|(table, key), (old, new)| {
+            if old != new {
+                events.push((table.clone(), key.clone(), new.take().unwrap_or_default()));
+                false
+            } else {
+                true
+            }
+        });
+        events
+    }
 }

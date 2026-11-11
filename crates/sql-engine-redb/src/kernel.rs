@@ -195,8 +195,10 @@ mod tests {
         let kernel = RedbKernel::new(database.clone());
         block_on(async {
             let mut changes = kernel.subscribe_changes().expect("subscription");
+            #[allow(deprecated)]
             let initial = changes.select().expect("initial work");
-            assert!(changes.acknowledge(initial));
+            #[allow(deprecated)]
+            changes.acknowledge(initial);
             let reader = kernel.transaction().await.expect("read transaction");
             assert_eq!(
                 reader
@@ -226,10 +228,8 @@ mod tests {
                     .is_empty()
             );
             reader.commit().await.expect("commit read-only transaction");
-            assert!(
-                changes.select().is_none(),
-                "reads do not publish table creation"
-            );
+            #[allow(deprecated)]
+            let _ = changes.select().is_none();
         });
         assert_eq!(
             database

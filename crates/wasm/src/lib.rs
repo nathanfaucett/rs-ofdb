@@ -3,6 +3,7 @@
 mod kv;
 mod sql;
 mod sql_migration;
+mod sync;
 mod value;
 
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -13,14 +14,10 @@ pub async fn init() {
 }
 
 #[cfg(feature = "sync")]
-pub use kv::{JsKvChangeWork, KvChangeSubscription};
-pub use kv::{
-    JsKvSyncError, JsKvSyncErrorKind, JsKvSyncTransport, JsKvSyncTransportError, KvSyncConfig,
-    KvSyncRole,
+pub use sync::{
+    JsChangeEvent, JsPushSyncError, JsPushSyncErrorKind, JsPushSyncTransport,
+    JsPushSyncTransportError, PushConfig, PushSynchronizeConfig, PushSynchronizeResult,
+    KvChangeSubscription, SqlChangeSubscription,
 };
 pub use kv::{KvClient, KvDatabase, KvTransaction};
-pub use sql::{
-    JsSqlSyncError, JsSqlSyncErrorKind, JsSqlSyncTransport, JsSqlSyncTransportError,
-    SqlSessionConfig, SqlSyncDirection, SqlSyncResult, SqlSyncRole,
-};
 pub use sql::{SqlClient, SqlDatabase, SqlTransaction};

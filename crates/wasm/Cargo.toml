@@ -1,10 +1,10 @@
 [package]
 name = "ofdb-wasm"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.1.0"
+edition = "2024"
+authors = ["nathanfaucett@gmail.com"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nathanfaucett/rs-ofdb"
 description = "Browser (WASM) TypeScript-facing API for ofdb"
 publish = false
 
@@ -29,14 +29,17 @@ ofdb-value = { version = "0.1", path = "../value", package = "ofdb-value", defau
 ofdb-btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
     "std",
 ] }
+ofdb-sync = { version = "0.1", path = "../sync", package = "ofdb-sync", default-features = false, features = [
+    "std",
+] }
 
 # WASM
-base64 = { workspace = true }
-console_error_panic_hook = { workspace = true }
-js-sys = { workspace = true }
-serde_json = { workspace = true }
-wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+console_error_panic_hook = { version = "0.1", default-features = false }
+js-sys = { version = "0.3", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+wasm-bindgen = { version = "0.2", default-features = false }
+wasm-bindgen-futures = { version = "0.4", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

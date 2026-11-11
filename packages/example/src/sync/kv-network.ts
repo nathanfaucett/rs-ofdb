@@ -1,10 +1,12 @@
 import {
-  JsKvSyncTransport,
+  type ChangeEvent as KvChangeEvent,
+  JsPushSyncTransport,
   type KvChangeSubscription,
   type Client as KvClient,
   Database as KvDatabase,
-  KvSyncConfig,
-  KvSyncRole,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
 } from "@ofsdk/kv";
 import { LoopbackTransport } from "./transport.js";
 
@@ -132,21 +134,33 @@ export class KvPeerNetwork {
     const loop = async () => {
       while (!aborted && peer.online && peer.subscription) {
         try {
-          const work = peer.subscription.select();
-          if (!work) {
+          // Wait for new changes
+          const hasChanges = await peer.subscription.wait_for_changes();
+          if (!hasChanges) {
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+
+          // Get all available events
+          const events: KvChangeEvent[] = [];
+          while (true) {
+            const event = await peer.subscription.next_event();
+            if (!event) break;
+            events.push(event);
+          }
+
+          if (events.length === 0) {
             await new Promise((r) => setTimeout(r, 2000));
             continue;
           }
 
           const others = [...this.peers.values()].filter(
-            (p) => p.id !== peer.id && p.online
+            (p) => p.id !== peer.id && p.online,
           );
           for (const target of others) {
             if (aborted || !peer.online || !target.online) break;
             await this.syncPair(peer, target);
           }
-
-          peer.subscription.acknowledge(work);
         } catch (error) {
           if (!aborted) {
             const msg = error instanceof Error ? error.message : String(error);
@@ -176,7 +190,7 @@ export class KvPeerNetwork {
 
   private async syncWithAll(source: KvPeer): Promise<void> {
     const others = [...this.peers.values()].filter(
-      (p) => p.id !== source.id && p.online
+      (p) => p.id !== source.id && p.online,
     );
     for (const target of others) {
       await this.syncPair(source, target);
@@ -208,29 +222,21 @@ export class KvPeerNetwork {
     this.onChange();
 
     const makeConfig = () => {
-      const c = new KvSyncConfig();
-      c.max_snapshots_per_batch = 10;
+      const c = new PushSynchronizeConfig();
+      const proto = new PushConfig();
+      proto.max_frame_bytes = 8 * 1024 * 1024; // 8 MiB
+      proto.max_pending_per_key = 1024;
+      proto.max_total_pending = 65536;
+      proto.session_timeout_ms = 30_000;
+      proto.immediate_ack = true;
+      c.set_protocol(proto);
       return c;
     };
-    const checkFn = () => Promise.resolve(undefined);
-
-    const roleA = a.id < b.id ? KvSyncRole.Initiator : KvSyncRole.Responder;
-    const roleB = a.id < b.id ? KvSyncRole.Responder : KvSyncRole.Initiator;
 
     try {
       await Promise.all([
-        a.db.synchronize_checked(
-          new JsKvSyncTransport(tA),
-          roleA,
-          makeConfig(),
-          checkFn
-        ),
-        b.db.synchronize_checked(
-          new JsKvSyncTransport(tB),
-          roleB,
-          makeConfig(),
-          checkFn
-        ),
+        a.db.synchronize(new JsPushSyncTransport(tA), makeConfig()),
+        b.db.synchronize(new JsPushSyncTransport(tB), makeConfig()),
       ]);
       const now = new Date().toLocaleTimeString();
       a.lastSync = `Synced at ${now}`;

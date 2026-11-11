@@ -14,23 +14,52 @@ path = "src/main.rs"
 
 [features]
 default = ["p2p"]
-p2p = ["dep:iroh", "dep:sql-sync", "ofdb-sql/sync"]
+p2p = ["dep:iroh", "ofdb-sql/sync", "dep:sync"]
 
 [dependencies]
 # Internal dependencies
-ofdb-sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-features = false, features = ["redb", "server"] }
-sql-sync = { version = "0.1", package = "ofdb-sql-sync", path = "../sql-sync", default-features = false, features = ["iroh"], optional = true }
+ofdb-sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-features = false, features = [
+    "redb",
+    "server",
+    "sync",
+] }
+sync = { version = "0.1", package = "ofdb-sync", path = "../sync", default-features = false, features = [
+    "std",
+    "iroh",
+], optional = true }
 
 # External dependencies
-clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "env"] }
+clap = { version = "4.5", default-features = false, features = [
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "env",
+] }
 
 # P2P sync
-iroh = { version = "1.1", default-features = false, features = ["tls-ring"], optional = true }
+iroh = { version = "1.1", default-features = false, features = [
+    "tls-ring",
+], optional = true }
 
-tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tokio = { version = "1.0", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "time",
+] }
 
 [dev-dependencies]
 # Relay integration tests
-iroh = { version = "1.1", default-features = false, features = ["test-utils", "tls-ring"] }
-iroh-relay = { version = "1.1", default-features = false, features = ["server", "test-utils", "tls-ring"] }
+iroh = { version = "1.1", default-features = false, features = [
+    "test-utils",
+    "tls-ring",
+] }
+iroh-relay = { version = "1.1", default-features = false, features = [
+    "server",
+    "test-utils",
+    "tls-ring",
+] }
 tempfile = { version = "3.27", default-features = false }

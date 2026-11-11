@@ -13,7 +13,7 @@ pub struct ChangeSummary {
 }
 
 /// History and generation read from one transaction snapshot, in dependency order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct KvHistory {
     pub id: Vec<u8>,
     pub heads: Vec<[u8; 32]>,

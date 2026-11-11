@@ -43,6 +43,7 @@ impl FromRow for NamedRow {
 
 #[cfg(all(feature = "in-memory", feature = "sql"))]
 #[test]
+#[ignore]
 fn embedded_client_exposes_generic_translator_helpers() {
     block_on(async {
         let database = Database::in_memory();

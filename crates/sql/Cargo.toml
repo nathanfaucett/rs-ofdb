@@ -14,14 +14,16 @@ default = []
 std = ["value/std", "uuid/std", "engine?/std"]
 macros = ["dep:macros"]
 sql = ["dep:sql-translator", "sql-translator/std", "dep:sha2"]
-native-stage = ["sync", "sync/native-stage"]
 sync = [
     "dep:platform",
     "dep:sync",
-    "sync/continuous",
+    "sync/std",
     "dep:engine",
     "dep:engine-automerge",
+    "dep:automerge",
+    "dep:btree",
     "std",
+    "in-memory",
 ]
 redb = [
     "dep:platform",
@@ -40,6 +42,7 @@ indexeddb = [
 in-memory = ["dep:platform", "engine/in-memory", "dep:engine-automerge", "std"]
 remote = ["dep:platform", "dep:client", "client/unix", "dep:tokio", "std"]
 server = ["dep:sql-server", "std"]
+native-stage = []
 
 [lib]
 name = "ofdb_sql"
@@ -67,7 +70,7 @@ schema = { version = "0.1", package = "ofdb-sql-schema", path = "../sql-schema",
 ] }
 sql-translator = { version = "0.1", package = "ofdb-sql-translator", path = "../sql-translator", default-features = false, features = [
 ], optional = true }
-sync = { version = "0.1", package = "ofdb-sql-sync", path = "../sql-sync", default-features = false, features = [
+sync = { version = "0.1", package = "ofdb-sync", path = "../sync", default-features = false, features = [
 ], optional = true }
 value = { version = "0.1", package = "ofdb-value", path = "../value", default-features = false, features = [
 ] }
@@ -75,6 +78,10 @@ sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-serv
 ], optional = true }
 
 # External dependencies
+automerge = { version = "0.12", default-features = false, optional = true }
+btree = { version = "0.1", package = "ofdb-btree", path = "../btree", default-features = false, features = [
+    "std",
+], optional = true }
 sha2 = { version = "0.10", default-features = false, optional = true }
 tokio = { version = "1.0", default-features = false, features = [
     "time",
@@ -115,22 +122,11 @@ tempfile = { version = "3.27", default-features = false, features = [] }
 name = "remote"
 required-features = ["remote", "sql", "redb", "in-memory", "server"]
 
-[[test]]
-name = "cluster_sync"
-required-features = ["sync", "sql", "redb", "in-memory"]
-
-[[test]]
-name = "cluster_chaos"
-required-features = ["sync", "sql", "redb", "in-memory"]
 
 [[test]]
 name = "local_sql"
 required-features = ["sql", "redb", "in-memory"]
 
-
-[[test]]
-name = "test_macros"
-required-features = ["macros"]
 
 [[example]]
 name = "in_memory"

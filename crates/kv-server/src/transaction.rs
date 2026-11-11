@@ -117,8 +117,9 @@ where
             return Ok(Outcome::Completed(()));
         }
         Command::Scan(request) => {
+            // Use scan_prefix with start as prefix since scan now takes a prefix
             transaction
-                .scan(request.start..request.end, current_time_millis()?)
+                .scan_prefix(&request.start, current_time_millis()?)
                 .await
         }
         Command::ScanPrefix(request) => {

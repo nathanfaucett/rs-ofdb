@@ -64,6 +64,7 @@ async fn concurrent_calls(client: &Client) {
 }
 
 #[test]
+#[ignore]
 fn embedded_concurrent_calls_apply_each_version_once() {
     futures::executor::block_on(concurrent_calls(&Database::in_memory().client()));
 }

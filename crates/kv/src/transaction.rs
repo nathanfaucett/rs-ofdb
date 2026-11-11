@@ -173,12 +173,12 @@ impl Transaction {
             match &mut self.backend {
                 #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
                 Backend::IndexedDb(tx) => tx
-                    .scan(start.to_owned()..end.to_owned(), current_time_millis())
+                    .scan_prefix(&start, current_time_millis())
                     .await
                     .map_err(Into::into),
                 #[cfg(feature = "in-memory")]
                 Backend::Memory(tx) => tx
-                    .scan(start.to_owned()..end.to_owned(), current_time_millis())
+                    .scan_prefix(start, current_time_millis())
                     .await
                     .map_err(Into::into),
                 #[cfg(feature = "redb")]
@@ -186,7 +186,7 @@ impl Transaction {
                     .read()
                     .await
                     .map_err(native_error)?
-                    .scan(start.to_owned()..end.to_owned(), current_time_millis())
+                    .scan_prefix(&start, current_time_millis())
                     .await
                     .map_err(Into::into),
                 #[cfg(feature = "remote")]

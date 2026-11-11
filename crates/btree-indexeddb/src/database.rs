@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    rc::Rc,
+    sync::Arc,
 };
 
 use btree::{BTreeError, BTreeResult, ChangeSignal, ChangeSubscription, StorageInvalidation};
@@ -15,11 +15,16 @@ pub type Table = BTreeMap<Vec<u8>, Vec<u8>>;
 
 #[derive(Clone)]
 pub struct Database {
-    handle: Rc<Connection>,
+    handle: Arc<Connection>,
     changes: ChangeSignal,
 }
 
 struct Connection(JsValue);
+
+// On WASM, Arc is essentially the same as Rc (single-threaded).
+// Using Arc makes the type Send + Sync for use in async contexts that require it.
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
 
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -35,7 +40,7 @@ impl Database {
             .await
             .map_err(error)?;
         Ok(Self {
-            handle: Rc::new(Connection(handle)),
+            handle: Arc::new(Connection(handle)),
             changes: ChangeSignal::default(),
         })
     }
@@ -189,7 +194,7 @@ impl Snapshot {
         drop(self.tables);
         let (sender, receiver) = oneshot::channel();
         let signal = self.database.changes;
-        let connection = self.database.handle;
+        let connection = self.database.handle.clone();
         // Completion owns only the issued persistence and its invalidation, not
         // the caller's snapshot. Cancellation cannot discard the commit outcome.
         spawn_local(async move {

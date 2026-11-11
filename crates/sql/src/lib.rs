@@ -8,12 +8,14 @@ mod api;
     feature = "remote",
     feature = "redb",
     feature = "in-memory",
+    feature = "sync",
     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
 ))]
 mod client;
 #[cfg(any(
     feature = "redb",
     feature = "in-memory",
+    feature = "sync",
     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
 ))]
 mod database;
@@ -44,12 +46,14 @@ pub use api::*;
     feature = "remote",
     feature = "redb",
     feature = "in-memory",
+    feature = "sync",
     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
 ))]
 pub use client::{Client, Transaction};
 #[cfg(any(
     feature = "redb",
     feature = "in-memory",
+    feature = "sync",
     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
 ))]
 pub use database::Database;

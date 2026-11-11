@@ -5,7 +5,9 @@ use async_stream::stream;
 use futures::Stream;
 use redb::{ReadableTable, Table, TableHandle, WriteTransaction};
 
-use btree::{BTreeError, BTreeRead, BTreeResult, BTreeTransaction, ChangeSignal};
+use btree::{
+    BTreeError, BTreeRead, BTreeResult, BTreeTransaction, ChangeEvent, ChangeSignal, StorageKey,
+};
 
 use crate::{
     changes::Mutations,
@@ -154,9 +156,19 @@ impl NativeWriteTransaction {
     }
 
     pub(crate) fn commit(self) -> BTreeResult<()> {
-        let invalidations = self.mutations.invalidations();
+        let _invalidations = self.mutations.invalidations();
         self.inner.commit().map_err(BTreeError::custom)?;
-        self.changes.committed_with(invalidations);
+        // Build events from mutations for push-based sync
+        let events = self.mutations.take_events();
+        let change_events: Vec<ChangeEvent> = events
+            .into_iter()
+            .map(|(table, key, blob)| ChangeEvent {
+                key: StorageKey { table, key },
+                blob,
+                generation: 0,
+            })
+            .collect();
+        self.changes.committed_with_events(change_events);
         Ok(())
     }
 

@@ -1,9 +1,12 @@
 import {
-  JsSqlSyncTransport,
+  type ChangeEvent as SqlChangeEvent,
+  JsPushSyncTransport,
+  type SqlChangeSubscription,
   type Client as SqlClient,
   Database as SqlDatabase,
-  SqlSessionConfig,
-  SqlSyncRole,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
 } from "@ofsdk/sql";
 import { LoopbackTransport } from "./transport.js";
 
@@ -56,7 +59,7 @@ export class SqlPeerNetwork {
     const db = await SqlDatabase.open(`${this.prefix}-${id}`);
     const client = db.client();
     await client.execute(
-      "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)"
+      "CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, text TEXT)",
     );
     const peer: SqlPeer = {
       id,
@@ -138,6 +141,7 @@ export class SqlPeerNetwork {
     const loop = async () => {
       while (!aborted && peer.online) {
         try {
+          // Check for local changes by querying record count
           const currentCount = await this.getRecordCount(peer);
           if (currentCount !== lastRecordCount) {
             lastRecordCount = currentCount;
@@ -145,7 +149,7 @@ export class SqlPeerNetwork {
             this.onChange();
 
             const others = [...this.peers.values()].filter(
-              (p) => p.id !== peer.id && p.online
+              (p) => p.id !== peer.id && p.online,
             );
             for (const target of others) {
               if (aborted || !peer.online || !target.online) break;
@@ -182,7 +186,7 @@ export class SqlPeerNetwork {
   private async getRecordCount(peer: SqlPeer): Promise<number> {
     try {
       const results = await peer.client.execute(
-        "SELECT COUNT(*) as cnt FROM records"
+        "SELECT COUNT(*) as cnt FROM records",
       );
       const first = results[0]?.rows?.[0]?.[0];
       if (first && typeof first === "object" && "value" in first) {
@@ -204,7 +208,7 @@ export class SqlPeerNetwork {
 
   async listRecords(peer: SqlPeer): Promise<string[]> {
     const results = await peer.client.execute(
-      "SELECT text FROM records ORDER BY id"
+      "SELECT text FROM records ORDER BY id",
     );
     return (results[0]?.rows ?? []).map((row) => {
       const first = row[0];
@@ -217,7 +221,7 @@ export class SqlPeerNetwork {
 
   private async syncWithAll(source: SqlPeer): Promise<void> {
     const others = [...this.peers.values()].filter(
-      (p) => p.id !== source.id && p.online
+      (p) => p.id !== source.id && p.online,
     );
     for (const target of others) {
       await this.syncPair(source, target);
@@ -249,29 +253,21 @@ export class SqlPeerNetwork {
     this.onChange();
 
     const makeConfig = () => {
-      const c = new SqlSessionConfig();
-      c.max_units_per_frame = 100;
+      const c = new PushSynchronizeConfig();
+      const proto = new PushConfig();
+      proto.max_frame_bytes = 8 * 1024 * 1024; // 8 MiB
+      proto.max_pending_per_key = 1024;
+      proto.max_total_pending = 65536;
+      proto.session_timeout_ms = 30_000;
+      proto.immediate_ack = true;
+      c.set_protocol(proto);
       return c;
     };
-    const checkFn = () => Promise.resolve(undefined);
-
-    const roleA = a.id < b.id ? SqlSyncRole.Initiator : SqlSyncRole.Responder;
-    const roleB = a.id < b.id ? SqlSyncRole.Responder : SqlSyncRole.Initiator;
 
     try {
       await Promise.all([
-        a.db.synchronize_checked(
-          new JsSqlSyncTransport(tA),
-          makeConfig(),
-          roleA,
-          checkFn
-        ),
-        b.db.synchronize_checked(
-          new JsSqlSyncTransport(tB),
-          makeConfig(),
-          roleB,
-          checkFn
-        ),
+        a.db.synchronize(new JsPushSyncTransport(tA), makeConfig()),
+        b.db.synchronize(new JsPushSyncTransport(tB), makeConfig()),
       ]);
       const now = new Date().toLocaleTimeString();
       a.lastSync = `Synced at ${now}`;

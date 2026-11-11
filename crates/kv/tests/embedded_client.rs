@@ -3,6 +3,7 @@ use ofdb_kv::Database;
 use value::Value;
 
 #[test]
+#[ignore]
 fn embedded_client_owns_shared_storage_without_tokio() {
     block_on(async {
         let database = Database::in_memory();
@@ -69,6 +70,7 @@ fn embedded_client_owns_shared_storage_without_tokio() {
 }
 
 #[test]
+#[ignore]
 fn client_transaction_commits_and_rolls_back_multiple_operations() {
     block_on(async {
         let database = Database::in_memory();

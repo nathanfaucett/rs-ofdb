@@ -14,31 +14,42 @@ name = "btree"
 
 [features]
 default = ["std", "sharded", "in-memory"]
-std = [
-  "futures/std",
-  "async-lock?/std",
-  "thiserror/std"
-]
+std = ["futures/std", "async-lock?/std", "thiserror/std"]
 changes = ["std", "dep:tokio"]
 sharded = ["dep:dashmap"]
 in-memory = ["dep:async-stream", "dep:async-lock"]
 
 [dependencies]
 # Platform execution
-platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [] }
+platform = { version = "0.1", path = "../platform", package = "ofdb-platform", default-features = false, features = [
+] }
 
 # Change notifications
-tokio = { version = "1.0", default-features = false, features = ["sync"], optional = true }
+tokio = { version = "1.0", default-features = false, features = [
+    "sync",
+], optional = true }
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "std",
+] }
+uuid = { version = "1.29", default-features = false, features = ["v7"] }
 
 # Storage
-async-lock = { version = "3.4", default-features = false, features = [], optional = true }
+async-lock = { version = "3.4", default-features = false, features = [
+], optional = true }
 async-stream = { version = "0.3", default-features = false, features = [
 ], optional = true }
 futures = { version = "0.3", default-features = false, features = [] }
 thiserror = { version = "2.0", default-features = false, features = [] }
-dashmap = { version = "6.2", optional = true, default-features = false, features = [] }
+dashmap = { version = "6.2", optional = true, default-features = false, features = [
+] }
 
 [dev-dependencies]
 # Test runtime
 futures = { version = "0.3", default-features = false, features = ["executor"] }
-tokio = { version = "1.0", default-features = false, features = ["macros", "rt", "sync"] }
+tokio = { version = "1.0", default-features = false, features = [
+    "macros",
+    "rt",
+    "sync",
+] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }

@@ -61,7 +61,7 @@ fn histories_peak_rss() {
         let store = KvStore::new(backend, timestamp);
         let tx = store.transaction().await.expect("history transaction");
         let started = Instant::now();
-        let histories = tx.histories().await.expect("histories");
+        let histories = tx.histories("").await.expect("histories");
         let elapsed = started.elapsed();
         assert_eq!(histories.len(), KEYS);
         assert!(

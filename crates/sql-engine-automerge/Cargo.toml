@@ -48,8 +48,6 @@ schema = { version = "0.1", path = "../sql-schema", package = "ofdb-sql-schema",
 ] }
 sql-translator = { version = "0.1", path = "../sql-translator", package = "ofdb-sql-translator", default-features = false, features = [
 ] }
-sync = { version = "0.1", path = "../sql-sync", package = "ofdb-sql-sync", default-features = false, features = [
-] }
 
 # external dependencies
 futures = { version = "0.3", default-features = false, features = [

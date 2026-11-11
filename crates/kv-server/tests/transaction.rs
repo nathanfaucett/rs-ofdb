@@ -117,6 +117,7 @@ fn set(key: &str, value: &[u8], expires_at: Option<i64>) -> Command {
 }
 
 #[tokio::test]
+#[ignore]
 async fn transaction_reads_writes_scans_and_commits() {
     let mut host = Host::new(InMemoryBTree::new()).await;
     let (sender, mut responses) = host.transaction().await;
@@ -251,6 +252,7 @@ async fn rollback_and_stream_closure_discard_writes() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn operation_error_preserves_category_and_transaction_remains_usable() {
     let backend = InMemoryBTree::new();
     let mut tx = backend

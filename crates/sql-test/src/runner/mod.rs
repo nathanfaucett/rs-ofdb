@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{borrow::Cow, future::Future};
 
 use value::Row;
@@ -113,14 +114,3 @@ pub trait TestRunner {
         }
     }
 }
-
-pub mod chaos;
-pub mod cluster_offline;
-pub mod cluster_realtime;
-pub mod single;
-mod verify;
-
-pub use chaos::ChaosRunner;
-pub use cluster_offline::ClusterOfflineRunner;
-pub use cluster_realtime::ClusterRealtimeRunner;
-pub use single::SingleNodeRunner;

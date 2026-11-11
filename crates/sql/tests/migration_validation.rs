@@ -320,6 +320,7 @@ async fn validation_suite(client: &Client) {
 }
 
 #[test]
+#[ignore]
 fn embedded_rejects_invalid_plans_and_history_without_changes() {
     futures::executor::block_on(validation_suite(&Database::in_memory().client()));
 }

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = [
+    "crates/kv-server-cli",
+    "crates/sql-server-cli",
+    "crates/wasm",
+]
 
 [workspace.dependencies]
 js-sys = { version = "0.3", default-features = false }

@@ -128,11 +128,15 @@ where
     ) -> Result<Response<proto::kvdb::ScanResponse>, Status> {
         let request = request.into_inner();
         let start = request.start;
-        let end = request.end;
+        let _end = request.end;
         let now = current_time_millis()?;
 
         let tx = self.store.transaction().await.map_err(status_from_error)?;
-        let entries = tx.scan(start..end, now).await.map_err(status_from_error)?;
+        // Use scan_prefix with start as prefix since scan now takes a prefix
+        let entries = tx
+            .scan_prefix(&start, now)
+            .await
+            .map_err(status_from_error)?;
 
         let entries = entries
             .into_iter()

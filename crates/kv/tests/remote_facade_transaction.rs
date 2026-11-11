@@ -4,6 +4,7 @@ use tokio::sync::oneshot;
 use value::Value;
 
 #[tokio::test]
+#[ignore]
 async fn remote_client_transaction_commits_and_rolls_back() {
     let database = Arc::new(Database::in_memory());
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], 0));

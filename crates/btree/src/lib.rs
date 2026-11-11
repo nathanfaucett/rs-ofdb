@@ -9,7 +9,9 @@ mod changes;
 #[cfg(all(test, feature = "changes"))]
 mod changes_tests;
 #[cfg(feature = "changes")]
-pub use changes::{ChangeSignal, ChangeSubscription, ChangeWork, StorageInvalidation};
+pub use changes::{
+    ChangeEvent, ChangeSignal, ChangeSubscription, ChangeWork, StorageInvalidation, StorageKey,
+};
 #[cfg(feature = "in-memory")]
 mod in_memory_btree;
 #[cfg(feature = "sharded")]

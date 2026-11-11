@@ -31,18 +31,25 @@ pub use query::{
 pub use sql_server::{EngineExecutor, Server};
 #[cfg(feature = "sql")]
 pub use sql_translator::SqlTranslator;
+
 #[cfg(feature = "sync")]
 pub use sync::{
-    ChangeSubscription, SessionConfig, SyncCandidateView, SyncError, SyncHello, SyncKey,
-    SyncMessage, SyncResult, SyncRole, SyncRowView, SyncStage, SyncStageFactory, SyncStateUnit,
-    SyncTableView, SyncTransport, SyncValidationDirection, apply_sync_state_batch_for,
-    apply_sync_state_for, export_sync_state_for, synchronize, synchronize_with_stage_factory,
+    ChangeEvent, ChangeSubscription, PushConfig, PushMessage, PushResult, PushSyncTransport,
+    PushSynchronizeConfig, PushSynchronizeError, push_synchronize,
 };
+
 #[cfg(all(
     feature = "native-stage",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-pub use sync::{FileSyncStage, FileSyncStageFactory};
+pub use sync::protocol::FileSyncStageFactory;
+
+#[cfg(feature = "sync")]
+pub use crate::database::{
+    SessionConfig, SyncCandidateView, SyncKey, SyncManifest, SyncResult, SyncRole, SyncSelection,
+    SyncStageFactory, SyncStateUnit, SyncTransport,
+};
+
 pub use uuid::Uuid;
 pub use value::{
     FromRow, FromRowError, FromValue, JsonNumber, JsonValue, Row, Value, ValueType, decode, value,

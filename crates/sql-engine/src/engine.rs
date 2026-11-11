@@ -14,12 +14,15 @@ use std::sync::Arc;
 
 use platform::{MaybeSend, MaybeSync};
 
+use btree::{ChangeEvent, ChangeSignal, StorageKey};
 use thiserror::Error;
 
 use query::{QueryParams, QueryResult, Statement, TranslateError, Translator};
 
 use crate::{
+    DocumentChangeId, Uuid,
     codec::RowCodec,
+    document::RowReconciler,
     executor::{
         execute_in_transaction, execute_statement, resolve_row as resolve_conflicted_row,
         row_conflict_values as conflicted_row_values, row_conflicts as conflicted_row_columns,
@@ -79,12 +82,16 @@ pub struct Engine<K, R> {
     pub(crate) kernel: Arc<K>,
     pub(crate) reconciler: Arc<R>,
     pub(crate) timestamp_provider: TimestampProvider,
+    #[cfg(feature = "std")]
+    pub(crate) change_signal: ChangeSignal,
 }
 
 impl<K, R> Clone for Engine<K, R> {
     fn clone(&self) -> Self {
         Self {
             kernel: self.kernel.clone(),
+            #[cfg(feature = "std")]
+            change_signal: self.change_signal.clone(),
             reconciler: self.reconciler.clone(),
             timestamp_provider: self.timestamp_provider,
         }
@@ -97,6 +104,8 @@ impl<K, R> From<(K, R)> for Engine<K, R> {
         Self {
             kernel: Arc::new(kernel),
             reconciler: Arc::new(reconciler),
+            #[cfg(feature = "std")]
+            change_signal: ChangeSignal::default(),
             timestamp_provider: default_timestamp_provider,
         }
     }
@@ -116,6 +125,8 @@ impl<K, R> Engine<K, R> {
         Self {
             kernel: Arc::new(kernel),
             reconciler: Arc::new(reconciler),
+            #[cfg(feature = "std")]
+            change_signal: ChangeSignal::default(),
             timestamp_provider,
         }
     }
@@ -250,6 +261,30 @@ where
                 "Cannot commit an aborted transaction",
             ));
         }
+
+        // Emit ChangeEvents for push-based sync
+        #[cfg(feature = "std")]
+        {
+            let mut events = Vec::new();
+            for change in &self.changes {
+                let crate::ChangeKey::Row { table, row } = &change.key;
+                if let Some(blob) = &change.value {
+                    let storage_key = StorageKey {
+                        table: table.clone(),
+                        key: row.as_bytes().to_vec(),
+                    };
+                    events.push(ChangeEvent {
+                        key: storage_key,
+                        blob: blob.clone(),
+                        generation: 0, // TODO: use proper generation
+                    });
+                }
+            }
+            if !events.is_empty() {
+                self.engine.change_signal.committed_with_events(events);
+            }
+        }
+
         transaction.commit().await
     }
 
@@ -393,6 +428,34 @@ where
 
     pub async fn execute(&self, statements: Vec<Statement>) -> EngineResult<Vec<QueryResult>> {
         execute_statement(self, statements).await
+    }
+
+    /// Apply an inbound change from push-based sync.
+    /// This is used by the push-sync protocol to apply remote changes.
+    #[cfg(feature = "std")]
+    pub async fn apply_inbound_change(
+        &self,
+        table: &str,
+        row: Uuid,
+        change_id: &DocumentChangeId,
+        payload: &[u8],
+    ) -> EngineResult<()>
+    where
+        K: Kernel,
+        R: RowReconciler<K::Transaction> + MaybeSend + MaybeSync,
+    {
+        let mut transaction = self.kernel.transaction().await?;
+        let result = self
+            .reconciler
+            .apply_change(&mut transaction, table, row, change_id, payload)
+            .await;
+        match result {
+            Ok(()) => transaction.commit().await,
+            Err(e) => {
+                transaction.rollback().await?;
+                Err(e)
+            }
+        }
     }
 
     /// Keys contain user primary-key values in table-column order, independent of index order.

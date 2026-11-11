@@ -8,8 +8,8 @@ use std::{
 };
 
 use iroh::{Endpoint, EndpointId, SecretKey, endpoint::presets};
-use ofdb_sql::{Database, SessionConfig, SyncRole};
-use sql_sync::IrohTransport;
+use ofdb_sql::{Database, SyncRole};
+use sync::{IrohTransport, PushSynchronizeConfig};
 use tokio::sync::watch;
 
 #[cfg(unix)]
@@ -74,7 +74,7 @@ pub async fn run(
                     };
                     let mut transport = IrohTransport::new(send, receive);
                     if let Err(error) = database
-                        .synchronize(&mut transport, &SessionConfig::default(), SyncRole::Responder)
+                        .synchronize(transport, PushSynchronizeConfig::default())
                         .await
                     {
                         eprintln!("SQL sync session failed: {error}");
@@ -102,7 +102,7 @@ pub async fn run(
                         };
                         let mut transport = IrohTransport::new(send, receive);
                         if let Err(error) = database
-                            .synchronize(&mut transport, &SessionConfig::default(), SyncRole::Initiator)
+                            .synchronize(transport, PushSynchronizeConfig::default())
                             .await
                         {
                             eprintln!("SQL sync session with {peer} failed: {error}");
@@ -155,8 +155,8 @@ mod tests {
 
     use iroh::{Endpoint, EndpointAddr, RelayMode, endpoint::presets};
     use iroh_relay::tls::CaTlsConfig;
-    use ofdb_sql::{Database, SessionConfig, SyncRole};
-    use sql_sync::IrohTransport;
+    use ofdb_sql::{Database, SyncRole};
+    use sync::{IrohTransport, PushSynchronizeConfig};
 
     use super::{ALPN, load_secret_key};
 
@@ -217,14 +217,14 @@ mod tests {
         );
         let (send, receive) = connection.open_bi().await.expect("open sync stream");
         let mut outgoing = IrohTransport::new(send, receive);
-        let config = SessionConfig::default();
+        let config = PushSynchronizeConfig::default();
         let (left_result, right_result) = tokio::join!(
-            left.synchronize(&mut outgoing, &config, SyncRole::Initiator),
+            left.synchronize(&mut outgoing, config.clone()),
             async {
                 let (send, receive) = incoming.accept_bi().await.expect("accept sync stream");
                 let mut transport = IrohTransport::new(send, receive);
                 right
-                    .synchronize(&mut transport, &config, SyncRole::Responder)
+                    .synchronize(&mut transport, config)
                     .await
             }
         );

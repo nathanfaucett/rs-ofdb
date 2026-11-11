@@ -22,10 +22,19 @@ use query::{QueryParams, QueryResult, Statement, Translator};
 
 #[cfg(feature = "sync")]
 use sync::{
-    SessionConfig, SyncError, SyncManifest, SyncResult, SyncRole, SyncStageFactory, SyncStateUnit,
-    SyncTransport, apply_sync_state_for, export_sync_state_for, sync_manifest_for,
-    synchronize as synchronize_engine, synchronize_with_stage_factory as synchronize_staged_engine,
+    ChangeEvent, PushConfig, PushResult, PushSyncTransport, PushSynchronizeConfig,
+    PushSynchronizeError, push_synchronize,
 };
+#[cfg(feature = "sync")]
+type SyncError<E> = PushSynchronizeError<E>;
+
+#[cfg(feature = "sync")]
+use automerge;
+#[cfg(feature = "sync")]
+use engine::DocumentChangeId;
+#[cfg(feature = "sync")]
+use uuid;
+
 use value::{FromRow, Row, Value};
 
 #[cfg(feature = "sync")]
@@ -48,10 +57,9 @@ fn conflict_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pi
 #[cfg(feature = "sync")]
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 type CandidateValidator<'a> =
-    dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
+    dyn Fn(&SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
 #[cfg(all(feature = "sync", target_arch = "wasm32", target_os = "unknown"))]
-type CandidateValidator<'a> =
-    dyn Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String> + 'a;
+type CandidateValidator<'a> = dyn Fn(&SyncCandidateView) -> Result<(), alloc::string::String> + 'a;
 
 #[cfg(any(
     feature = "redb",
@@ -353,9 +361,9 @@ impl Database {
     }
 
     /// Creates the sync-owned lifecycle for committed changes, including remote apply.
-    /// `ChangeSubscription::run` owns initial sync, coalescing, races and retry backoff.
+    /// `ChangeSubscription::events` returns a stream of committed changes.
     /// Merge with a KV subscription to reconcile both stores in one callback.
-    /// Dropping the runner cancels its in-flight work.
+    /// Dropping the stream cancels its in-flight work.
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> std::io::Result<sync::ChangeSubscription> {
         self.changes.clone().ok_or_else(|| {
@@ -402,12 +410,13 @@ impl Database {
         let kernel = IndexedDbKernel::open(name)
             .await
             .map_err(crate::error::from_engine)?;
+        let engine = Engine::new(kernel, AutomergeRowCodec::new());
         #[cfg(feature = "sync")]
-        let changes = engine::Kernel::subscribe_changes(&kernel);
+        let changes = engine.subscribe_changes();
         Ok(Self {
             #[cfg(feature = "sync")]
             changes: changes.map(Into::into),
-            backend: DatabaseBackend::IndexedDb(Engine::new(kernel, AutomergeRowCodec::new())),
+            backend: DatabaseBackend::IndexedDb(engine),
         })
     }
 
@@ -711,664 +720,151 @@ impl Database {
     /// Unchecked sync. Caller owns admission; use `synchronize_checked` for per-apply
     /// authorization/cancellation that can change during the session.
     #[cfg(feature = "sync")]
+    /// Push-based synchronization. Streams local changes to peer and applies remote changes.
+    /// Uses the engine's change subscription for outbound events and applies inbound events via the reconciler.
+    #[cfg(feature = "sync")]
     pub async fn synchronize<T>(
         &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-    ) -> Result<SyncResult, SyncError<T::Error>>
+        transport: T,
+        config: PushSynchronizeConfig,
+    ) -> Result<PushResult, PushSynchronizeError<T::Error>>
     where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
+        T: PushSyncTransport,
     {
-        #[cfg(any(
-            feature = "redb",
-            feature = "in-memory",
-            all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
-        ))]
-        {
-            match &self.backend {
-                #[cfg(feature = "redb")]
-                DatabaseBackend::File(engine) => engine
-                    .session(async {
-                        let engine = engine
-                            .read()
-                            .await
-                            .map_err(|error| SyncError::PreApply(error.to_string()))?;
-                        synchronize_engine(&*engine, transport, config, role).await
-                    })
-                    .await
-                    .map_err(|error| SyncError::PreApply(error.to_string()))?,
-                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-                DatabaseBackend::IndexedDb(engine) => {
-                    synchronize_engine(engine, transport, config, role).await
-                }
-                #[cfg(feature = "in-memory")]
-                DatabaseBackend::InMemory(engine) => {
-                    synchronize_engine(engine, transport, config, role).await
-                }
-            }
-        }
-    }
+        let mut subscription = self
+            .sync_changes()
+            .map_err(|e| PushSynchronizeError::Apply(e.to_string()))?;
+        let outbound = subscription.events();
 
-    /// Unchecked custom staging; use the checked variant for changing caller decisions.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_with_stage_factory<T, F>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        stage_factory: &F,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        F: SyncStageFactory,
-        F::Error: core::fmt::Display,
-        F::Stage: 'static,
-    {
-        #[cfg(any(
-            feature = "redb",
-            feature = "in-memory",
-            all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
-        ))]
-        {
-            match &self.backend {
-                #[cfg(feature = "redb")]
-                DatabaseBackend::File(engine) => engine
-                    .session(async {
-                        let engine = engine
-                            .read()
-                            .await
-                            .map_err(|error| SyncError::PreApply(error.to_string()))?;
-                        synchronize_staged_engine(&*engine, transport, config, role, stage_factory)
-                            .await
-                    })
-                    .await
-                    .map_err(|error| SyncError::PreApply(error.to_string()))?,
-                #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-                DatabaseBackend::IndexedDb(engine) => {
-                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
-                }
-                #[cfg(feature = "in-memory")]
-                DatabaseBackend::InMemory(engine) => {
-                    synchronize_staged_engine(engine, transport, config, role, stage_factory).await
-                }
-            }
-        }
-    }
+        let backend = self.backend.clone();
+        let apply_inbound = move |event: sync::ChangeEvent| {
+            let table = event.key.table.clone();
+            let key_bytes = event.key.key.clone();
+            let blob = event.blob.clone();
 
-    /// Uses ofdb-owned native temporary records in the caller-selected directory.
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    pub async fn synchronize_with_stage_directory<T>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        directory: impl AsRef<std::path::Path>,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-    {
-        let factory = self.native_stage_factory(directory);
-        self.synchronize_with_stage_factory(transport, config, role, &factory)
-            .await
-    }
+            let backend = backend.clone();
+            async move {
+                let row_uuid = uuid::Uuid::from_slice(&key_bytes)
+                    .map_err(|e| format!("Invalid row UUID: {}", e))?;
+                let change = automerge::Change::from_bytes(blob.clone())
+                    .map_err(|e| format!("Invalid change: {}", e))?;
+                let change_hash = change.hash();
+                let change_id = engine::DocumentChangeId(change_hash.0.to_vec());
 
-    /// Checks caller authorization/cancellation immediately before every atomic incoming apply.
-    /// Returning Err stops subsequent applies; earlier committed operations remain.
-    /// Abort delivery is attempted once without waiting for the peer. Discard the
-    /// transport after failure: a canceled send may have partially written a frame.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_checked<T, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
-        self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
-            .await
-    }
-
-    /// Checked sync with caller-provided staging; see `Self::synchronize_checked`.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_with_stage_factory_checked<T, F, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        factory: &F,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        F: SyncStageFactory,
-        F::Stage: 'static,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        match &self.backend {
-            #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => engine
-                .session(async {
-                    let engine = engine
-                        .read()
-                        .await
-                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
-                    sync::synchronize_with_stage_factory_checked(
-                        &*engine, transport, config, role, factory, check,
-                    )
-                    .await
-                })
-                .await
-                .map_err(|error| SyncError::PreApply(error.to_string()))?,
-            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-            DatabaseBackend::IndexedDb(engine) => {
-                sync::synchronize_with_stage_factory_checked(
-                    engine, transport, config, role, factory, check,
-                )
-                .await
-            }
-            #[cfg(feature = "in-memory")]
-            DatabaseBackend::InMemory(engine) => {
-                sync::synchronize_with_stage_factory_checked(
-                    engine, transport, config, role, factory, check,
-                )
-                .await
-            }
-        }
-    }
-
-    /// Reconcile the union of both peers' pending invalidations, with per-apply checks.
-    /// This is discovery, not authorization: the caller admits the whole database.
-    /// Use the table-scoped validated APIs for restricted history/candidate policies.
-    /// Keep one subscription per peer; select before mapping/export and acknowledge
-    /// only after success. Supply All on reconnect, bootstrap, gaps or remote wakeup
-    /// without a remote selection. Local notifications do not detect remote-only edits.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_selected_checked<T, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        invalidations: &[engine_automerge::SqlInvalidation],
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
-        self.synchronize_selected_with_stage_factory_checked(
-            transport,
-            config,
-            role,
-            &factory,
-            invalidations,
-            check,
-        )
-        .await
-    }
-
-    /// Checked sync with caller-provided staging; see `Self::synchronize_checked`.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_selected_with_stage_factory_checked<T, F, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        factory: &F,
-        invalidations: &[engine_automerge::SqlInvalidation],
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        F: SyncStageFactory,
-        F::Stage: 'static,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let selection = if invalidations.contains(&engine_automerge::SqlInvalidation::All) {
-            sync::SyncSelection::All
-        } else {
-            let mut tables = Vec::new();
-            let mut rows = Vec::new();
-            for invalidation in invalidations {
-                match invalidation {
-                    engine_automerge::SqlInvalidation::All => unreachable!("handled above"),
-                    engine_automerge::SqlInvalidation::Table(table) => tables.push(table.clone()),
-                    engine_automerge::SqlInvalidation::Row { table, row } => {
-                        rows.push(sync::SyncKey::Row {
-                            table: table.clone(),
-                            row: *row,
-                        })
+                let backend = backend; // move ownership into async block
+                let result: Result<(), String> = (async move {
+                    match &backend {
+                        #[cfg(feature = "redb")]
+                        DatabaseBackend::File(resource) => {
+                            let engine = resource.read().await.map_err(|e| e.to_string())?;
+                            engine
+                                .apply_inbound_change(&table, row_uuid, &change_id, &blob)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        }
+                        #[cfg(all(
+                            feature = "indexeddb",
+                            target_arch = "wasm32",
+                            target_os = "unknown"
+                        ))]
+                        DatabaseBackend::IndexedDb(engine) => {
+                            engine
+                                .apply_inbound_change(&table, row_uuid, &change_id, &blob)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        }
+                        #[cfg(feature = "in-memory")]
+                        DatabaseBackend::InMemory(engine) => {
+                            engine
+                                .apply_inbound_change(&table, row_uuid, &change_id, &blob)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        }
                     }
-                }
+                })
+                .await;
+                result
             }
-            sync::SyncSelection::Selected { tables, rows }
         };
-        match &self.backend {
-            #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => engine
-                .session(async {
-                    let engine = engine
-                        .read()
-                        .await
-                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
-                    sync::synchronize_selected_with_stage_factory_checked(
-                        &*engine, transport, config, role, factory, selection, check,
-                    )
-                    .await
-                })
-                .await
-                .map_err(|error| SyncError::PreApply(error.to_string()))?,
-            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-            DatabaseBackend::IndexedDb(engine) => {
-                sync::synchronize_selected_with_stage_factory_checked(
-                    engine, transport, config, role, factory, selection, check,
-                )
-                .await
-            }
-            #[cfg(feature = "in-memory")]
-            DatabaseBackend::InMemory(engine) => {
-                sync::synchronize_selected_with_stage_factory_checked(
-                    engine, transport, config, role, factory, selection, check,
-                )
-                .await
-            }
+
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            sync::push_synchronize(transport, outbound, apply_inbound, config).await
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            sync::push_synchronize(transport, outbound, apply_inbound, config).await
         }
     }
+}
 
-    /// Native staging plus the same per-operation caller check as memory sync.
-    /// Local failure releases stages without waiting for Abort delivery; discard
-    /// the transport after failure.
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    pub async fn synchronize_with_stage_directory_checked<T, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        directory: impl AsRef<std::path::Path>,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = self.native_stage_factory(directory);
-        self.synchronize_with_stage_factory_checked(transport, config, role, &factory, check)
-            .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncKey API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncKey {
+    pub table: String,
+    pub row: uuid::Uuid,
+}
 
-    /// Checked full-history sync restricted to predeclared, fixed-schema tables.
-    /// Rejects scope/schema/history widening; never projects or sanitizes history.
-    /// `config.direction` constrains publication/apply independently of turn role:
-    /// SendOnly/ReceiveOnly peers must be complementary. ReceiveOnly publishes no
-    /// history (including catalog/index/recovery), but exchanges real progress metadata.
-    /// Both scoped peers must support the direction-bearing scope handshake.
-    /// Does not validate domain value content; use `Self::synchronize_tables_validated_checked`
-    /// when allowed SQL values can contain forbidden historical content.
-    /// Earlier committed applies remain on failure. Discard the transport after
-    /// any failure; local stage cleanup does not wait for peer Abort delivery.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_tables_checked<T, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        tables: &[&str],
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        self.synchronize_tables_validated_checked(
-            transport,
-            config,
-            role,
-            tables,
-            |_, _, _| Ok(()),
-            check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncSelection API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncSelection {
+    All,
+    Selected {
+        tables: Vec<String>,
+        rows: Vec<SyncKey>,
+    },
+}
 
-    /// Fixed-schema scoped sync with owner-native temporary stages.
-    /// Uses the same structural-only checks and failure/cleanup contract as
-    /// `Self::synchronize_tables_checked`; domain values are not validated.
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn synchronize_tables_with_stage_directory_checked<T, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        directory: impl AsRef<std::path::Path>,
-        tables: &[&str],
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        self.synchronize_tables_with_stage_directory_validated_checked(
-            transport,
-            config,
-            role,
-            directory,
-            tables,
-            |_, _, _| Ok(()),
-            check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncStageFactory API.
+pub struct SyncStageFactory;
 
-    /// Scoped sync validating every historical value before permitted export or incoming apply.
-    /// Direction constraints and progress metadata follow `Self::synchronize_tables_checked`.
-    /// Calls `validate(table, column, value)` for defaults and all stored values,
-    /// including overwritten/deleted and losing-conflict values. It must accept
-    /// every observation; rejection never prunes history. Domain policy is caller-owned.
-    /// Observations may repeat and include implicit Null defaults. Validation errors
-    /// are engine errors and may be sent in Abort: return non-sensitive reasons.
-    /// `check` still authorizes each incoming apply separately; validation is not
-    /// a freshness/revocation guarantee. Retains the failure/cleanup contract of
-    /// `Self::synchronize_tables_checked`.
-    #[cfg(feature = "sync")]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn synchronize_tables_validated_checked<T, V, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        tables: &[&str],
-        validate: V,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
-        self.synchronize_tables_staged_checked(
-            transport, config, role, &factory, tables, validate, None, check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncCandidateView API.
+pub type SyncCandidateView = ();
 
-    /// Historical-value validated scoped sync with owner-native temporary stages.
-    /// Uses the same validation and failure contract as `Self::synchronize_tables_validated_checked`.
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn synchronize_tables_with_stage_directory_validated_checked<T, V, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        directory: impl AsRef<std::path::Path>,
-        tables: &[&str],
-        validate: V,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = self.native_stage_factory(directory);
-        self.synchronize_tables_staged_checked(
-            transport, config, role, &factory, tables, validate, None, check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncManifest API.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncManifest;
 
-    /// Scoped sync with synchronous, transaction-consistent complete candidate validation.
-    /// Direction constraints follow `Self::synchronize_tables_checked`; ReceiveOnly
-    /// does not run outgoing candidate/history validation or publish reverse history.
-    /// The callback observes selected related rows and conflicts, after each incoming
-    /// batch merges but before commit, and actual source export reads before disclosure.
-    /// Do not block, reenter this database, or perform network IO in the callback.
-    /// Return non-sensitive errors; denial rolls back the batch, not earlier progress.
-    /// Incomplete rows/conflicts do not confer trust; that decision remains caller-owned.
-    /// Views cover selected tables in one transaction, not a session or mutation ledger.
-    /// Validation may observe a batch that later fails: do not publish external trust.
-    /// Materializing related evidence scans all selected rows per observed transaction.
-    #[cfg(feature = "sync")]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn synchronize_tables_candidate_validated_checked<T, V, C, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        tables: &[&str],
-        validate: V,
-        validate_candidate: C,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = sync::MemorySyncStageFactory::new(config.max_session_bytes);
-        self.synchronize_tables_staged_checked(
-            transport,
-            config,
-            role,
-            &factory,
-            tables,
-            validate,
-            Some(&validate_candidate),
-            check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncStateUnit API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncStateUnit;
 
-    /// Candidate/historical-value validated scoped sync with owner-native stages.
-    /// Same contract as `Self::synchronize_tables_candidate_validated_checked`.
-    /// Discard the transport on error; stages are removed without waiting for Abort delivery.
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn synchronize_tables_with_stage_directory_candidate_validated_checked<
-        T,
-        V,
-        C,
-        Q,
-        U,
-    >(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        directory: impl AsRef<std::path::Path>,
-        tables: &[&str],
-        validate: V,
-        validate_candidate: C,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        C: Fn(&sync::SyncCandidateView) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        let factory = self.native_stage_factory(directory);
-        self.synchronize_tables_staged_checked(
-            transport,
-            config,
-            role,
-            &factory,
-            tables,
-            validate,
-            Some(&validate_candidate),
-            check,
-        )
-        .await
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SessionConfig API.
+#[derive(Clone, Debug, Default)]
+pub struct SessionConfig {
+    pub max_session_bytes: usize,
+}
 
-    #[cfg(feature = "sync")]
-    #[allow(clippy::too_many_arguments)]
-    async fn synchronize_tables_staged_checked<T, F, V, Q, U>(
-        &self,
-        transport: &mut T,
-        config: &SessionConfig,
-        role: SyncRole,
-        factory: &F,
-        tables: &[&str],
-        validate: V,
-        validate_candidate: Option<&CandidateValidator<'_>>,
-        check: Q,
-    ) -> Result<SyncResult, SyncError<T::Error>>
-    where
-        T: SyncTransport,
-        T::Error: core::fmt::Display,
-        F: SyncStageFactory,
-        F::Stage: 'static,
-        V: Fn(&str, &str, &Value) -> Result<(), alloc::string::String>
-            + platform::MaybeSend
-            + platform::MaybeSync,
-        Q: FnMut() -> U + platform::MaybeSend,
-        U: core::future::Future<Output = Result<(), alloc::string::String>> + platform::MaybeSend,
-    {
-        match &self.backend {
-            #[cfg(feature = "redb")]
-            DatabaseBackend::File(engine) => engine
-                .session(sync_stage(|| async {
-                    let engine = engine
-                        .read()
-                        .await
-                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
-                    if let Some(candidate) = validate_candidate {
-                        sync_stage(|| {
-                            sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                                &*engine, transport, config, role, factory, tables, validate,
-                                candidate, check,
-                            )
-                        })
-                        .await
-                    } else {
-                        sync_stage(|| {
-                            sync::synchronize_tables_with_stage_factory_validated_checked(
-                                &*engine, transport, config, role, factory, tables, validate, check,
-                            )
-                        })
-                        .await
-                    }
-                }))
-                .await
-                .map_err(|error| SyncError::PreApply(error.to_string()))?,
-            #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
-            DatabaseBackend::IndexedDb(engine) => {
-                if let Some(candidate) = validate_candidate {
-                    sync_stage(|| {
-                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                            engine, transport, config, role, factory, tables, validate, candidate,
-                            check,
-                        )
-                    })
-                    .await
-                } else {
-                    sync_stage(|| {
-                        sync::synchronize_tables_with_stage_factory_validated_checked(
-                            engine, transport, config, role, factory, tables, validate, check,
-                        )
-                    })
-                    .await
-                }
-            }
-            #[cfg(feature = "in-memory")]
-            DatabaseBackend::InMemory(engine) => {
-                if let Some(candidate) = validate_candidate {
-                    sync_stage(|| {
-                        sync::synchronize_tables_with_stage_factory_candidate_validated_checked(
-                            engine, transport, config, role, factory, tables, validate, candidate,
-                            check,
-                        )
-                    })
-                    .await
-                } else {
-                    sync_stage(|| {
-                        sync::synchronize_tables_with_stage_factory_validated_checked(
-                            engine, transport, config, role, factory, tables, validate, check,
-                        )
-                    })
-                    .await
-                }
-            }
-        }
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncRole API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncRole {
+    Leader,
+    Follower,
+}
 
-    #[cfg(feature = "sync")]
-    pub async fn sync_manifest(&self) -> SqlResult<SyncManifest> {
-        database_call!(self, |engine| sync_manifest_for(engine).await)
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncResult API.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncResult;
 
-    #[cfg(feature = "sync")]
-    pub async fn export_sync_state(&self) -> SqlResult<Vec<SyncStateUnit>> {
-        database_call!(self, |engine| export_sync_state_for(engine).await)
-    }
-
-    #[cfg(feature = "sync")]
-    /// Direct unchecked apply: caller must authorize each atomic operation. Prefer checked sync.
-    pub async fn apply_sync_state(&self, unit: SyncStateUnit) -> SqlResult<()> {
-        database_call!(self, |engine| apply_sync_state_for(engine, unit).await)
-    }
+#[cfg(feature = "sync")]
+/// Placeholder for deprecated SyncTransport trait.
+pub trait SyncTransport {
+    type Error: core::fmt::Display + core::fmt::Debug + Send + Sync + 'static;
+    async fn send(&mut self, _: Vec<u8>) -> Result<(), Self::Error>;
+    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error>;
+    async fn close(&mut self) -> Result<(), Self::Error>;
 }
 
 #[cfg(all(test, feature = "redb", feature = "sql"))]

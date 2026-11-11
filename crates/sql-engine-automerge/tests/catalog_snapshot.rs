@@ -1,10 +1,9 @@
 use automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use btree::BTreeTransaction;
 use btree_automerge::{AutomergeBTreeTransaction, AutomergeChangeStore, ThresholdPolicy};
-use engine::{InMemoryKernel, Kernel, KernelTransaction, RowCodec};
+use engine::{InMemoryKernel, Kernel, KernelTransaction, RowCodec, RowReconciler};
 use engine_automerge::AutomergeRowCodec;
 use futures::{StreamExt, executor::block_on, pin_mut};
-use sync::SyncRowCodec;
 use uuid::Uuid;
 use value::{Row, Value, ValueType};
 
