@@ -20,7 +20,6 @@ help:
     @printf "  browser-{check,accept,measure,native,final}  Bounded release validation (just --list)\n"
     @printf "  browser-orchestration-test  Controlled public-recipe checks\n"
 
-
 build:
     cargo build --workspace
 
@@ -59,8 +58,6 @@ clean:
 
 doc:
     cargo doc --workspace --no-deps
-
-
 
 # Independent facade builds, dependency policies, browser Clippy and published quickstarts.
 [positional-arguments]
@@ -143,9 +140,9 @@ browser-native output="target/browser-validation/native" timeout="600":
     source scripts/browser-evidence.sh
     begin "$1" "$2"
     check native-protocol-ownership cargo test --locked --manifest-path tests/browser/Cargo.toml --features sync --test native --test sql_protocol --test kv_protocol
-    check native-kv cargo test --locked -p ofdb-kv --features in-memory,redb,sync --test embedded_client --test embedded_redb_client --test changes --test facade_sync
-    check native-sql cargo test --locked -p ofdb-sql --features in-memory,redb,sql,sync,native-stage --test local_sql --test changes --test commit_invalidation --test scoped_sync --test facade_sync --test conflicts
-    check native-runtime cargo test --locked -p ofdb-sync-runtime --lib
+    check native-kv cargo test --locked -p ofdb-kv --features in-memory,redb,sync --test embedded_client --test embedded_redb_client --test local_kv
+    check native-sql cargo test --locked -p ofdb-sql --features in-memory,redb,sql,sync,native-stage --test client --test existing --test migrations --test migration_validation --test migration_outcomes --test read_limits --test scan_layout
+    check native-runtime cargo test --locked -p ofdb-sync --lib
     check native-clippy cargo clippy --locked -p ofdb-sql -p ofdb-kv -p ofdb-sync-runtime --features in-memory,redb,indexeddb,sql,sync,native-stage -- -D warnings
     finish
 

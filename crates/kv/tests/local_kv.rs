@@ -68,34 +68,9 @@ where
     tx.delete("deleted")
         .await
         .expect("delete key a second time");
-    tx.set("recreated", Value::Blob(vec![10]), None)
-        .await
-        .expect("set old generation");
-    let old = tx
-        .export_snapshot("recreated")
-        .await
-        .expect("export old generation")
-        .expect("old generation exists");
-    tx.delete("recreated").await.expect("delete old generation");
     tx.set("recreated", Value::Blob(vec![11]), None)
         .await
-        .expect("create new generation");
-    let new = tx
-        .export_snapshot("recreated")
-        .await
-        .expect("export new generation")
-        .expect("new generation exists");
-    assert!(
-        kv_store::decode_document_id(&new.0.id)
-            .expect("decode new ID")
-            .1
-            > kv_store::decode_document_id(&old.0.id)
-                .expect("decode old ID")
-                .1
-    );
-    tx.import_snapshot(old)
-        .await
-        .expect("ignore stale generation");
+        .expect("recreate key");
 
     assert_eq!(tx.get("missing", 0).await.expect("get missing"), None);
     assert_eq!(
@@ -114,24 +89,17 @@ where
     assert_eq!(tx.get("expires", 10).await.expect("get at expiry"), None);
 
     assert_eq!(
-        tx.scan("prefix".into().."prefix~".into(), 0)
-            .await
-            .expect("scan range"),
+        tx.scan("prefix", 0).await.expect("scan range"),
         vec![
             ("prefixX".into(), Value::Blob(vec![4])),
             ("prefix|get|5".into(), Value::Blob(vec![3])),
         ]
     );
+    assert!(tx.scan("test~", 0).await.expect("empty range").is_empty());
     assert!(
-        tx.scan("test".into().."test".into(), 0)
+        tx.scan("z", 0)
             .await
-            .expect("empty range")
-            .is_empty()
-    );
-    assert!(
-        tx.scan("z".into().."a".into(), 0)
-            .await
-            .expect("reversed range")
+            .expect("absent prefix range")
             .is_empty()
     );
     assert_eq!(

@@ -7,7 +7,7 @@ use btree::InMemoryBTree;
 use kv_store::KvStore;
 
 #[cfg(feature = "sync")]
-use sync::{Config, SyncResult, SyncTransport, SynchronizeConfig, synchronize};
+use sync::{SyncResult, SyncTransport, SynchronizeConfig};
 
 use value::Value;
 
@@ -441,12 +441,6 @@ impl Database {
 
         // Apply inbound events by importing changes into the store
         let apply_inbound = move |event: ChangeEvent| {
-            let doc_id = event.key.key.clone(); // StorageKey.key = document ID for KV
-            let change = kv_store::NativeChange {
-                hash: [0u8; 32], // dummy hash, import_changes only uses payload
-                deps: Vec::new(),
-                payload: event.blob,
-            };
             let storage = storage.clone();
             async move {
                 match &storage {
@@ -456,24 +450,30 @@ impl Database {
                         target_os = "unknown"
                     ))]
                     Storage::IndexedDb(store) => {
+                        let doc_id = event.key.key.clone(); // StorageKey.key = document ID for KV
+                        let change = kv_store::NativeChange {
+                            hash: [0u8; 32], // dummy hash, import_changes only uses payload
+                            deps: Vec::new(),
+                            payload: event.blob,
+                        };
                         let mut tx = store.transaction().await.map_err(|e| e.to_string())?;
                         tx.import_changes(&doc_id, &[change])
                             .await
                             .map_err(|e| e.to_string())?;
                         tx.commit().await.map_err(|e| e.to_string())?;
+                        Ok(())
                     }
                     #[cfg(feature = "in-memory")]
-                    Storage::Memory(_store) => {
-                        return Err(
-                            "In-memory storage not yet supported for synchronize".to_string()
-                        );
-                    }
+                    Storage::Memory(_store) => Err(format!(
+                        "In-memory storage not yet supported for synchronize (key {:?})",
+                        event.key
+                    )),
                     #[cfg(feature = "redb")]
-                    Storage::Redb(_store) => {
-                        return Err("Redb storage not yet supported for synchronize".to_string());
-                    }
+                    Storage::Redb(_store) => Err(format!(
+                        "Redb storage not yet supported for synchronize (key {:?})",
+                        event.key
+                    )),
                 }
-                Ok(())
             }
         };
 

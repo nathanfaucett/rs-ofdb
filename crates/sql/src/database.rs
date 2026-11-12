@@ -21,27 +21,9 @@ use query::QueryError;
 use query::{QueryParams, QueryResult, Statement, Translator};
 
 #[cfg(feature = "sync")]
-use sync::{
-    ChangeEvent, Config, SyncResult, SyncTransport, SynchronizeConfig, SynchronizeError,
-    synchronize,
-};
-#[cfg(feature = "sync")]
-type SyncError<E> = SynchronizeError<E>;
-
-#[cfg(feature = "sync")]
-use automerge;
-#[cfg(feature = "sync")]
-use engine::DocumentChangeId;
-#[cfg(feature = "sync")]
-use uuid;
+use sync::{SyncResult, SyncTransport, SynchronizeConfig, SynchronizeError};
 
 use value::{FromRow, Row, Value};
-
-#[cfg(feature = "sync")]
-#[inline(never)]
-fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
-    Box::pin(make())
-}
 
 // Keep concrete engine conflict futures out of the caller's poll frame during construction.
 #[cfg(any(
@@ -53,13 +35,6 @@ fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::P
 fn conflict_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
     Box::pin(make())
 }
-
-#[cfg(feature = "sync")]
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-type CandidateValidator<'a> =
-    dyn Fn(&SyncCandidateView) -> Result<(), alloc::string::String> + Send + Sync + 'a;
-#[cfg(all(feature = "sync", target_arch = "wasm32", target_os = "unknown"))]
-type CandidateValidator<'a> = dyn Fn(&SyncCandidateView) -> Result<(), alloc::string::String> + 'a;
 
 #[cfg(any(
     feature = "redb",
@@ -412,7 +387,7 @@ impl Database {
         let changes = database.subscribe_changes();
         Ok(Self {
             #[cfg(feature = "sync")]
-            changes: Some(changes.into()),
+            changes: Some(changes),
             backend: DatabaseBackend::File(
                 engine_redb::NativeResource::new(
                     path,
@@ -433,7 +408,7 @@ impl Database {
         let changes = kernel.subscribe_changes();
         Self {
             #[cfg(feature = "sync")]
-            changes: Some(changes.into()),
+            changes: Some(changes),
             backend: DatabaseBackend::InMemory(Engine::new(kernel, AutomergeRowCodec::new())),
         }
     }

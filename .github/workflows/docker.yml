@@ -1,22 +1,43 @@
 name: Docker images
 
+# Images build only after the Test workflow has passed:
+# - pushes to main build and publish branch images when the Test run succeeds
+# - tag pushes build and publish tag images only if every test-* job passed for that commit
 on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+    branches: [main]
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 
 jobs:
-  verify:
-    if: github.event_name == 'pull_request'
+  gate:
+    name: Require passing tests
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Test workflow passed for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name | startswith("test-"))] | if length == 0 then error("no Test runs found for this commit") elif all(.[]; .conclusion == "success") then "tests passed" else error("Test workflow did not pass for this commit") end'
+
+  build:
+    name: Build ${{ matrix.service }} image
+    needs: [gate]
+    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'push' && needs.gate.result == 'success')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,6 +46,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -41,27 +64,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
 
-  container-sync:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install --yes libprotobuf-dev protobuf-compiler
-
-      - name: Build server images
-        run: docker compose build
-
-      - name: Test container sync
-        run: sh scripts/test-container-sync.sh
-
   publish:
-    if: github.event_name == 'push'
+    name: Publish ${{ matrix.service }} image
+    needs: [build]
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -73,6 +79,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

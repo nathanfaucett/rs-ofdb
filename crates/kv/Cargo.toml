@@ -161,7 +161,3 @@ required-features = ["remote", "in-memory", "redb", "server"]
 [[test]]
 name = "remote_facade_transaction"
 required-features = ["remote", "in-memory", "server"]
-
-[[test]]
-name = "changes"
-required-features = ["sync"]

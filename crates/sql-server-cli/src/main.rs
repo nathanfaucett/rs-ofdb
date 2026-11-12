@@ -51,6 +51,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     #[cfg(feature = "p2p")]
     let sync_peers = merge_sync_peers(args.sync_peers, args.sync_peers_file)?;
+    #[cfg(feature = "p2p")]
     let (shutdown_sender, p2p_task) = start_p2p(Arc::clone(&database), secret_path, sync_peers);
 
     let result = database
@@ -155,7 +156,9 @@ fn merge_sync_peers(
 mod tests {
     use std::{io::ErrorKind, path::PathBuf};
 
-    use super::{load_client_ca, load_identity, merge_sync_peers};
+    #[cfg(feature = "p2p")]
+    use super::merge_sync_peers;
+    use super::{load_client_ca, load_identity};
 
     #[test]
     fn tls_identity_requires_certificate_and_key_as_a_pair() {
@@ -195,7 +198,7 @@ mod tests {
         writeln!(f, "{}", key1).unwrap();
         writeln!(f, "# comment").unwrap();
         writeln!(f, "{}", key2).unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         let peers = merge_sync_peers(vec![], Some(file)).unwrap();
         assert_eq!(peers.len(), 2);
         assert!(peers.contains(&key1));

@@ -1127,8 +1127,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2261,6 +2263,7 @@ dependencies = [
  "lru-slab",
  "rand",
  "rand_pcg",
+ "ring",
  "rustc-hash",
  "rustls",
  "rustls-pki-types",
@@ -2560,6 +2563,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ofdb-kv-server-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "iroh",
+ "ofdb-kv",
+ "ofdb-sync",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ofdb-kv-store"
 version = "0.1.0"
 dependencies = [
@@ -2784,6 +2799,18 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "ofdb-sql-server-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "iroh",
+ "ofdb-sql",
+ "ofdb-sync",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4033,6 +4060,7 @@ dependencies = [
  "http",
  "httparse",
  "rand",
+ "ring",
  "rustls-pki-types",
  "sha1_smol",
  "simdutf8",

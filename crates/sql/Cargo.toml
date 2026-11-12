@@ -123,11 +123,6 @@ name = "remote"
 required-features = ["remote", "sql", "redb", "in-memory", "server"]
 
 
-[[test]]
-name = "local_sql"
-required-features = ["sql", "redb", "in-memory"]
-
-
 [[example]]
 name = "in_memory"
 required-features = ["sql", "in-memory"]

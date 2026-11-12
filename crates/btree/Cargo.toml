@@ -16,7 +16,7 @@ name = "btree"
 default = ["std", "sharded", "in-memory"]
 std = ["futures/std", "async-lock?/std", "thiserror/std"]
 changes = ["std", "dep:tokio"]
-sharded = ["dep:dashmap"]
+sharded = ["dep:async-stream", "dep:dashmap"]
 in-memory = ["dep:async-stream", "dep:async-lock"]
 
 [dependencies]

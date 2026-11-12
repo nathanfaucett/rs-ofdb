@@ -1,17 +1,18 @@
-name: Browser IndexedDB
+name: Test
 
 on:
   push:
-    branches: [main, browser-indexeddb]
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: browser-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_BUILD_JOBS: '2'
@@ -19,7 +20,104 @@ env:
   WASM_BINDGEN_TEST_TIMEOUT: '240'
 
 jobs:
-  feature-matrix:
+  test-lint:
+    name: test-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (with rustfmt + clippy)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Rust fmt check
+        run: just fmt-check
+
+      - name: Cargo clippy
+        run: just clippy
+
+      - name: Check metadata and remote dependency isolation
+        run: |
+          cargo metadata --no-deps --format-version 1 > /dev/null
+          if cargo tree -p ofdb-sql --no-default-features --features remote --edges normal | grep -E 'ofdb-(sql-engine|btree|sql-sync)|redb v|automerge v'; then
+            echo "SQL remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
+          if cargo tree -p ofdb-kv --no-default-features --features remote --edges normal | grep -E 'ofdb-(btree|kv-store|kv-sync)|redb v|automerge v'; then
+            echo "KV remote feature includes embedded or sync dependencies" >&2
+            exit 1
+          fi
+
+  test-cargo:
+    name: test-cargo
+    needs: test-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: sudo apt-get install protobuf-compiler
+
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Install llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Install crap
+        run: cargo install cargo-crap --version 0.5.0 --locked
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
+
+      - name: Show rustc/cargo
+        run: rustc --version && cargo --version
+
+      - name: Crap coverage
+        run: just crap-summary
+
+      - name: Test
+        run: just test
+
+  test-browser-matrix:
+    name: test-browser-matrix
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -50,7 +148,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  acceptance:
+  test-browser-acceptance:
+    name: test-browser-acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
@@ -108,7 +207,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  native-regression:
+  test-native-regression:
+    name: test-native-regression
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
