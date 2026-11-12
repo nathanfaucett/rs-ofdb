@@ -49,8 +49,8 @@ pub use database::Database;
 pub use error::{Error, ErrorKind};
 #[cfg(feature = "sync")]
 pub use sync::{
-    ChangeSubscription, PushConfig as SyncConfig, PushResult, PushSyncTransport as SyncTransport,
-    PushSynchronizeError as SyncError,
+    ChangeSubscription, Config as SyncConfig, SyncResult, SyncTransport,
+    SynchronizeError as SyncError,
 };
 #[cfg(any(
     feature = "remote",

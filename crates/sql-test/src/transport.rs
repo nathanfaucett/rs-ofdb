@@ -2,7 +2,7 @@ use core::fmt;
 
 use futures::{StreamExt, channel::mpsc};
 
-use sync::{PushMessage, PushSyncTransport};
+use sync::{Message, SyncTransport};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InMemoryTransportError {
@@ -28,16 +28,16 @@ impl fmt::Display for InMemoryTransportError {
 impl std::error::Error for InMemoryTransportError {}
 
 pub struct InMemoryTransport {
-    receiver: mpsc::UnboundedReceiver<PushMessage>,
-    sender: Option<mpsc::UnboundedSender<PushMessage>>,
+    receiver: mpsc::UnboundedReceiver<Message>,
+    sender: Option<mpsc::UnboundedSender<Message>>,
     fail_at: Option<usize>,
     sent: usize,
 }
 
-impl PushSyncTransport for InMemoryTransport {
+impl SyncTransport for InMemoryTransport {
     type Error = InMemoryTransportError;
 
-    async fn send(&mut self, msg: PushMessage) -> Result<(), Self::Error> {
+    async fn send(&mut self, msg: Message) -> Result<(), Self::Error> {
         if self.fail_at == Some(self.sent) {
             self.sender = None;
             return Err(InMemoryTransportError::Interrupted);
@@ -50,7 +50,7 @@ impl PushSyncTransport for InMemoryTransport {
             .map_err(|_| InMemoryTransportError::Closed)
     }
 
-    async fn receive(&mut self) -> Result<PushMessage, Self::Error> {
+    async fn receive(&mut self) -> Result<Message, Self::Error> {
         self.receiver
             .next()
             .await
@@ -96,7 +96,7 @@ pub fn in_memory_transport_pair_failing(
 mod tests {
     use futures::executor::block_on;
 
-    use super::{InMemoryTransportError, PushSyncTransport, in_memory_transport_pair_failing_at};
+    use super::{InMemoryTransportError, SyncTransport, in_memory_transport_pair_failing_at};
 
     #[test]
     fn failed_send_closes_the_peer() {
@@ -104,7 +104,7 @@ mod tests {
             let (mut left, mut right) = in_memory_transport_pair_failing_at(Some(0));
 
             assert_eq!(
-                left.send(sync::PushMessage::Close).await,
+                left.send(sync::Message::Close).await,
                 Err(InMemoryTransportError::Interrupted)
             );
             assert_eq!(right.receive().await, Err(InMemoryTransportError::Closed));

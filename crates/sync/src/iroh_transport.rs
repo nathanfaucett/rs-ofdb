@@ -4,12 +4,11 @@ use std::io::{Error, ErrorKind};
 use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::protocol::{
-    Error as ProtocolError, MAX_MESSAGE_BYTES, PushConfig, PushMessage, decode_message,
-    encode_message,
+    Config, Error as ProtocolError, MAX_MESSAGE_BYTES, Message, decode_message, encode_message,
 };
-use crate::transport::PushSyncTransport;
+use crate::transport::SyncTransport;
 
-/// Length-prefixed push sync frames over an already-authorized Iroh bidirectional stream.
+/// Length-prefixed sync frames over an already-authorized Iroh bidirectional stream.
 /// Each frame is a big-endian u32 byte length followed by exactly that many bytes.
 #[derive(Debug)]
 pub struct IrohTransport {
@@ -23,11 +22,11 @@ impl IrohTransport {
     }
 }
 
-impl PushSyncTransport for IrohTransport {
+impl SyncTransport for IrohTransport {
     type Error = Error;
 
-    fn send(&mut self, msg: PushMessage) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let config = PushConfig::default();
+    fn send(&mut self, msg: Message) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let config = Config::default();
         let bytes =
             encode_message(&msg, &config).map_err(|e| Error::new(ErrorKind::InvalidData, e));
         let send = &mut self.send;
@@ -46,8 +45,8 @@ impl PushSyncTransport for IrohTransport {
         }
     }
 
-    fn receive(&mut self) -> impl Future<Output = Result<PushMessage, Self::Error>> + Send {
-        let config = PushConfig::default();
+    fn receive(&mut self) -> impl Future<Output = Result<Message, Self::Error>> + Send {
+        let config = Config::default();
         let recv = &mut self.recv;
         async move {
             let mut prefix = [0; 4];

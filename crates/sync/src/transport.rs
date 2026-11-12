@@ -1,32 +1,32 @@
 #![allow(dead_code, unused_variables)]
-use crate::protocol::PushMessage;
+use crate::protocol::Message;
 use core::future::Future;
 
-/// Bidirectional transport for push-based synchronization.
+/// Bidirectional transport for synchronization.
 ///
 /// Implementations handle the underlying I/O (TCP, WebSocket, Iroh, etc.)
-/// and provide async send/receive operations for PushMessage frames.
-pub trait PushSyncTransport {
+/// and provide async send/receive operations for Message frames.
+pub trait SyncTransport {
     /// Transport-specific error type.
     type Error: core::fmt::Debug + Send + Sync + 'static;
 
-    /// Send a push sync message.
+    /// Send a sync message.
     ///
     /// The transport is responsible for framing and serialization.
     /// Returns an error if the send fails.
     #[cfg(not(target_arch = "wasm32"))]
-    fn send(&mut self, msg: PushMessage) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn send(&mut self, msg: Message) -> impl Future<Output = Result<(), Self::Error>> + Send;
     #[cfg(target_arch = "wasm32")]
-    fn send(&mut self, msg: PushMessage) -> impl Future<Output = Result<(), Self::Error>>;
+    fn send(&mut self, msg: Message) -> impl Future<Output = Result<(), Self::Error>>;
 
-    /// Receive the next push sync message.
+    /// Receive the next sync message.
     ///
     /// Returns an error if the connection is closed, times out, or
     /// the received frame is invalid.
     #[cfg(not(target_arch = "wasm32"))]
-    fn receive(&mut self) -> impl Future<Output = Result<PushMessage, Self::Error>> + Send;
+    fn receive(&mut self) -> impl Future<Output = Result<Message, Self::Error>> + Send;
     #[cfg(target_arch = "wasm32")]
-    fn receive(&mut self) -> impl Future<Output = Result<PushMessage, Self::Error>>;
+    fn receive(&mut self) -> impl Future<Output = Result<Message, Self::Error>>;
 
     /// Optional: Get the peer's session ID if available.
     fn session_id(&self) -> Option<crate::protocol::SessionId> {
@@ -38,14 +38,14 @@ pub trait PushSyncTransport {
 #[cfg(feature = "std")]
 pub mod framed {
     use super::*;
-    use crate::protocol::PushConfig;
+    use crate::protocol::Config;
     use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use std::io;
 
-    /// Length-prefixed frame codec for push sync messages.
+    /// Length-prefixed frame codec for sync messages.
     pub struct FramedTransport<S> {
         stream: S,
-        config: PushConfig,
+        config: Config,
         read_buf: Vec<u8>,
     }
 
@@ -53,7 +53,7 @@ pub mod framed {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        pub fn new(stream: S, config: PushConfig) -> Self {
+        pub fn new(stream: S, config: Config) -> Self {
             Self {
                 stream,
                 config,
@@ -65,22 +65,22 @@ pub mod framed {
             self.stream
         }
 
-        pub fn config(&self) -> &PushConfig {
+        pub fn config(&self) -> &Config {
             &self.config
         }
 
-        pub fn config_mut(&mut self) -> &mut PushConfig {
+        pub fn config_mut(&mut self) -> &mut Config {
             &mut self.config
         }
     }
 
-    impl<S> PushSyncTransport for FramedTransport<S>
+    impl<S> SyncTransport for FramedTransport<S>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
         type Error = io::Error;
 
-        async fn send(&mut self, msg: PushMessage) -> Result<(), Self::Error> {
+        async fn send(&mut self, msg: Message) -> Result<(), Self::Error> {
             let bytes = crate::protocol::encode_message(&msg, &self.config)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let len = bytes.len() as u32;
@@ -90,7 +90,7 @@ pub mod framed {
             Ok(())
         }
 
-        async fn receive(&mut self) -> Result<PushMessage, Self::Error> {
+        async fn receive(&mut self) -> Result<Message, Self::Error> {
             let mut len_bytes = [0u8; 4];
             self.stream.read_exact(&mut len_bytes).await?;
             let len = u32::from_le_bytes(len_bytes) as usize;
@@ -117,21 +117,21 @@ pub mod framed {
 #[cfg(test)]
 pub mod mock {
     use super::*;
-    use crate::protocol::{PushConfig, PushMessage};
+    use crate::protocol::{Config, Message};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
     /// In-memory mock transport for testing.
     #[derive(Debug, Clone)]
     pub struct MockTransport {
-        inbound: Arc<Mutex<VecDeque<PushMessage>>>,
-        outbound: Arc<Mutex<VecDeque<PushMessage>>>,
-        config: PushConfig,
+        inbound: Arc<Mutex<VecDeque<Message>>>,
+        outbound: Arc<Mutex<VecDeque<Message>>>,
+        config: Config,
         closed: Arc<Mutex<bool>>,
     }
 
     impl MockTransport {
-        pub fn new(config: PushConfig) -> Self {
+        pub fn new(config: Config) -> Self {
             Self {
                 inbound: Arc::new(Mutex::new(VecDeque::new())),
                 outbound: Arc::new(Mutex::new(VecDeque::new())),
@@ -149,11 +149,11 @@ pub mod mock {
             }
         }
 
-        pub fn push_inbound(&self, msg: PushMessage) {
+        pub fn push_inbound(&self, msg: Message) {
             self.inbound.lock().unwrap().push_back(msg);
         }
 
-        pub fn pop_outbound(&self) -> Option<PushMessage> {
+        pub fn pop_outbound(&self) -> Option<Message> {
             self.outbound.lock().unwrap().pop_front()
         }
 
@@ -170,10 +170,10 @@ pub mod mock {
         }
     }
 
-    impl PushSyncTransport for MockTransport {
+    impl SyncTransport for MockTransport {
         type Error = std::io::Error;
 
-        async fn send(&mut self, msg: PushMessage) -> Result<(), Self::Error> {
+        async fn send(&mut self, msg: Message) -> Result<(), Self::Error> {
             if *self.closed.lock().unwrap() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -184,7 +184,7 @@ pub mod mock {
             Ok(())
         }
 
-        async fn receive(&mut self) -> Result<PushMessage, Self::Error> {
+        async fn receive(&mut self) -> Result<Message, Self::Error> {
             if *self.closed.lock().unwrap() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -206,11 +206,11 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::protocol::{PushConfig, make_hello};
+        use crate::protocol::{Config, make_hello};
 
         #[tokio::test]
         async fn mock_transport_send_receive() {
-            let config = PushConfig::default();
+            let config = Config::default();
             let mut transport = MockTransport::new(config.clone());
             let mut peer = transport.peer();
 
@@ -223,7 +223,7 @@ pub mod mock {
 
         #[tokio::test]
         async fn mock_transport_bidirectional() {
-            let config = PushConfig::default();
+            let config = Config::default();
             let mut transport = MockTransport::new(config.clone());
             let mut peer = transport.peer();
 

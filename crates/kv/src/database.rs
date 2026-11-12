@@ -7,7 +7,7 @@ use btree::InMemoryBTree;
 use kv_store::KvStore;
 
 #[cfg(feature = "sync")]
-use sync::{PushConfig, PushResult, PushSyncTransport, PushSynchronizeConfig, push_synchronize};
+use sync::{Config, SyncResult, SyncTransport, SynchronizeConfig, synchronize};
 
 use value::Value;
 
@@ -422,18 +422,18 @@ impl Database {
         })
     }
 
-    /// Push-based synchronization: streams local changes to peer and applies remote changes.
+    /// Synchronization: streams local changes to peer and applies remote changes.
     /// Uses the store's change subscription for outbound events and imports inbound events directly.
     #[cfg(feature = "sync")]
-    pub async fn synchronize<T: PushSyncTransport>(
+    pub async fn synchronize<T: SyncTransport>(
         &self,
         transport: T,
-        config: PushSynchronizeConfig,
-    ) -> Result<PushResult, sync::PushSynchronizeError<T::Error>> {
+        config: SynchronizeConfig,
+    ) -> Result<SyncResult, sync::SynchronizeError<T::Error>> {
         // Get the change subscription for outbound events
         let mut subscription = self
             .sync_changes()
-            .map_err(|e| sync::PushSynchronizeError::Apply(e.to_string()))?;
+            .map_err(|e| sync::SynchronizeError::Apply(e.to_string()))?;
         let outbound = subscription.events();
 
         // Clone storage for the closure
@@ -465,22 +465,19 @@ impl Database {
                     #[cfg(feature = "in-memory")]
                     Storage::Memory(_store) => {
                         return Err(
-                            "In-memory storage not yet supported for push-based synchronize"
-                                .to_string(),
+                            "In-memory storage not yet supported for synchronize".to_string()
                         );
                     }
                     #[cfg(feature = "redb")]
                     Storage::Redb(_store) => {
-                        return Err(
-                            "Redb storage not yet supported for push-based synchronize".to_string()
-                        );
+                        return Err("Redb storage not yet supported for synchronize".to_string());
                     }
                 }
                 Ok(())
             }
         };
 
-        sync::push_synchronize(transport, outbound, apply_inbound, config).await
+        sync::synchronize(transport, outbound, apply_inbound, config).await
     }
 
     /// DEPRECATED: Use push-based `synchronize` instead.

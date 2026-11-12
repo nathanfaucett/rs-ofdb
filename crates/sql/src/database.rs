@@ -22,11 +22,11 @@ use query::{QueryParams, QueryResult, Statement, Translator};
 
 #[cfg(feature = "sync")]
 use sync::{
-    ChangeEvent, PushConfig, PushResult, PushSyncTransport, PushSynchronizeConfig,
-    PushSynchronizeError, push_synchronize,
+    ChangeEvent, Config, SyncResult, SyncTransport, SynchronizeConfig, SynchronizeError,
+    synchronize,
 };
 #[cfg(feature = "sync")]
-type SyncError<E> = PushSynchronizeError<E>;
+type SyncError<E> = SynchronizeError<E>;
 
 #[cfg(feature = "sync")]
 use automerge;
@@ -688,20 +688,17 @@ impl Database {
     /// Unchecked sync. Caller owns admission; use `synchronize_checked` for per-apply
     /// authorization/cancellation that can change during the session.
     #[cfg(feature = "sync")]
-    /// Push-based synchronization. Streams local changes to peer and applies remote changes.
+    /// Synchronization. Streams local changes to peer and applies remote changes.
     /// Uses the engine's change subscription for outbound events and applies inbound events via the reconciler.
     #[cfg(feature = "sync")]
-    pub async fn synchronize<T>(
+    pub async fn synchronize<T: SyncTransport>(
         &self,
         transport: T,
-        config: PushSynchronizeConfig,
-    ) -> Result<PushResult, PushSynchronizeError<T::Error>>
-    where
-        T: PushSyncTransport,
-    {
+        config: SynchronizeConfig,
+    ) -> Result<SyncResult, SynchronizeError<T::Error>> {
         let mut subscription = self
             .sync_changes()
-            .map_err(|e| PushSynchronizeError::Apply(e.to_string()))?;
+            .map_err(|e| SynchronizeError::Apply(e.to_string()))?;
         let outbound = subscription.events();
 
         let backend = self.backend.clone();
@@ -760,11 +757,11 @@ impl Database {
 
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
-            sync::push_synchronize(transport, outbound, apply_inbound, config).await
+            sync::synchronize(transport, outbound, apply_inbound, config).await
         }
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
-            sync::push_synchronize(transport, outbound, apply_inbound, config).await
+            sync::synchronize(transport, outbound, apply_inbound, config).await
         }
     }
 }
@@ -822,19 +819,6 @@ pub enum SyncRole {
 }
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncResult API.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SyncResult;
-
-#[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncTransport trait.
-pub trait SyncTransport {
-    type Error: core::fmt::Display + core::fmt::Debug + Send + Sync + 'static;
-    async fn send(&mut self, _: Vec<u8>) -> Result<(), Self::Error>;
-    async fn receive(&mut self) -> Result<Vec<u8>, Self::Error>;
-    async fn close(&mut self) -> Result<(), Self::Error>;
-}
-
 #[cfg(all(test, feature = "redb", feature = "sql"))]
 mod tests {
     use super::*;

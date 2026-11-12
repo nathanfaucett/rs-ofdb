@@ -34,8 +34,8 @@ pub use sql_translator::SqlTranslator;
 
 #[cfg(feature = "sync")]
 pub use crate::database::{
-    SessionConfig, SyncCandidateView, SyncKey, SyncManifest, SyncResult, SyncRole, SyncSelection,
-    SyncStageFactory, SyncStateUnit, SyncTransport,
+    SessionConfig, SyncCandidateView, SyncKey, SyncManifest, SyncRole, SyncSelection,
+    SyncStageFactory, SyncStateUnit,
 };
 
 pub use uuid::Uuid;

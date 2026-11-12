@@ -1,14 +1,14 @@
-use crate::protocol::{Error, PushConfig, PushMessage, PushResult};
-use crate::transport::PushSyncTransport;
+use crate::protocol::{Config, Error, Message, SyncResult};
+use crate::transport::SyncTransport;
 use btree::{ChangeEvent, StorageKey};
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Error during push synchronization.
+/// Error during synchronization.
 #[derive(Debug, Error)]
-pub enum PushSynchronizeError<E> {
+pub enum SynchronizeError<E> {
     #[error("transport error: {0}")]
     Transport(E),
     #[error("protocol error: {0}")]
@@ -29,17 +29,17 @@ pub enum PushSynchronizeError<E> {
     },
 }
 
-impl<E> From<Error<E>> for PushSynchronizeError<E> {
+impl<E> From<Error<E>> for SynchronizeError<E> {
     fn from(e: Error<E>) -> Self {
-        PushSynchronizeError::Protocol(e)
+        SynchronizeError::Protocol(e)
     }
 }
 
-/// Configuration for push_synchronize.
+/// Configuration for synchronize.
 #[derive(Debug, Clone)]
-pub struct PushSynchronizeConfig {
+pub struct SynchronizeConfig {
     /// Protocol configuration.
-    pub protocol: PushConfig,
+    pub protocol: Config,
     /// Maximum time to wait for handshake.
     pub handshake_timeout: Duration,
     /// Maximum time between messages before timeout.
@@ -48,10 +48,10 @@ pub struct PushSynchronizeConfig {
     pub send_done_on_exhaust: bool,
 }
 
-impl Default for PushSynchronizeConfig {
+impl Default for SynchronizeConfig {
     fn default() -> Self {
         Self {
-            protocol: PushConfig::default(),
+            protocol: Config::default(),
             handshake_timeout: Duration::from_secs(10),
             message_timeout: Duration::from_secs(30),
             send_done_on_exhaust: true,
@@ -59,9 +59,9 @@ impl Default for PushSynchronizeConfig {
     }
 }
 
-/// Run push-based synchronization between two peers.
+/// Run synchronization between two peers.
 ///
-/// This function implements the push sync protocol:
+/// This function implements the sync protocol:
 /// 1. Handshake (Hello/HelloAck)
 /// 2. Bidirectional streaming of ChangeEvent
 /// 3. Snapshot fallback for missing dependencies
@@ -69,7 +69,7 @@ impl Default for PushSynchronizeConfig {
 /// 5. Graceful close (Done/Close)
 ///
 /// # Type Parameters
-/// - `T`: Transport implementing `PushSyncTransport`
+/// - `T`: Transport implementing `SyncTransport`
 /// - `F`: Callback to apply inbound ChangeEvent to local storage
 ///
 /// # Arguments
@@ -79,20 +79,20 @@ impl Default for PushSynchronizeConfig {
 /// - `config`: Synchronization configuration
 ///
 /// # Returns
-/// `PushResult` with statistics, or `PushSynchronizeError` on failure.
-pub async fn push_synchronize<T, F, S, Fut>(
+/// `SyncResult` with statistics, or `SynchronizeError` on failure.
+pub async fn synchronize<T, F, S, Fut>(
     mut transport: T,
     mut outbound: S,
     mut apply_inbound: F,
-    config: PushSynchronizeConfig,
-) -> Result<PushResult, PushSynchronizeError<T::Error>>
+    config: SynchronizeConfig,
+) -> Result<SyncResult, SynchronizeError<T::Error>>
 where
-    T: PushSyncTransport,
+    T: SyncTransport,
     S: Stream<Item = ChangeEvent> + Unpin + Send,
     F: FnMut(ChangeEvent) -> Fut + Send,
     Fut: Future<Output = Result<(), String>> + Send,
 {
-    let mut result = PushResult::default();
+    let mut result = SyncResult::default();
     let mut local_generations: HashMap<StorageKey, u64> = HashMap::new();
     let mut remote_generations: HashMap<StorageKey, u64> = HashMap::new();
     let mut pending_acks: HashMap<StorageKey, u64> = HashMap::new();
@@ -101,7 +101,7 @@ where
 
     // Handshake
     let manifest_digest = [0u8; 32]; // TODO: compute actual manifest digest
-    let hello = PushMessage::Hello(crate::protocol::HelloConfig {
+    let hello = Message::Hello(crate::protocol::HelloConfig {
         protocol_version: 1,
         manifest_digest,
         config: config.protocol.clone(),
@@ -109,19 +109,19 @@ where
     transport
         .send(hello)
         .await
-        .map_err(PushSynchronizeError::Transport)?;
+        .map_err(SynchronizeError::Transport)?;
     result.bytes_sent += 1; // approximate
 
     // Wait for HelloAck
     let hello_ack = tokio::time::timeout(config.handshake_timeout, transport.receive())
         .await
-        .map_err(|_| PushSynchronizeError::SessionTimeout)?
-        .map_err(PushSynchronizeError::Transport)?;
+        .map_err(|_| SynchronizeError::SessionTimeout)?
+        .map_err(SynchronizeError::Transport)?;
 
     let accepted = match hello_ack {
-        PushMessage::HelloAck { accepted, .. } => accepted,
+        Message::HelloAck { accepted, .. } => accepted,
         msg => {
-            return Err(PushSynchronizeError::HandshakeFailed(format!(
+            return Err(SynchronizeError::HandshakeFailed(format!(
                 "expected HelloAck, got {:?}",
                 msg
             )));
@@ -129,7 +129,7 @@ where
     };
 
     if !accepted {
-        return Err(PushSynchronizeError::HandshakeFailed(
+        return Err(SynchronizeError::HandshakeFailed(
             "peer rejected handshake".into(),
         ));
     }
@@ -155,20 +155,20 @@ where
                         let generation = event.generation;
                         local_generations.insert(event.key.clone(), generation);
 
-                        let msg = PushMessage::ChangeEvent(event);
+                        let msg = Message::ChangeEvent(event);
                         transport.send(msg).await
-                            .map_err(PushSynchronizeError::Transport)?;
+                            .map_err(SynchronizeError::Transport)?;
                         result.events_sent += 1;
                         result.bytes_sent += 1; // approximate
                     }
                     None => {
                         outbound_exhausted = true;
                         if config.send_done_on_exhaust && !sent_done {
-                            let done = PushMessage::Done {
+                            let done = Message::Done {
                                 final_generations: local_generations.clone(),
                             };
                             transport.send(done).await
-                                .map_err(PushSynchronizeError::Transport)?;
+                                .map_err(SynchronizeError::Transport)?;
                             sent_done = true;
                         }
                     }
@@ -186,7 +186,7 @@ where
                     Ok(Ok(message)) => {
                         result.bytes_received += 1; // approximate
                         match message {
-                            PushMessage::ChangeEvent(event) => {
+                            Message::ChangeEvent(event) => {
                                 // Track remote generation
                                 let generation = event.generation;
                                 let key = event.key.clone();
@@ -194,7 +194,7 @@ where
 
                                 // Apply to local storage
                                 apply_inbound(event).await
-                                    .map_err(PushSynchronizeError::Apply)?;
+                                    .map_err(SynchronizeError::Apply)?;
                                 result.events_received += 1;
 
                                 // Queue acknowledgment
@@ -202,54 +202,54 @@ where
 
                                 // Send ACK if immediate
                                 if config.protocol.immediate_ack {
-                                    let ack = PushMessage::Ack {
+                                    let ack = Message::Ack {
                                         acknowledgments: std::mem::take(&mut pending_acks),
                                     };
                                     transport.send(ack).await
-                                        .map_err(PushSynchronizeError::Transport)?;
+                                        .map_err(SynchronizeError::Transport)?;
                                 }
                             }
-                            PushMessage::SnapshotRequest { key: _, min_generation: _ } => {
+                            Message::SnapshotRequest { key: _, min_generation: _ } => {
                                 // TODO: Implement snapshot serving
                                 // For now, send Close to indicate we can't serve
-                                let close = PushMessage::Close;
+                                let close = Message::Close;
                                 transport.send(close).await
-                                    .map_err(PushSynchronizeError::Transport)?;
+                                    .map_err(SynchronizeError::Transport)?;
                             }
-                            PushMessage::Snapshot { key, blob, generation } => {
+                            Message::Snapshot { key, blob, generation } => {
                                 // Apply snapshot
                                 let event = ChangeEvent { key, blob, generation };
                                 apply_inbound(event).await
-                                    .map_err(PushSynchronizeError::Apply)?;
+                                    .map_err(SynchronizeError::Apply)?;
                                 result.snapshots_received += 1;
                             }
-                            PushMessage::Ack { acknowledgments } => {
+                            Message::Ack { acknowledgments } => {
                                 // Peer acknowledged our events
                                 for (key, _generation) in acknowledgments {
                                     pending_acks.remove(&key);
                                 }
                             }
-                            PushMessage::Done { final_generations } => {
+                            Message::Done { final_generations } => {
                                 _received_done = true;
                                 // Update remote generations with final values
                                 remote_generations.extend(final_generations);
                             }
-                            PushMessage::Close => {
+                            Message::Close => {
                                 inbound_closed = true;
                             }
-                            PushMessage::HelloAck { .. } => {
+                            Message::HelloAck { .. } => {
                                 // Ignore duplicate hello ack
                             }
-                            PushMessage::Hello { .. } => {
+                            Message::Hello { .. } => {
                                 // Ignore duplicate hello
                             }
                         }
                     }
                     Ok(Err(e)) => {
-                        return Err(PushSynchronizeError::Protocol(Error::Transport(e)));
+                        return Err(SynchronizeError::Protocol(Error::Transport(e)));
                     }
                     Err(_) => {
-                        return Err(PushSynchronizeError::SessionTimeout);
+                        return Err(SynchronizeError::SessionTimeout);
                     }
                 }
             }
@@ -261,29 +261,29 @@ where
 
         // Send batched ACKs if not immediate
         if !config.protocol.immediate_ack && !pending_acks.is_empty() {
-            let ack = PushMessage::Ack {
+            let ack = Message::Ack {
                 acknowledgments: std::mem::take(&mut pending_acks),
             };
             transport
                 .send(ack)
                 .await
-                .map_err(PushSynchronizeError::Transport)?;
+                .map_err(SynchronizeError::Transport)?;
         }
     }
 
     // Send final DONE if not already sent
     if !sent_done {
-        let done = PushMessage::Done {
+        let done = Message::Done {
             final_generations: local_generations,
         };
         transport
             .send(done)
             .await
-            .map_err(PushSynchronizeError::Transport)?;
+            .map_err(SynchronizeError::Transport)?;
     }
 
     // Send final CLOSE
-    let close = PushMessage::Close;
+    let close = Message::Close;
     let _ = transport.send(close).await;
 
     Ok(result)
@@ -292,14 +292,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::PushConfig;
+    use crate::protocol::Config;
     use crate::transport::mock::MockTransport;
     use btree::{ChangeEvent, StorageKey};
     use futures::stream;
 
     #[tokio::test]
-    async fn push_synchronize_compiles() {
-        let config = PushConfig::default();
+    async fn synchronize_compiles() {
+        let config = Config::default();
         let transport = MockTransport::new(config.clone());
         let _peer = transport.peer();
 
@@ -311,7 +311,7 @@ mod tests {
         };
         let outbound = stream::iter(vec![event]);
 
-        let sync_config = PushSynchronizeConfig {
+        let sync_config = SynchronizeConfig {
             protocol: config.clone(),
             handshake_timeout: std::time::Duration::from_secs(1),
             message_timeout: std::time::Duration::from_secs(1),
@@ -319,7 +319,6 @@ mod tests {
         };
 
         // Just testing the function compiles - mock doesn't fully implement protocol
-        let _ =
-            push_synchronize(transport, outbound, |_e| async move { Ok(()) }, sync_config).await;
+        let _ = synchronize(transport, outbound, |_e| async move { Ok(()) }, sync_config).await;
     }
 }

@@ -13,9 +13,9 @@ const PROTOCOL_VERSION: u8 = 1;
 /// Maximum message size in bytes (1 MiB).
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
-/// Configuration for the push sync protocol.
+/// Configuration for the sync protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PushConfig {
+pub struct Config {
     /// Maximum frame size in bytes.
     pub max_frame_bytes: usize,
     /// Maximum number of pending unacknowledged events per key.
@@ -28,7 +28,7 @@ pub struct PushConfig {
     pub immediate_ack: bool,
 }
 
-impl Default for PushConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             max_frame_bytes: 8 * 1024 * 1024, // 8 MiB
@@ -45,7 +45,7 @@ impl Default for PushConfig {
 pub struct HelloConfig {
     pub protocol_version: u8,
     pub manifest_digest: [u8; 32],
-    pub config: PushConfig,
+    pub config: Config,
 }
 
 /// Configuration for ACK behavior.
@@ -66,9 +66,9 @@ impl Default for AckConfig {
     }
 }
 
-/// Result of a push synchronization session.
+/// Result of a synchronization session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PushResult {
+pub struct SyncResult {
     pub events_sent: u64,
     pub events_received: u64,
     pub snapshots_sent: u64,
@@ -77,9 +77,9 @@ pub struct PushResult {
     pub bytes_received: u64,
 }
 
-/// Push sync protocol messages.
+/// Sync protocol messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PushMessage {
+pub enum Message {
     /// Initial handshake with protocol version and manifest.
     Hello(HelloConfig),
     /// Acknowledges Hello and confirms protocol compatibility.
@@ -115,7 +115,7 @@ pub enum PushMessage {
     Close,
 }
 
-/// Error types for push sync.
+/// Error types for sync.
 #[derive(Debug, Error)]
 pub enum Error<E> {
     #[error("transport error: {0}")]
@@ -150,10 +150,10 @@ pub enum Error<E> {
 
 pub type Result<T, E = core::convert::Infallible> = core::result::Result<T, Error<E>>;
 
-/// Encode a push message to bytes.
+/// Encode a sync message to bytes.
 pub fn encode_message(
-    message: &PushMessage,
-    config: &PushConfig,
+    message: &Message,
+    config: &Config,
 ) -> Result<Vec<u8>, core::convert::Infallible> {
     let bytes = to_allocvec(message).map_err(|error| Error::Codec(error.to_string()))?;
     if bytes.len() > config.max_frame_bytes {
@@ -162,18 +162,18 @@ pub fn encode_message(
     Ok(bytes)
 }
 
-/// Decode bytes to a push message.
-pub fn decode_message<E>(bytes: &[u8], config: &PushConfig) -> Result<PushMessage, E> {
+/// Decode bytes to a sync message.
+pub fn decode_message<E>(bytes: &[u8], config: &Config) -> Result<Message, E> {
     if bytes.len() > config.max_frame_bytes {
         return Err(Error::FrameTooLarge(bytes.len(), config.max_frame_bytes));
     }
-    let message: PushMessage = from_bytes(bytes).map_err(|_| Error::InvalidFrame)?;
+    let message: Message = from_bytes(bytes).map_err(|_| Error::InvalidFrame)?;
     Ok(message)
 }
 
 /// Create a Hello message for initiating a session.
-pub fn make_hello(manifest_digest: [u8; 32], config: PushConfig) -> PushMessage {
-    PushMessage::Hello(HelloConfig {
+pub fn make_hello(manifest_digest: [u8; 32], config: Config) -> Message {
+    Message::Hello(HelloConfig {
         protocol_version: PROTOCOL_VERSION,
         manifest_digest,
         config,
@@ -181,34 +181,34 @@ pub fn make_hello(manifest_digest: [u8; 32], config: PushConfig) -> PushMessage 
 }
 
 /// Create a HelloAck message.
-pub fn make_hello_ack(accepted: bool) -> PushMessage {
-    PushMessage::HelloAck {
+pub fn make_hello_ack(accepted: bool) -> Message {
+    Message::HelloAck {
         protocol_version: PROTOCOL_VERSION,
         accepted,
     }
 }
 
 /// Create an Ack message.
-pub fn make_ack(acknowledgments: HashMap<StorageKey, u64>) -> PushMessage {
-    PushMessage::Ack { acknowledgments }
+pub fn make_ack(acknowledgments: HashMap<StorageKey, u64>) -> Message {
+    Message::Ack { acknowledgments }
 }
 
 /// Create a Done message.
-pub fn make_done(final_generations: HashMap<StorageKey, u64>) -> PushMessage {
-    PushMessage::Done { final_generations }
+pub fn make_done(final_generations: HashMap<StorageKey, u64>) -> Message {
+    Message::Done { final_generations }
 }
 
 /// Create a SnapshotRequest message.
-pub fn make_snapshot_request(key: StorageKey, min_generation: u64) -> PushMessage {
-    PushMessage::SnapshotRequest {
+pub fn make_snapshot_request(key: StorageKey, min_generation: u64) -> Message {
+    Message::SnapshotRequest {
         key,
         min_generation,
     }
 }
 
 /// Create a Snapshot message.
-pub fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> PushMessage {
-    PushMessage::Snapshot {
+pub fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> Message {
+    Message::Snapshot {
         key,
         blob,
         generation,
@@ -216,8 +216,8 @@ pub fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> PushMes
 }
 
 /// Create a Close message.
-pub fn make_close() -> PushMessage {
-    PushMessage::Close
+pub fn make_close() -> Message {
+    Message::Close
 }
 
 /// Unique session identifier.
@@ -249,13 +249,13 @@ mod tests {
 
     #[test]
     fn message_round_trip() {
-        let config = PushConfig::default();
+        let config = Config::default();
         let event = ChangeEvent {
             key: StorageKey::kv(b"test-key".to_vec()),
             blob: vec![1, 2, 3],
             generation: 1,
         };
-        let message = PushMessage::ChangeEvent(event.clone());
+        let message = Message::ChangeEvent(event.clone());
         let encoded = encode_message(&message, &config).unwrap();
         let decoded = decode_message::<()>(&encoded, &config).unwrap();
         assert_eq!(decoded, message);
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn hello_round_trip() {
-        let config = PushConfig::default();
+        let config = Config::default();
         let message = make_hello([7; 32], config.clone());
         let encoded = encode_message(&message, &config).unwrap();
         let decoded = decode_message::<()>(&encoded, &config).unwrap();
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn frame_too_large() {
-        let config = PushConfig {
+        let config = Config {
             max_frame_bytes: 10,
             ..Default::default()
         };
@@ -281,7 +281,7 @@ mod tests {
             blob: vec![0; 100],
             generation: 1,
         };
-        let message = PushMessage::ChangeEvent(event);
+        let message = Message::ChangeEvent(event);
         let result = encode_message(&message, &config);
         assert!(matches!(result, Err(Error::FrameTooLarge(_, _))));
     }
