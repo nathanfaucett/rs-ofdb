@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "public API crate - items exported for consumers")]
+
 mod protocol;
 mod subscription;
 mod transport;

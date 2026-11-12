@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 use std::{future::Future, io, time::Duration};
 
 #[cfg(feature = "std")]

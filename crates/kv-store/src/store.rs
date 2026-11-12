@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Bound,
@@ -146,33 +145,6 @@ where
 
     pub async fn scan_prefix(&self, prefix: &str, _now: i64) -> BTreeResult<Vec<(String, Value)>> {
         self.scan(prefix, 0).await
-    }
-
-    async fn scan_bounds(
-        &self,
-        lower: &[u8],
-        upper: &[u8],
-        _now: i64,
-    ) -> BTreeResult<Vec<(String, Value)>> {
-        let range = (
-            Bound::Included(lower.to_vec()),
-            Bound::Included(upper.to_vec()),
-        );
-        let documents = self.inner.range(range);
-        pin_mut!(documents);
-        let mut results = Vec::new();
-        while let Some(item) = documents.next().await {
-            let (id, document) = item?;
-            decode_document_id(&id)?;
-            let state = read_document(&document)?;
-            if state.tombstone {
-                continue;
-            }
-            let key = String::from_utf8(id[id.len() - 16..].to_vec())
-                .map_err(|_| BTreeError::custom("invalid key encoding"))?;
-            results.push((key, state.value.unwrap()));
-        }
-        Ok(results)
     }
 
     pub async fn scan_all(&self, _now: i64) -> BTreeResult<Vec<(String, Value)>> {
@@ -466,34 +438,16 @@ where
     }
 }
 
-fn history_parts(document: &AutoCommit) -> (Option<Value>, Option<i64>) {
-    let Ok(state) = read_document(document) else {
-        return (None, None);
-    };
-    if state.tombstone {
-        return (None, state.expires_at);
-    }
-    (state.value, state.expires_at)
-}
-
-fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, Vec<u8>) {
-    let key = DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads()));
-    (key, document.save())
-}
-
-fn validate_snapshot(document: &AutoCommit) -> BTreeResult<()> {
-    let state = read_document(document)?;
-    if state.tombstone {
-        return Err(BTreeError::custom("cannot import tombstone as snapshot"));
-    }
-    Ok(())
-}
-
 fn validate_generation(generation: Uuid) -> BTreeResult<()> {
     if generation.is_nil() {
         return Err(BTreeError::custom("nil UUID is not a valid generation"));
     }
     Ok(())
+}
+
+fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, Vec<u8>) {
+    let key = DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads()));
+    (key, document.save())
 }
 
 fn logical_prefix(key: &str) -> Vec<u8> {
@@ -507,14 +461,6 @@ fn encoded_key_prefix(key: &str) -> Vec<u8> {
     let mut prefix = logical_prefix(key);
     prefix.extend_from_slice(&[0u8; 16]);
     prefix
-}
-
-fn prefix_end(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    if let Some(last) = end.last_mut() {
-        *last = last.saturating_add(1);
-    }
-    end
 }
 
 fn lower_id(key: &str) -> Vec<u8> {

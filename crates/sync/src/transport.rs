@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 use crate::protocol::Message;
 use core::future::Future;
 

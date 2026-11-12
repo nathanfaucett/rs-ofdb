@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{borrow::Cow, future::Future};
 
 use value::Row;
@@ -85,6 +84,10 @@ pub enum RunnerError {
     Chaos(String),
 }
 
+#[allow(
+    dead_code,
+    reason = "used by sibling module single.rs via crate::runner::verify_step_result"
+)]
 pub(super) fn verify_step_result(step: &Step, actual: Vec<Row>) -> Result<(), RunnerError> {
     let Some(expected) = &step.expected_rows else {
         return Ok(());
