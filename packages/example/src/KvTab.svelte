@@ -31,8 +31,7 @@ const ctx = getKvContext();
         <label for="global-key" class="text-sm font-medium">Global Key</label>
         <input
             id="global-key"
-            bind:value={ctx.key}
-            oninput={() => ctx.setKey(ctx.key)}
+            bind:value={() => ctx.key, (v) => ctx.setKey(v)}
             class="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
             placeholder="Enter key (e.g., theme)"
             disabled={ctx.busy}

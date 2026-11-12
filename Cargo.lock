@@ -2836,7 +2836,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

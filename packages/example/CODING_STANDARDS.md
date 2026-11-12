@@ -68,3 +68,13 @@ let busy = $state(true);
 - Dialogs: Use `role="dialog"`, `aria-modal="true"`, `aria-labelledby`
 - Status messages: Use `role="status"`, `aria-live="polite"`
 - Buttons: Ensure accessible names via text content or `aria-label`
+
+---
+
+### WASM Async Code Pattern
+
+**Rule**: WASM-targeted async code MUST NOT use `tokio`. Use `web-sys` + `futures` instead. See `crates/sync/src/wasm_sync.rs` for the required rewrite pattern.
+
+### WASM Export Contract
+
+**Rule**: When adding new WASM types, export in `crates/wasm/src/lib.rs` AND re-export in TypeScript package (`packages/kv|sql/src/database.ts` → `index.ts`).

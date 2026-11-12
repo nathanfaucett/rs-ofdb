@@ -328,38 +328,6 @@ impl Database {
         engine_redb::remove_retired(path)
     }
 
-    #[cfg(all(
-        feature = "native-stage",
-        not(all(target_arch = "wasm32", target_os = "unknown"))
-    ))]
-    fn native_stage_factory(
-        &self,
-        directory: impl AsRef<std::path::Path>,
-    ) -> crate::FileSyncStageFactory {
-        let factory = crate::FileSyncStageFactory::new(directory);
-        match &self.backend {
-            #[cfg(feature = "redb")]
-            DatabaseBackend::File(resource) => {
-                #[cfg(unix)]
-                {
-                    let tracker = resource.stage_tracker();
-                    let closed = tracker.clone();
-                    factory.with_file_tracking(
-                        move |path| tracker.track(path),
-                        move |path| closed.forget(path),
-                    )
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = resource;
-                    factory
-                }
-            }
-            #[cfg(feature = "in-memory")]
-            DatabaseBackend::InMemory(_) => factory,
-        }
-    }
-
     /// Creates the sync-owned lifecycle for committed changes, including remote apply.
     /// `ChangeSubscription::events` returns a stream of committed changes.
     /// Merge with a KV subscription to reconcile both stores in one callback.

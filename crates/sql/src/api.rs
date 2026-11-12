@@ -33,18 +33,6 @@ pub use sql_server::{EngineExecutor, Server};
 pub use sql_translator::SqlTranslator;
 
 #[cfg(feature = "sync")]
-pub use sync::{
-    ChangeEvent, ChangeSubscription, PushConfig, PushMessage, PushResult, PushSyncTransport,
-    PushSynchronizeConfig, PushSynchronizeError, push_synchronize,
-};
-
-#[cfg(all(
-    feature = "native-stage",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
-))]
-pub use sync::protocol::FileSyncStageFactory;
-
-#[cfg(feature = "sync")]
 pub use crate::database::{
     SessionConfig, SyncCandidateView, SyncKey, SyncManifest, SyncResult, SyncRole, SyncSelection,
     SyncStageFactory, SyncStateUnit, SyncTransport,
