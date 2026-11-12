@@ -15,21 +15,23 @@ export { ExecuteError } from "./select.js";
 export { Transaction } from "./transaction.js";
 export type { DbValue, JsonValue, ValueType } from "./value.js";
 
-import type { SqlSyncResult } from "./database.js";
 // Sync exports - import to ensure they're included in bundle
 import {
+  JsPushSyncTransport,
   JsSqlSyncError,
-  JsSqlSyncTransport,
-  SqlSessionConfig,
   SqlSyncDirection,
   SqlSyncRole,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
 } from "./database.js";
 
-export type { SqlSyncResult };
 export {
+  JsPushSyncTransport,
   JsSqlSyncError,
-  JsSqlSyncTransport,
-  SqlSessionConfig,
   SqlSyncDirection,
   SqlSyncRole,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
 };

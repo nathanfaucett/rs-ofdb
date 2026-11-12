@@ -1,10 +1,15 @@
 import { Client } from "./client.js";
 import type { WasmKvDatabase } from "./wasm.js";
 import { loadWasm } from "./wasm.js";
+import { wrapError, KvError } from "./error.js";
 import {
   JsKvSyncTransport,
+  JsPushSyncTransport,
   KvSyncRole,
   KvSyncConfig,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
   KvChangeSubscription,
   JsKvSyncError,
 } from "../pkg/ofdb_wasm.js";
@@ -24,7 +29,7 @@ export class Database {
       const wasm = await WasmKvDatabase.open(name);
       return new Database(wasm);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -42,7 +47,7 @@ export class Database {
     try {
       await this.wasm.synchronize(transport, role, config);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -56,7 +61,7 @@ export class Database {
     try {
       await this.wasm.synchronize_checked(transport, role, config, check);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -65,7 +70,7 @@ export class Database {
     try {
       return await this.wasm.sync_changes();
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 }
@@ -73,8 +78,12 @@ export class Database {
 // Re-export sync types and values
 export {
   JsKvSyncTransport,
+  JsPushSyncTransport,
   KvSyncRole,
   KvSyncConfig,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
   KvChangeSubscription,
   JsKvSyncError,
 };

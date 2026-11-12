@@ -1,6 +1,7 @@
 import { Transaction } from "./transaction.js";
 import type { DbValue } from "./value.js";
 import type { WasmKvClient } from "./wasm.js";
+import { wrapError, KvError } from "./error.js";
 
 /** One KV entry returned by scan operations. */
 export interface Entry {
@@ -22,7 +23,7 @@ export class Client {
       const raw = await this.wasm.get(key);
       return (raw === undefined ? undefined : JSON.parse(raw)) as T | undefined;
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -31,7 +32,7 @@ export class Client {
     try {
       await this.wasm.set(key, JSON.stringify(value), expiresAt);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -40,7 +41,7 @@ export class Client {
     try {
       await this.wasm.delete(key);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -50,7 +51,7 @@ export class Client {
       const raw = await this.wasm.scan(start, end);
       return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -60,7 +61,7 @@ export class Client {
       const raw = await this.wasm.scanPrefix(prefix);
       return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -70,7 +71,7 @@ export class Client {
       const raw = await this.wasm.scanAll();
       return JSON.parse(raw) as Entry[];
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 
@@ -80,7 +81,7 @@ export class Client {
       const wasm = await this.wasm.transaction();
       return new Transaction(wasm);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, KvError);
     }
   }
 

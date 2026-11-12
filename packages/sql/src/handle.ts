@@ -9,8 +9,11 @@ export class Handle<T extends { free(): void }> {
   }
 
   get(): T {
-    if (this.closed || !this.value)
-      throw new Error("query", "SQL handle is closed");
+    if (this.closed || !this.value) {
+      const error = new Error("SQL handle is closed");
+      (error as any).kind = "query";
+      throw error;
+    }
     return this.value;
   }
 
@@ -19,8 +22,11 @@ export class Handle<T extends { free(): void }> {
     exclusive = false,
   ): Promise<R> {
     const value = this.get();
-    if (exclusive && this.pending !== 0)
-      throw new Error("query", "SQL transaction is busy");
+    if (exclusive && this.pending !== 0) {
+      const error = new Error("SQL transaction is busy");
+      (error as any).kind = "query";
+      throw error;
+    }
     this.pending++;
     try {
       return await operation(value);
@@ -32,7 +38,11 @@ export class Handle<T extends { free(): void }> {
 
   take(): T {
     const value = this.get();
-    if (this.pending !== 0) throw new Error("query", "SQL transaction is busy");
+    if (this.pending !== 0) {
+      const error = new Error("SQL transaction is busy");
+      (error as any).kind = "query";
+      throw error;
+    }
     this.closed = true;
     this.value = undefined;
     return value;

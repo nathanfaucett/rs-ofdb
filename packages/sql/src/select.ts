@@ -1,4 +1,4 @@
-import { Error as SqlError } from "./error.js";
+import { SqlError } from "./error.js";
 import type { Result } from "./result.js";
 import type { DbValue } from "./value.js";
 

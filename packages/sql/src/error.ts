@@ -32,8 +32,14 @@ export class CommitError extends SqlError {
   }
 }
 
+/** Alias for SqlError for backward compatibility. */
+export { SqlError as Error };
+
 /** Wrap a raw WASM/JS error into a typed DbError subclass. */
-export function wrapError(error: unknown, fallback: typeof SqlError): DbError {
+export function wrapError(
+  error: unknown,
+  fallback: typeof SqlError = SqlError,
+): DbError {
   if (error instanceof DbError) return error;
   const message =
     error instanceof globalThis.Error ? error.message : String(error);

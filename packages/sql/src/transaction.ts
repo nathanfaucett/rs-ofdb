@@ -3,6 +3,7 @@ import type { QueryParams, Result } from "./result.js";
 import { decodeResults, encodeParams } from "./result.js";
 import { parseRows, type RowParser } from "./select.js";
 import type { WasmSqlTransaction } from "./wasm.js";
+import { wrapError, SqlError, CommitError } from "./error.js";
 
 /** SQL transaction — holds statements until commit or rollback. */
 export class Transaction {
@@ -37,7 +38,7 @@ export class Transaction {
       );
       return parseRows(decodeResults(raw), parser);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -56,7 +57,7 @@ export class Transaction {
       );
       return decodeResults(raw);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -75,7 +76,7 @@ export class Transaction {
     try {
       await this.handle.take().rollback();
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 }

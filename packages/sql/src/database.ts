@@ -2,12 +2,14 @@ import { Client } from "./client.js";
 import { Handle } from "./handle.js";
 import type { WasmSqlDatabase } from "./wasm.js";
 import { loadWasm } from "./wasm.js";
+import { wrapError, Error as SqlError } from "./error.js";
 import {
-  JsSqlSyncTransport,
-  SqlSessionConfig,
+  JsPushSyncTransport,
   SqlSyncRole,
-  type SqlSyncResult,
   JsSqlSyncError,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
 } from "../pkg/ofdb_wasm.js";
 
 /** Embedded SQL database handle. Opens the store and creates query handles. */
@@ -25,7 +27,7 @@ export class Database {
       const wasm = await WasmSqlDatabase.open(name);
       return new Database(wasm);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -41,35 +43,24 @@ export class Database {
 
   /** Synchronize with a remote peer using the given transport. */
   async synchronize(
-    transport: JsSqlSyncTransport,
-    config: SqlSessionConfig,
-    role: SqlSyncRole,
-  ): Promise<SqlSyncResult> {
+    transport: JsPushSyncTransport,
+    config: PushSynchronizeConfig,
+  ): Promise<PushSynchronizeResult> {
     try {
-      return await this.handle.get().synchronize(transport, config, role);
+      return await this.handle.get().synchronize(transport, config);
     } catch (error) {
-      throw wrapError(error, Error);
-    }
-  }
-
-  /** Synchronize with a remote peer, checking caller authorization before each batch. */
-  async synchronize_checked(
-    transport: JsSqlSyncTransport,
-    config: SqlSessionConfig,
-    role: SqlSyncRole,
-    check: () => Promise<void>,
-  ): Promise<SqlSyncResult> {
-    try {
-      return await this.handle
-        .get()
-        .synchronize_checked(transport, config, role, check);
-    } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 }
 
 // Re-export sync types and values
-export { JsSqlSyncTransport, SqlSessionConfig, SqlSyncRole, JsSqlSyncError };
-export type { SqlSyncResult };
+export {
+  JsPushSyncTransport,
+  SqlSyncRole,
+  JsSqlSyncError,
+  PushConfig,
+  PushSynchronizeConfig,
+  PushSynchronizeResult,
+};
 export { SqlSyncDirection } from "../pkg/ofdb_wasm.js";

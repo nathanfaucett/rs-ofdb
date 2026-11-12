@@ -260,7 +260,7 @@ export class SqlPeerNetwork {
       proto.max_total_pending = 65536;
       proto.session_timeout_ms = 30_000;
       proto.immediate_ack = true;
-      c.set_protocol(proto);
+      c.protocol = proto;
       return c;
     };
 

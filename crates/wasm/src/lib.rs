@@ -18,6 +18,8 @@ pub use sync::{
     JsChangeEvent, JsPushSyncError, JsPushSyncErrorKind, JsPushSyncTransport,
     JsPushSyncTransportError, PushConfig, PushSynchronizeConfig, PushSynchronizeResult,
     KvChangeSubscription, SqlChangeSubscription,
+    JsKvSyncError, JsKvSyncErrorKind, JsKvSyncTransport,
+    JsSqlSyncError, JsSqlSyncErrorKind, JsSqlSyncTransport,
 };
 pub use kv::{KvClient, KvDatabase, KvTransaction};
 pub use sql::{SqlClient, SqlDatabase, SqlTransaction};

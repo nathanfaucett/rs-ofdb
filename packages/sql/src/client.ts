@@ -9,6 +9,7 @@ import { decodeResults, encodeParams } from "./result.js";
 import { parseRows, type RowParser } from "./select.js";
 import { Transaction } from "./transaction.js";
 import type { WasmSqlClient } from "./wasm.js";
+import { wrapError, SqlError } from "./error.js";
 
 /** SQL query handle — the only API for SQL reads and writes. */
 export class Client {
@@ -40,7 +41,7 @@ export class Client {
       const raw = await this.handle.run((wasm) => wasm.execute(sql, encoded));
       return parseRows(decodeResults(raw), parser);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -56,7 +57,7 @@ export class Client {
       const raw = await this.handle.run((wasm) => wasm.execute(sql, encoded));
       return decodeResults(raw);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -77,7 +78,7 @@ export class Client {
           error as globalThis.Error & { migration: string },
         );
       }
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
@@ -87,14 +88,14 @@ export class Client {
       const wasm = await this.handle.run((wasm) => wasm.transaction());
       return new Transaction(wasm);
     } catch (error) {
-      throw wrapError(error, Error);
+      throw wrapError(error, SqlError);
     }
   }
 
   /** Return a clone of this client with a request deadline in milliseconds. */
   withDeadline(ms: bigint): Client {
     if (typeof ms !== "bigint" || ms <= 0n || ms > 18446744073709551615n) {
-      throw new Error(
+      throw new SqlError(
         "query",
         "deadline must be a positive u64 bigint in milliseconds",
       );

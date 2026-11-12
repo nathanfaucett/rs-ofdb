@@ -1,4 +1,6 @@
 // WASM module types (loaded dynamically)
+import { KvChangeSubscription } from "../pkg/ofdb_wasm.js";
+
 interface WasmModule {
   default(): Promise<void>;
   KvDatabase: {
@@ -19,7 +21,7 @@ export interface WasmKvDatabase {
     config: unknown,
     check: () => Promise<void>,
   ): Promise<void>;
-  sync_changes(): Promise<unknown>;
+  sync_changes(): Promise<KvChangeSubscription>;
 }
 
 export interface WasmKvClient {

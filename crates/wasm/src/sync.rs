@@ -205,6 +205,18 @@ pub struct JsPushSyncError {
     inner: OfdbPushSynchronizeError<JsPushSyncTransportError>,
 }
 
+/// KV-compatible sync error (alias export).
+#[wasm_bindgen]
+pub struct JsKvSyncError {
+    inner: JsPushSyncError,
+}
+
+/// SQL-compatible sync error (alias export).
+#[wasm_bindgen]
+pub struct JsSqlSyncError {
+    inner: JsPushSyncError,
+}
+
 #[wasm_bindgen]
 impl JsPushSyncError {
     #[wasm_bindgen(getter)]
@@ -232,6 +244,44 @@ impl From<OfdbPushSynchronizeError<JsPushSyncTransportError>> for JsPushSyncErro
     }
 }
 
+impl From<JsPushSyncError> for JsKvSyncError {
+    fn from(inner: JsPushSyncError) -> Self {
+        Self { inner }
+    }
+}
+
+impl From<JsPushSyncError> for JsSqlSyncError {
+    fn from(inner: JsPushSyncError) -> Self {
+        Self { inner }
+    }
+}
+
+#[wasm_bindgen]
+impl JsKvSyncError {
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.inner.message()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn kind(&self) -> JsKvSyncErrorKind {
+        self.inner.kind().into()
+    }
+}
+
+#[wasm_bindgen]
+impl JsSqlSyncError {
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.inner.message()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn kind(&self) -> JsSqlSyncErrorKind {
+        self.inner.kind().into()
+    }
+}
+
 /// Push sync error kind.
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +293,192 @@ pub enum JsPushSyncErrorKind {
     PeerClosed = 4,
     HandshakeFailed = 5,
     GenerationGap = 6,
+}
+
+/// Alias for KV compatibility.
+pub type JsKvSyncErrorKind = JsPushSyncErrorKind;
+
+/// Alias for SQL compatibility.
+pub type JsSqlSyncErrorKind = JsPushSyncErrorKind;
+
+/// KV sync configuration (alias export).
+#[wasm_bindgen]
+pub struct KvSyncConfig {
+    inner: PushSynchronizeConfig,
+}
+
+impl From<PushSynchronizeConfig> for KvSyncConfig {
+    fn from(inner: PushSynchronizeConfig) -> Self {
+        Self { inner }
+    }
+}
+
+#[wasm_bindgen]
+impl KvSyncConfig {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { inner: PushSynchronizeConfig::new() }
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn protocol(&self) -> PushConfig {
+        self.inner.protocol()
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_protocol(&mut self, value: PushConfig) {
+        self.inner.set_protocol(value);
+    }
+
+    #[wasm_bindgen(getter, js_name = "handshakeTimeoutMs")]
+    pub fn handshake_timeout_ms(&self) -> u64 {
+        self.inner.handshake_timeout_ms()
+    }
+
+    #[wasm_bindgen(setter, js_name = "handshakeTimeoutMs")]
+    pub fn set_handshake_timeout_ms(&mut self, value: u64) {
+        self.inner.set_handshake_timeout_ms(value);
+    }
+
+    #[wasm_bindgen(getter, js_name = "messageTimeoutMs")]
+    pub fn message_timeout_ms(&self) -> u64 {
+        self.inner.message_timeout_ms()
+    }
+
+    #[wasm_bindgen(setter, js_name = "messageTimeoutMs")]
+    pub fn set_message_timeout_ms(&mut self, value: u64) {
+        self.inner.set_message_timeout_ms(value);
+    }
+
+    #[wasm_bindgen(getter, js_name = "sendDoneOnExhaust")]
+    pub fn send_done_on_exhaust(&self) -> bool {
+        self.inner.send_done_on_exhaust()
+    }
+
+    #[wasm_bindgen(setter, js_name = "sendDoneOnExhaust")]
+    pub fn set_send_done_on_exhaust(&mut self, value: bool) {
+        self.inner.set_send_done_on_exhaust(value);
+    }
+}
+
+/// KV sync role.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KvSyncRole {
+    Initiator = 0,
+    Acceptor = 1,
+}
+
+/// SQL sync role.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlSyncRole {
+    Initiator = 0,
+    Acceptor = 1,
+}
+
+/// SQL sync direction.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlSyncDirection {
+    Push = 0,
+    Pull = 1,
+    Both = 2,
+}
+
+/// SQL sync result.
+#[wasm_bindgen]
+pub struct SqlSyncResult {
+    inner: OfdbPushResult,
+}
+
+impl From<OfdbPushResult> for SqlSyncResult {
+    fn from(inner: OfdbPushResult) -> Self {
+        Self { inner }
+    }
+}
+
+#[wasm_bindgen]
+impl SqlSyncResult {
+    #[wasm_bindgen(getter, js_name = "bytesSent")]
+    pub fn bytes_sent(&self) -> usize {
+        self.inner.bytes_sent as usize
+    }
+
+    #[wasm_bindgen(getter, js_name = "bytesReceived")]
+    pub fn bytes_received(&self) -> usize {
+        self.inner.bytes_received as usize
+    }
+
+    #[wasm_bindgen(getter, js_name = "eventsSent")]
+    pub fn events_sent(&self) -> usize {
+        self.inner.events_sent as usize
+    }
+
+    #[wasm_bindgen(getter, js_name = "eventsReceived")]
+    pub fn events_received(&self) -> usize {
+        self.inner.events_received as usize
+    }
+}
+
+/// SQL session configuration.
+#[wasm_bindgen]
+pub struct SqlSessionConfig {
+    inner: OfdbPushSynchronizeConfig,
+}
+
+impl From<OfdbPushSynchronizeConfig> for SqlSessionConfig {
+    fn from(inner: OfdbPushSynchronizeConfig) -> Self {
+        Self { inner }
+    }
+}
+
+#[wasm_bindgen]
+impl SqlSessionConfig {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { inner: OfdbPushSynchronizeConfig::default() }
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn protocol(&self) -> PushConfig {
+        PushConfig { inner: self.inner.protocol.clone() }
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_protocol(&mut self, value: PushConfig) {
+        self.inner.protocol = value.inner;
+    }
+
+    #[wasm_bindgen(getter, js_name = "handshakeTimeoutMs")]
+    pub fn handshake_timeout_ms(&self) -> u64 {
+        self.inner.handshake_timeout.as_millis() as u64
+    }
+
+    #[wasm_bindgen(setter, js_name = "handshakeTimeoutMs")]
+    pub fn set_handshake_timeout_ms(&mut self, value: u64) {
+        self.inner.handshake_timeout = std::time::Duration::from_millis(value);
+    }
+
+    #[wasm_bindgen(getter, js_name = "messageTimeoutMs")]
+    pub fn message_timeout_ms(&self) -> u64 {
+        self.inner.message_timeout.as_millis() as u64
+    }
+
+    #[wasm_bindgen(setter, js_name = "messageTimeoutMs")]
+    pub fn set_message_timeout_ms(&mut self, value: u64) {
+        self.inner.message_timeout = std::time::Duration::from_millis(value);
+    }
+
+    #[wasm_bindgen(getter, js_name = "sendDoneOnExhaust")]
+    pub fn send_done_on_exhaust(&self) -> bool {
+        self.inner.send_done_on_exhaust
+    }
+
+    #[wasm_bindgen(setter, js_name = "sendDoneOnExhaust")]
+    pub fn set_send_done_on_exhaust(&mut self, value: bool) {
+        self.inner.send_done_on_exhaust = value;
+    }
 }
 
 /// Transport error for JS-implemented transports.
@@ -284,11 +520,51 @@ pub struct JsPushSyncTransport {
     inner: JsValue,
 }
 
+/// KV-compatible sync transport.
+#[wasm_bindgen]
+pub struct JsKvSyncTransport {
+    inner: JsPushSyncTransport,
+}
+
+/// SQL-compatible sync transport.
+#[wasm_bindgen]
+pub struct JsSqlSyncTransport {
+    inner: JsPushSyncTransport,
+}
+
 #[wasm_bindgen]
 impl JsPushSyncTransport {
     #[wasm_bindgen(constructor)]
     pub fn new(transport: JsValue) -> Self {
         Self { inner: transport }
+    }
+}
+
+impl From<JsPushSyncTransport> for JsKvSyncTransport {
+    fn from(inner: JsPushSyncTransport) -> Self {
+        Self { inner }
+    }
+}
+
+impl From<JsPushSyncTransport> for JsSqlSyncTransport {
+    fn from(inner: JsPushSyncTransport) -> Self {
+        Self { inner }
+    }
+}
+
+#[wasm_bindgen]
+impl JsKvSyncTransport {
+    #[wasm_bindgen(constructor)]
+    pub fn new(transport: JsValue) -> Self {
+        Self { inner: JsPushSyncTransport::new(transport) }
+    }
+}
+
+#[wasm_bindgen]
+impl JsSqlSyncTransport {
+    #[wasm_bindgen(constructor)]
+    pub fn new(transport: JsValue) -> Self {
+        Self { inner: JsPushSyncTransport::new(transport) }
     }
 }
 
