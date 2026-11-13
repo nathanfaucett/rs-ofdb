@@ -3,10 +3,10 @@ use std::{marker::PhantomData, sync::Mutex};
 use btree::{BTreeError, BTreeResult};
 
 #[derive(Default)]
-pub(crate) struct ReadBudget(Option<Mutex<(usize, usize, bool)>>);
+pub struct ReadBudget(Option<Mutex<(usize, usize, bool)>>);
 
 impl ReadBudget {
-    pub(crate) fn set(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
+    pub fn set(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
         if self.0.is_some() {
             return Err(BTreeError::UnsupportedOperation);
         }
@@ -14,13 +14,13 @@ impl ReadBudget {
         Ok(())
     }
 
-    pub(crate) fn exhausted(&self) -> bool {
+    pub fn exhausted(&self) -> bool {
         self.0
             .as_ref()
             .is_some_and(|budget| budget.lock().expect("native read budget lock").2)
     }
 
-    pub(crate) fn charge(&self, bytes: usize) -> BTreeResult<()> {
+    pub fn charge(&self, bytes: usize) -> BTreeResult<()> {
         let Some(budget) = self.0.as_ref() else {
             return Ok(());
         };
@@ -40,7 +40,7 @@ impl ReadBudget {
 
 // Borrow the original encoding so admission precedes owned key/value allocation.
 #[derive(Debug)]
-pub(crate) struct Borrowed<T>(PhantomData<T>);
+pub struct Borrowed<T>(PhantomData<T>);
 
 impl<T: redb::Value> redb::Value for Borrowed<T> {
     type SelfType<'a>

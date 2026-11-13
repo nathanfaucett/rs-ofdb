@@ -7,7 +7,7 @@ use std::{
 use crate::resource::{file_identity, remove_owned_file, retired_error};
 
 #[derive(Clone, Debug)]
-pub(crate) struct OwnedFile {
+pub struct OwnedFile {
     pub path: PathBuf,
     pub identity: String,
 }
@@ -44,13 +44,13 @@ impl NativeStageTracker {
         }
     }
 
-    pub(crate) fn retire(&self) -> Vec<OwnedFile> {
+    pub fn retire(&self) -> Vec<OwnedFile> {
         let mut state = self.0.lock().expect("stage tracker lock");
         state.retired = true;
         state.files.clone()
     }
 
-    pub(crate) fn cleanup(&self) -> io::Result<()> {
+    pub fn cleanup(&self) -> io::Result<()> {
         let mut state = self.0.lock().expect("stage tracker lock");
         while let Some(file) = state.files.last() {
             remove_owned_file(file)?;

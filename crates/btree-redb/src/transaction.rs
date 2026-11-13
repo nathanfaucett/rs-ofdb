@@ -26,15 +26,15 @@ trait WriteTransactionHandle {
 }
 
 pub struct NativeWriteTransaction {
-    pub(crate) inner: WriteTransaction,
+    pub inner: WriteTransaction,
     mutations: Mutations,
-    pub(crate) read_budget: ReadBudget,
+    pub read_budget: ReadBudget,
     changes: ChangeSignal,
     _admission: MutexGuardArc<()>,
 }
 
 impl NativeWriteTransaction {
-    pub(crate) fn new(
+    pub fn new(
         inner: WriteTransaction,
         admission: MutexGuardArc<()>,
         changes: ChangeSignal,
@@ -48,7 +48,7 @@ impl NativeWriteTransaction {
         }
     }
 
-    pub(crate) fn open_table<K: RedbKey, V: RedbValue>(
+    pub fn open_table<K: RedbKey, V: RedbValue>(
         &self,
         name: &str,
     ) -> BTreeResult<Table<'_, Key<K>, Value<V>>> {
@@ -141,21 +141,15 @@ impl NativeWriteTransaction {
         Ok(entries)
     }
 
-    pub(crate) fn record(
-        &self,
-        table: &str,
-        key: Vec<u8>,
-        old: Option<Vec<u8>>,
-        new: Option<Vec<u8>>,
-    ) {
+    pub fn record(&self, table: &str, key: Vec<u8>, old: Option<Vec<u8>>, new: Option<Vec<u8>>) {
         self.mutations.record(table, key, old, new);
     }
 
-    pub(crate) fn record_table(&self, name: &str, old: bool, new: bool) {
+    pub fn record_table(&self, name: &str, old: bool, new: bool) {
         self.mutations.table(name, old, new);
     }
 
-    pub(crate) fn commit(self) -> BTreeResult<()> {
+    pub fn commit(self) -> BTreeResult<()> {
         let _invalidations = self.mutations.invalidations();
         self.inner.commit().map_err(BTreeError::custom)?;
         // Build events from mutations for push-based sync
@@ -172,7 +166,7 @@ impl NativeWriteTransaction {
         Ok(())
     }
 
-    pub(crate) fn rollback(self) -> BTreeResult<()> {
+    pub fn rollback(self) -> BTreeResult<()> {
         self.inner.abort().map_err(BTreeError::custom)
     }
 }

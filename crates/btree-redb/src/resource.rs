@@ -100,7 +100,7 @@ fn sync_parent(path: &Path) -> io::Result<()> {
     fs::File::open(parent)?.sync_all()
 }
 
-pub(crate) fn file_identity(path: &Path) -> io::Result<String> {
+pub fn file_identity(path: &Path) -> io::Result<String> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(io::Error::new(
@@ -126,7 +126,7 @@ pub(crate) fn file_identity(path: &Path) -> io::Result<String> {
     }
 }
 
-pub(crate) fn remove_owned_file(file: &OwnedFile) -> io::Result<()> {
+pub fn remove_owned_file(file: &OwnedFile) -> io::Result<()> {
     match file_identity(&file.path) {
         Ok(actual) if actual == file.identity => fs::remove_file(&file.path)?,
         Ok(_) => {
