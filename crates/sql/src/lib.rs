@@ -61,3 +61,6 @@ pub use error::{Error, ErrorKind};
 
 #[cfg(feature = "validated-history")]
 pub use history;
+
+#[cfg(feature = "redb")]
+pub use engine_redb::SharedDatabase;

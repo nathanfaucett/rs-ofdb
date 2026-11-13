@@ -2735,6 +2735,8 @@ name = "ofdb-sql-history"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "ofdb-btree",
+ "ofdb-btree-redb",
  "ofdb-platform",
  "ofdb-sql-engine",
  "ofdb-value",

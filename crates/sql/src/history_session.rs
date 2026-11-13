@@ -2,6 +2,10 @@ use super::{Database, DatabaseBackend};
 use alloc::{boxed::Box, string::ToString};
 use history::{SessionConfig, SyncError, SyncResult, SyncRole, SyncTransport};
 use value::Value;
+#[cfg(feature = "redb")]
+type NativeStageFactory = history::NativeSyncStageFactory;
+#[cfg(not(feature = "redb"))]
+type NativeStageFactory = history::FileSyncStageFactory;
 
 #[inline(never)]
 fn sync_stage<F: core::future::Future>(make: impl FnOnce() -> F) -> core::pin::Pin<Box<F>> {
@@ -131,31 +135,33 @@ impl Database {
                 .map_err(|error| SyncError::PreApply(error.to_string()))?,
         }
     }
-    fn native_stage_factory(
-        &self,
-        directory: impl AsRef<std::path::Path>,
-    ) -> history::FileSyncStageFactory {
+    fn native_stage_factory(&self, directory: impl AsRef<std::path::Path>) -> NativeStageFactory {
         let factory = history::FileSyncStageFactory::new(directory);
         match &self.backend {
             #[cfg(feature = "redb")]
             DatabaseBackend::File(resource) => {
+                if let Some(namespace) = resource.shared_namespace() {
+                    return history::NativeSyncStageFactory::shared(namespace);
+                }
                 #[cfg(unix)]
                 {
                     let tracker = resource.stage_tracker();
                     let closed = tracker.clone();
-                    factory.with_file_tracking(
-                        move |path| tracker.track(path),
-                        move |path| closed.forget(path),
-                    )
+                    factory
+                        .with_file_tracking(
+                            move |path| tracker.track(path),
+                            move |path| closed.forget(path),
+                        )
+                        .into()
                 }
                 #[cfg(not(unix))]
                 {
                     let _ = resource;
-                    factory
+                    factory.into()
                 }
             }
             #[cfg(feature = "in-memory")]
-            DatabaseBackend::InMemory(_) => factory,
+            DatabaseBackend::InMemory(_) => factory.into(),
         }
     }
     pub async fn exchange_history<T, V, C, Q, U>(

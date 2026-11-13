@@ -7,6 +7,8 @@ mod key;
 mod read_budget;
 mod redb;
 mod resource;
+mod shared;
+mod shared_transaction;
 mod stage_cleanup;
 mod transaction;
 mod value;
@@ -23,3 +25,5 @@ pub use value::Value;
 pub use resource::{NativeResource, NativeTransaction, open_unretired, remove_retired};
 
 pub use stage_cleanup::NativeStageTracker;
+
+pub use shared::{SharedDatabase, SharedNamespace};

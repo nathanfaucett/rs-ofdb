@@ -107,6 +107,55 @@ impl From<serde_json::Value> for JsonValue {
     }
 }
 
+#[cfg(feature = "serde_json")]
+impl TryFrom<JsonValue> for serde_json::Value {
+    type Error = &'static str;
+
+    fn try_from(value: JsonValue) -> Result<Self, Self::Error> {
+        Ok(match value {
+            JsonValue::Null => Self::Null,
+            JsonValue::Bool(value) => Self::Bool(value),
+            JsonValue::String(value) => Self::String(value),
+            JsonValue::Number(JsonNumber::I64(value)) => Self::Number(value.into()),
+            JsonValue::Number(JsonNumber::U64(value)) => Self::Number(value.into()),
+            JsonValue::Number(JsonNumber::F64(value)) => {
+                Self::Number(serde_json::Number::from_f64(value).ok_or("non-finite JSON number")?)
+            }
+            JsonValue::Array(values) => Self::Array(
+                values
+                    .into_iter()
+                    .map(Self::try_from)
+                    .collect::<Result<_, _>>()?,
+            ),
+            JsonValue::Object(values) => Self::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| Self::try_from(value).map(|value| (key, value)))
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
+    }
+}
+
+#[cfg(all(test, feature = "serde_json"))]
+mod conversion_tests {
+    use super::JsonValue;
+    use crate::JsonNumber;
+
+    #[test]
+    fn serde_json_roundtrip_preserves_nested_values_and_rejects_nonfinite_numbers() {
+        let value =
+            serde_json::json!({"escaped\"": ["line\n", 18446744073709551615_u64, true, null]});
+        assert_eq!(
+            serde_json::Value::try_from(JsonValue::from(value.clone())).expect("JSON value"),
+            value
+        );
+        assert!(
+            serde_json::Value::try_from(JsonValue::Number(JsonNumber::F64(f64::INFINITY))).is_err()
+        );
+    }
+}
+
 impl fmt::Display for JsonValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

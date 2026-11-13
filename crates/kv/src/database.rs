@@ -34,7 +34,8 @@ pub struct Database {
 }
 
 impl Database {
-    /// Permanently fences issued handles and opens, drains admitted operations,
+    /// Shared hosts permanently fence and remove only the selected namespace, never the host file.
+    /// Dedicated files permanently fence issued handles and opens, drain admitted operations,
     /// cancels sessions, rolls back idle transactions, then removes this dedicated file.
     /// Native hosting is not managed: an owner that attempted native hosting returns Unsupported.
     /// Unix-only; callers must exclusively own the pathname and marker namespace.
@@ -126,6 +127,32 @@ impl Database {
             #[cfg(feature = "sync")]
             storage_table: None,
         }
+    }
+
+    /// Opens an isolated KV store in a shared host. Retirement never removes the host file.
+    #[cfg(feature = "redb")]
+    pub fn open_shared(host: &btree_redb::SharedDatabase, name: &str) -> Result<Self, Error> {
+        let namespace = host
+            .namespace(&format!("kv:{name}"))
+            .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+        #[cfg(feature = "sync")]
+        let table = namespace.table("kv");
+        let store = KvStore::new(namespace.tree("kv"), uuid_timestamp);
+        let resource = btree_redb::NativeResource::new_shared(namespace, store)
+            .map_err(|error| Error::from(btree::BTreeError::custom(error)))?;
+        #[cfg(feature = "sync")]
+        let changes = Some(
+            resource
+                .inspect(|store| store.change_signal().subscribe())
+                .map_err(|error| Error::from(btree::BTreeError::custom(error)))?,
+        );
+        Ok(Self {
+            #[cfg(feature = "sync")]
+            changes,
+            #[cfg(feature = "sync")]
+            storage_table: Some(table),
+            storage: Storage::Redb(resource),
+        })
     }
 
     #[cfg(feature = "redb")]

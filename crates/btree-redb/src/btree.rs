@@ -18,6 +18,7 @@ pub struct RedbBTree<K, V> {
     db: Arc<Database>,
     admission: Arc<Mutex<()>>,
     changes: ChangeSignal,
+    shared: bool,
     name: String,
     _marker: PhantomData<(K, V)>,
 }
@@ -33,6 +34,22 @@ impl<K, V> RedbBTree<K, V> {
             db,
             admission: Arc::new(Mutex::new(())),
             changes: ChangeSignal::default(),
+            shared: false,
+            name: name.into(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_admission(
+        db: Arc<Database>,
+        name: impl Into<String>,
+        admission: Arc<Mutex<()>>,
+    ) -> Self {
+        Self {
+            db,
+            admission,
+            changes: ChangeSignal::default(),
+            shared: true,
             name: name.into(),
             _marker: PhantomData,
         }
@@ -104,6 +121,13 @@ where
     type Transaction = RedbBTreeTransaction<K, V>;
 
     async fn transaction(&self) -> BTreeResult<Self::Transaction> {
+        if self.shared {
+            let transaction = crate::transaction::NativeWriteTransaction::new_shared(
+                self.db.clone(),
+                self.changes.clone(),
+            )?;
+            return Ok(RedbBTreeTransaction::new(transaction, &self.name));
+        }
         let admission = self.admission.lock_arc().await;
         let tx = self.db.begin_write().map_err(BTreeError::custom)?;
 

@@ -29,6 +29,7 @@ redb = [
     "dep:platform",
     "dep:engine",
     "dep:engine-redb",
+    "history?/shared-stage",
     "dep:engine-automerge",
     "std",
 ]

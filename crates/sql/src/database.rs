@@ -275,7 +275,8 @@ macro_rules! database_call {
 }
 
 impl Database {
-    /// Permanently fences issued handles and opens, drains admitted operations,
+    /// Shared hosts permanently fence and remove only the selected namespace, never the host file.
+    /// Dedicated files permanently fence issued handles and opens, drain admitted operations,
     /// cancels sessions, rolls back idle transactions, then removes this dedicated file.
     /// Native hosting is not managed: an owner that attempted native hosting returns Unsupported.
     /// Unix-only; callers must exclusively own the pathname and marker namespace.
@@ -365,6 +366,29 @@ impl Database {
 
     pub fn client(&self) -> crate::Client {
         crate::Client::embedded(self.clone())
+    }
+
+    /// Opens an isolated SQL catalog in a shared host. Retirement removes only this namespace.
+    #[cfg(feature = "redb")]
+    pub fn open_shared(host: &engine_redb::SharedDatabase, name: &str) -> SqlResult<Self> {
+        let namespace = host
+            .namespace(&alloc::format!("sql:{name}"))
+            .map_err(native_error)?;
+        let kernel = RedbKernel::namespaced(namespace.clone());
+        let resource = engine_redb::NativeResource::new_shared(
+            namespace,
+            Engine::new(kernel, AutomergeRowCodec::new()),
+        )
+        .map_err(native_error)?;
+        #[cfg(feature = "sync")]
+        let changes = resource
+            .inspect(|engine| engine.subscribe_changes())
+            .map_err(native_error)?;
+        Ok(Self {
+            #[cfg(feature = "sync")]
+            changes,
+            backend: DatabaseBackend::File(resource),
+        })
     }
 
     /// Opens or initializes native persistence. Use `open_existing` for acknowledged resources.

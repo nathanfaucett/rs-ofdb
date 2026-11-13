@@ -19,6 +19,14 @@ impl RedbByteBTree {
         self.0.subscribe_changes()
     }
 
+    pub fn with_admission(
+        db: Arc<Database>,
+        name: impl Into<String>,
+        admission: Arc<async_lock::Mutex<()>>,
+    ) -> Self {
+        Self(RedbBTree::with_admission(db, name, admission))
+    }
+
     pub fn new(db: Arc<Database>, name: impl Into<String>) -> Self {
         Self(RedbBTree::new(db, name))
     }

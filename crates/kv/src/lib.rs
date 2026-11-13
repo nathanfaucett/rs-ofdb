@@ -33,6 +33,8 @@ mod transaction;
 
 #[cfg(feature = "sync")]
 pub use btree::ChangeWork;
+#[cfg(feature = "redb")]
+pub use btree_redb::SharedDatabase;
 #[cfg(any(
     feature = "remote",
     feature = "in-memory",

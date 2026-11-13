@@ -7,7 +7,7 @@ use btree::{BTreeError, BTreeResult, ChangeSignal, ChangeSubscription};
 
 use crate::{
     RedbBTreeScopedTransaction,
-    redb::{RedbKey, RedbValue, table_definition},
+    redb::{RedbKey, RedbValue},
     transaction::NativeWriteTransaction,
 };
 
@@ -16,6 +16,7 @@ pub struct RedbDatabase {
     inner: Arc<Database>,
     admission: Arc<Mutex<()>>,
     changes: ChangeSignal,
+    shared: bool,
 }
 
 impl RedbDatabase {
@@ -24,6 +25,16 @@ impl RedbDatabase {
             inner,
             admission: Arc::new(Mutex::new(())),
             changes: ChangeSignal::default(),
+            shared: false,
+        }
+    }
+
+    pub fn with_admission(inner: Arc<Database>, admission: Arc<Mutex<()>>) -> Self {
+        Self {
+            inner,
+            admission,
+            changes: ChangeSignal::default(),
+            shared: true,
         }
     }
 
@@ -33,6 +44,14 @@ impl RedbDatabase {
     }
 
     pub async fn transaction(&self) -> BTreeResult<RedbDatabaseTransaction> {
+        if self.shared {
+            return Ok(RedbDatabaseTransaction {
+                inner: NativeWriteTransaction::new_shared(
+                    self.inner.clone(),
+                    self.changes.clone(),
+                )?,
+            });
+        }
         let admission = self.admission.lock_arc().await;
         Ok(RedbDatabaseTransaction {
             inner: NativeWriteTransaction::new(
@@ -63,18 +82,12 @@ impl RedbDatabaseTransaction {
     }
 
     pub fn create_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<()> {
-        self.inner.open_table::<K, V>(name)?;
+        self.inner.ensure_table::<K, V>(name)?;
         Ok(())
     }
 
     pub fn drop_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<bool> {
-        let existed = self
-            .inner
-            .inner
-            .delete_table(table_definition::<K, V>(name))
-            .map_err(BTreeError::custom)?;
-        self.inner.record_table(name, existed, false);
-        Ok(existed)
+        self.inner.drop_table::<K, V>(name)
     }
 
     pub fn commit(self) -> BTreeResult<()> {

@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ops::RangeBounds};
+use std::{marker::PhantomData, ops::RangeBounds, sync::Arc};
 
 use async_lock::MutexGuardArc;
 use async_stream::stream;
@@ -26,25 +26,116 @@ trait WriteTransactionHandle {
 }
 
 pub struct NativeWriteTransaction {
-    pub inner: WriteTransaction,
+    backend: WriteBackend,
     mutations: Mutations,
     pub read_budget: ReadBudget,
     changes: ChangeSignal,
-    _admission: MutexGuardArc<()>,
+}
+
+enum WriteBackend {
+    Native {
+        inner: Box<WriteTransaction>,
+        _admission: MutexGuardArc<()>,
+    },
+    Shared(crate::shared_transaction::SharedWriteTransaction),
 }
 
 impl NativeWriteTransaction {
+    pub fn new_shared(database: Arc<redb::Database>, changes: ChangeSignal) -> BTreeResult<Self> {
+        Ok(Self {
+            backend: WriteBackend::Shared(crate::shared_transaction::SharedWriteTransaction::new(
+                database,
+            )?),
+            mutations: Mutations::default(),
+            read_budget: ReadBudget::default(),
+            changes,
+        })
+    }
+
+    pub fn ensure_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<()> {
+        match &self.backend {
+            WriteBackend::Shared(transaction) => transaction.ensure_table::<K, V>(name),
+            WriteBackend::Native { .. } => self.open_table::<K, V>(name).map(|_| ()),
+        }
+    }
+
+    pub fn drop_table<K: RedbKey, V: RedbValue>(&self, name: &str) -> BTreeResult<bool> {
+        let existed = match &self.backend {
+            WriteBackend::Shared(transaction) => transaction.drop_table::<K, V>(name)?,
+            WriteBackend::Native { inner, .. } => inner
+                .delete_table(table_definition::<K, V>(name))
+                .map_err(BTreeError::custom)?,
+        };
+        self.record_table(name, existed, false);
+        Ok(existed)
+    }
+
+    fn native_inner(&self) -> &WriteTransaction {
+        match &self.backend {
+            WriteBackend::Native { inner, .. } => inner,
+            WriteBackend::Shared(_) => unreachable!("shared writes use their transaction overlay"),
+        }
+    }
+
+    fn write_value<K: RedbKey, V: RedbValue>(
+        &self,
+        name: &str,
+        key: K,
+        value: Option<V>,
+    ) -> BTreeResult<()> {
+        let old = self
+            .read_value::<K, V>(name, &key)?
+            .map(|value| V::as_bytes(&value).as_ref().to_vec());
+        self.write_known::<K, V>(name, key, old, value)
+    }
+
+    fn write_known<K: RedbKey, V: RedbValue>(
+        &self,
+        name: &str,
+        key: K,
+        old: Option<Vec<u8>>,
+        value: Option<V>,
+    ) -> BTreeResult<()> {
+        let new = value
+            .as_ref()
+            .map(|value| V::as_bytes(value).as_ref().to_vec());
+        if old == new {
+            return Ok(());
+        }
+        match &self.backend {
+            WriteBackend::Shared(transaction) => {
+                transaction.put::<K, V>(name, &key, value.as_ref())?
+            }
+            WriteBackend::Native { .. } => {
+                let mut table = self.open_table::<K, V>(name)?;
+                if let Some(value) = value {
+                    table
+                        .insert(Key::new(key.clone()), Value::new(value))
+                        .map_err(BTreeError::custom)?;
+                } else {
+                    table
+                        .remove(Key::new(key.clone()))
+                        .map_err(BTreeError::custom)?;
+                }
+            }
+        }
+        self.record(name, K::as_bytes(&key).as_ref().to_vec(), old, new);
+        Ok(())
+    }
+
     pub fn new(
         inner: WriteTransaction,
         admission: MutexGuardArc<()>,
         changes: ChangeSignal,
     ) -> Self {
         Self {
-            inner,
+            backend: WriteBackend::Native {
+                inner: Box::new(inner),
+                _admission: admission,
+            },
             mutations: Mutations::default(),
             read_budget: ReadBudget::default(),
             changes,
-            _admission: admission,
         }
     }
 
@@ -55,13 +146,13 @@ impl NativeWriteTransaction {
         let exists = match self.mutations.table_exists(name) {
             Some(exists) => exists,
             None => self
-                .inner
+                .native_inner()
                 .list_tables()
                 .map_err(BTreeError::custom)?
                 .any(|table| table.name() == name),
         };
         let table = self
-            .inner
+            .native_inner()
             .open_table(table_definition::<K, V>(name))
             .map_err(BTreeError::custom)?;
         self.record_table(name, exists, true);
@@ -73,14 +164,14 @@ impl NativeWriteTransaction {
         name: &str,
     ) -> BTreeResult<Option<BorrowedTable<'_, K, V>>> {
         if !self
-            .inner
+            .native_inner()
             .list_tables()
             .map_err(BTreeError::custom)?
             .any(|table| table.name() == name)
         {
             return Ok(None);
         }
-        self.inner
+        self.native_inner()
             .open_table(redb::TableDefinition::<Borrowed<Key<K>>, Borrowed<Value<V>>>::new(name))
             .map(Some)
             .map_err(BTreeError::custom)
@@ -88,6 +179,18 @@ impl NativeWriteTransaction {
 
     #[inline(never)]
     fn read_value<K: RedbKey, V: RedbValue>(&self, name: &str, key: &K) -> BTreeResult<Option<V>> {
+        if let WriteBackend::Shared(transaction) = &self.backend {
+            let value = transaction.get::<K, V>(name, key)?;
+            if let Some(value) = &value {
+                self.read_budget.charge(
+                    K::as_bytes(key)
+                        .as_ref()
+                        .len()
+                        .saturating_add(V::as_bytes(value).as_ref().len()),
+                )?;
+            }
+            return Ok(value);
+        }
         let Some(table) = self.open_existing_table::<K, V>(name)? else {
             return Ok(None);
         };
@@ -110,6 +213,9 @@ impl NativeWriteTransaction {
         name: &str,
         range: R,
     ) -> BTreeResult<Vec<(K, V)>> {
+        if let WriteBackend::Shared(transaction) = &self.backend {
+            return transaction.range::<K, V, R>(name, range, &self.read_budget);
+        }
         let Some(table) = self.open_existing_table::<K, V>(name)? else {
             return Ok(Vec::new());
         };
@@ -151,7 +257,10 @@ impl NativeWriteTransaction {
 
     pub fn commit(self) -> BTreeResult<()> {
         let _invalidations = self.mutations.invalidations();
-        self.inner.commit().map_err(BTreeError::custom)?;
+        match self.backend {
+            WriteBackend::Native { inner, .. } => (*inner).commit().map_err(BTreeError::custom)?,
+            WriteBackend::Shared(transaction) => transaction.commit()?,
+        };
         // Build events from mutations for push-based sync
         let events = self.mutations.take_events();
         let change_events: Vec<ChangeEvent> = events
@@ -167,7 +276,10 @@ impl NativeWriteTransaction {
     }
 
     pub fn rollback(self) -> BTreeResult<()> {
-        self.inner.abort().map_err(BTreeError::custom)
+        match self.backend {
+            WriteBackend::Native { inner, .. } => (*inner).abort().map_err(BTreeError::custom),
+            WriteBackend::Shared(_) => Ok(()),
+        }
     }
 }
 
@@ -243,26 +355,9 @@ where
     V: RedbValue,
 {
     async fn insert(&mut self, key: K, value: V) -> BTreeResult<()> {
-        let table_name = &self.name;
-        let tx = self.tx.native();
-        let old = tx
-            .read_value::<K, V>(table_name, &key)?
-            .map(|entry| V::as_bytes(&entry).as_ref().to_vec());
-        let mut table = tx.open_table::<K, V>(table_name)?;
-        let new = V::as_bytes(&value).as_ref().to_vec();
-        if old.as_ref() == Some(&new) {
-            return Ok(());
-        }
-        table
-            .insert(Key::new(key.clone()), Value::new(value))
-            .map_err(BTreeError::custom)?;
-        tx.record(
-            table_name,
-            K::as_bytes(&key).as_ref().to_vec(),
-            old,
-            Some(new),
-        );
-        Ok(())
+        self.tx
+            .native()
+            .write_value::<K, V>(&self.name, key, Some(value))
     }
 
     async fn update<F>(&mut self, key: K, update_fn: F) -> BTreeResult<Option<()>>
@@ -280,18 +375,14 @@ where
     async fn remove(&mut self, key: &K) -> BTreeResult<Option<V>> {
         let tx = self.tx.native();
         let value = tx.read_value::<K, V>(&self.name, key)?;
-        let mut table = tx.open_table::<K, V>(&self.name)?;
-        table
-            .remove(Key::new(key.clone()))
-            .map_err(BTreeError::custom)?;
-        if let Some(value) = &value {
-            tx.record(
-                &self.name,
-                K::as_bytes(key).as_ref().to_vec(),
-                Some(V::as_bytes(value).as_ref().to_vec()),
-                None,
-            );
-        }
+        tx.write_known::<K, V>(
+            &self.name,
+            key.clone(),
+            value
+                .as_ref()
+                .map(|value| V::as_bytes(value).as_ref().to_vec()),
+            None,
+        )?;
         Ok(value)
     }
 
@@ -301,17 +392,12 @@ where
     {
         stream! {
             let tx = self.tx.native();
-            let entries = tx.read_range::<K, V, R>(&self.name, range)?;
-            let mut table = tx.open_table::<K, V>(&self.name)?;
             let mut keys = Vec::new();
-            for (key, value) in entries {
-                keys.push((Key::new(key.clone()), V::as_bytes(&value).as_ref().to_vec()));
+            for (key, value) in tx.read_range::<K,V,R>(&self.name, range)? {
+                keys.push((key.clone(), V::as_bytes(&value).as_ref().to_vec()));
                 yield Ok((key, value));
             }
-            for (key, old) in keys {
-                table.remove(&key).map_err(BTreeError::custom)?;
-                tx.record(&self.name, <Key<K> as redb::Value>::as_bytes(&key).as_ref().to_vec(), Some(old), None);
-            }
+            for (key, old) in keys { tx.write_known::<K,V>(&self.name, key, Some(old), None)?; }
         }
     }
 

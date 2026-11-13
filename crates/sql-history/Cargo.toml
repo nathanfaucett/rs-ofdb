@@ -13,6 +13,7 @@ name = "history"
 
 [features]
 native-stage = ["dep:tempfile"]
+shared-stage = ["native-stage", "dep:btree-redb", "dep:btree", "futures/std", "futures/executor", "uuid/std", "uuid/v7"]
 
 [dependencies.engine]
 version = "0.1"
@@ -82,3 +83,18 @@ features = ["in-memory", "std"]
 version = "0.3"
 default-features = false
 features = ["async-await", "executor", "std"]
+
+[dependencies.btree-redb]
+package = "ofdb-btree-redb"
+version = "0.1"
+path = "../btree-redb"
+default-features = false
+optional = true
+
+[dependencies.btree]
+package = "ofdb-btree"
+version = "0.1"
+path = "../btree"
+default-features = false
+features = ["std"]
+optional = true

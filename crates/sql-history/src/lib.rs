@@ -48,3 +48,8 @@ pub use session::{
 pub use staging::{MemorySyncStageFactory, SyncStage, SyncStageFactory};
 pub use state::{StateDigest, SyncChangeId, SyncKey, SyncManifest, SyncStateUnit};
 pub use transport::SyncTransport;
+
+#[cfg(feature = "shared-stage")]
+mod shared_stage;
+#[cfg(feature = "shared-stage")]
+pub use shared_stage::{NativeSyncStage, NativeSyncStageFactory};

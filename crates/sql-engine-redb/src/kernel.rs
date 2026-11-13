@@ -10,22 +10,35 @@ use futures::Stream;
 #[derive(Clone)]
 pub struct RedbKernel {
     database: RedbDatabase,
+    namespace: Option<btree_redb::SharedNamespace>,
 }
 
 impl RedbKernel {
     pub fn new(database: Arc<redb::Database>) -> Self {
         Self {
             database: RedbDatabase::new(database),
+            namespace: None,
+        }
+    }
+
+    pub fn namespaced(namespace: btree_redb::SharedNamespace) -> Self {
+        Self {
+            database: namespace.database(),
+            namespace: Some(namespace),
         }
     }
 
     pub fn from_database(database: RedbDatabase) -> Self {
-        Self { database }
+        Self {
+            database,
+            namespace: None,
+        }
     }
 }
 
 pub struct RedbKernelTransaction {
     pub(crate) database: RedbDatabaseTransaction,
+    namespace: Option<btree_redb::SharedNamespace>,
     decoded_budget: Option<std::sync::Mutex<(usize, usize)>>,
 }
 
@@ -42,6 +55,7 @@ impl Kernel for RedbKernel {
             .await
             .map(|database| RedbKernelTransaction {
                 database,
+                namespace: self.namespace.clone(),
                 decoded_budget: None,
             })
             .map_err(EngineError::custom)
@@ -49,11 +63,17 @@ impl Kernel for RedbKernel {
 }
 
 impl RedbKernelTransaction {
+    fn table_name(&self, name: &str) -> String {
+        self.namespace.as_ref().map_or_else(
+            || name.to_owned(),
+            |namespace| namespace.table(&format!("sql:{name}")),
+        )
+    }
     pub(crate) fn entries(
         &self,
         table: &str,
     ) -> btree_redb::RedbBTreeScopedTransaction<'_, Bytes, Bytes> {
-        self.database.table(table)
+        self.database.table(self.table_name(table))
     }
 }
 
@@ -100,13 +120,13 @@ impl KernelTransaction for RedbKernelTransaction {
 
     async fn ensure_table(&mut self, table: &str) -> EngineResult<()> {
         self.database
-            .create_table::<Bytes, Bytes>(table)
+            .create_table::<Bytes, Bytes>(&self.table_name(table))
             .map_err(EngineError::custom)
     }
 
     async fn drop_table(&mut self, table: &str) -> EngineResult<()> {
         self.database
-            .drop_table::<Bytes, Bytes>(table)
+            .drop_table::<Bytes, Bytes>(&self.table_name(table))
             .map(|_| ())
             .map_err(EngineError::custom)
     }

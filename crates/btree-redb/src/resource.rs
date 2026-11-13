@@ -17,11 +17,18 @@ pub struct NativeResource<R> {
 }
 
 struct Inner<R> {
-    path: PathBuf,
-    identity: Option<String>,
+    location: Location,
     stages: NativeStageTracker,
     backend: RwLock<Option<R>>,
     state: StdMutex<State>,
+}
+
+enum Location {
+    File {
+        path: PathBuf,
+        identity: Option<String>,
+    },
+    Shared(crate::SharedNamespace),
 }
 
 #[derive(Default)]
@@ -236,13 +243,28 @@ impl<R: Clone> NativeResource<R> {
         };
         Ok(Self {
             inner: Arc::new(Inner {
-                path,
-                identity,
+                location: Location::File { path, identity },
                 stages: NativeStageTracker::default(),
                 backend: RwLock::new(Some(backend)),
                 state: StdMutex::new(State::default()),
             }),
         })
+    }
+
+    pub fn shared_namespace(&self) -> Option<crate::SharedNamespace> {
+        match &self.inner.location {
+            Location::Shared(namespace) => Some(namespace.clone()),
+            Location::File { .. } => None,
+        }
+    }
+
+    pub fn inspect<T>(&self, read: impl FnOnce(&R) -> T) -> io::Result<T> {
+        let backend = self
+            .inner
+            .backend
+            .try_read()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "resource is retiring"))?;
+        backend.as_ref().map(read).ok_or_else(retired_error)
     }
 
     pub fn stage_tracker(&self) -> NativeStageTracker {
@@ -254,6 +276,9 @@ impl<R: Clone> NativeResource<R> {
     }
 
     async fn admit(&self) -> io::Result<ResourceGuard<'_, R>> {
+        if let Location::Shared(namespace) = &self.inner.location {
+            namespace.check()?;
+        }
         if self
             .inner
             .state
@@ -325,7 +350,44 @@ impl<R: Clone> NativeResource<R> {
     }
 
     pub async fn retire_and_remove(&self) -> io::Result<()> {
-        if self.inner.identity.is_none() {
+        if let Location::Shared(namespace) = &self.inner.location {
+            {
+                let mut state = self.inner.state.lock().expect("resource state lock");
+                if state.hosted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "unmanaged hosting prevents namespace retirement",
+                    ));
+                }
+                state.retired = true;
+                for session in &state.sessions {
+                    if let Some(session) = session.upgrade() {
+                        session.abort();
+                    }
+                }
+                for transaction in &state.transactions {
+                    if let Some(transaction) = transaction.upgrade() {
+                        transaction.erase();
+                    }
+                }
+            }
+            let mut backend = self.inner.backend.write().await;
+            {
+                let mut state = self.inner.state.lock().expect("resource state lock");
+                for transaction in state.transactions.drain(..) {
+                    if let Some(transaction) = transaction.upgrade() {
+                        transaction.erase();
+                    }
+                }
+            }
+            namespace.retire().await?;
+            backend.take();
+            return Ok(());
+        }
+        let Location::File { path, identity } = &self.inner.location else {
+            unreachable!()
+        };
+        if identity.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "native retirement requires Unix file identity",
@@ -364,19 +426,20 @@ impl<R: Clone> NativeResource<R> {
         }
         backend.take();
         self.inner.stages.cleanup()?;
-        remove_retired(&self.inner.path)
+        remove_retired(path)
     }
 
     fn persist_retirement(&self) -> io::Result<()> {
+        let Location::File { path, identity } = &self.inner.location else {
+            unreachable!()
+        };
         let _namespace = NAMESPACE.lock().expect("native namespace lock");
-        let marker_path = marker(&self.inner.path);
-        let identity = self
-            .inner
-            .identity
+        let marker_path = marker(path);
+        let identity = identity
             .as_ref()
             .expect("retirement requires native file identity");
         let stages = self.inner.stages.retire();
-        match read_record(&self.inner.path) {
+        match read_record(path) {
             Ok((expected, _)) if &expected == identity => {
                 fs::File::open(&marker_path)?.sync_all()?;
             }
@@ -403,7 +466,7 @@ impl<R: Clone> NativeResource<R> {
             }
             Err(error) => return Err(error),
         }
-        sync_parent(&self.inner.path)
+        sync_parent(path)
     }
 }
 
@@ -457,5 +520,21 @@ impl<R, T> Deref for TransactionGuard<'_, R, T> {
 impl<R, T> DerefMut for TransactionGuard<'_, R, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.slot.as_mut().expect("admitted transaction")
+    }
+}
+
+impl<R: Clone + Send + Sync + 'static> NativeResource<R> {
+    pub fn new_shared(namespace: crate::SharedNamespace, backend: R) -> io::Result<Self> {
+        let location = Location::Shared(namespace.clone());
+        let inner = namespace.owner(|| Inner {
+            location,
+            stages: NativeStageTracker::default(),
+            backend: RwLock::new(Some(backend)),
+            state: StdMutex::new(State::default()),
+        })?;
+        if inner.state.lock().expect("resource state lock").retired {
+            return Err(retired_error());
+        }
+        Ok(Self { inner })
     }
 }
