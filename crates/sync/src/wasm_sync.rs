@@ -62,6 +62,7 @@ pub struct PushSynchronizeConfig {
 impl Default for PushSynchronizeConfig {
     fn default() -> Self {
         Self {
+            role: crate::SyncRole::Initiator,
             protocol: PushConfig::default(),
             handshake_timeout: Duration::from_secs(10),
             message_timeout: Duration::from_secs(30),
@@ -181,43 +182,71 @@ where
         let mut local_generations: HashMap<StorageKey, u64> = HashMap::new();
         let mut remote_generations: HashMap<StorageKey, u64> = HashMap::new();
         let mut pending_acks: HashMap<StorageKey, u64> = HashMap::new();
+        let mut outstanding = HashMap::new();
         let mut sent_done = false;
         let mut received_done = false;
         let mut outbound_exhausted = false;
         let mut inbound_closed = false;
 
-        // Handshake
-        let manifest_digest = [0u8; 32]; // TODO: compute actual manifest digest
-        let hello = PushMessage::Hello(HelloConfig {
+        let hello = Message::Hello(crate::protocol::HelloConfig {
             protocol_version: 1,
-            manifest_digest,
+            manifest_digest: [0; 32],
             config: config.protocol.clone(),
         });
-        transport
-            .send(hello)
-            .await
-            .map_err(PushSynchronizeError::Transport)?;
-        result.bytes_sent += 1; // approximate
-
-        // Wait for HelloAck
-        let hello_ack = wasm_timeout(config.handshake_timeout, transport.receive())
-            .await
-            .map_err(|_| PushSynchronizeError::SessionTimeout)?
-            .map_err(PushSynchronizeError::Transport)?;
-
-        match hello_ack {
-            PushMessage::HelloAck { accepted, .. } => {
-                if !accepted {
-                    return Err(PushSynchronizeError::HandshakeFailed(
-                        "peer rejected handshake".into(),
-                    ));
+        let handshake = async {
+            match config.role {
+                crate::SyncRole::Initiator => {
+                    transport
+                        .send(hello)
+                        .await
+                        .map_err(SynchronizeError::Transport)?;
+                    match transport
+                        .receive()
+                        .await
+                        .map_err(SynchronizeError::Transport)?
+                    {
+                        Message::HelloAck {
+                            protocol_version: 1,
+                            accepted: true,
+                        } => Ok(()),
+                        _ => Err(SynchronizeError::HandshakeFailed(
+                            "expected accepted version-one HelloAck".into(),
+                        )),
+                    }
+                }
+                crate::SyncRole::Responder => {
+                    let accepted = matches!(
+                        transport
+                            .receive()
+                            .await
+                            .map_err(SynchronizeError::Transport)?,
+                        Message::Hello(crate::protocol::HelloConfig {
+                            protocol_version: 1,
+                            ..
+                        })
+                    );
+                    transport
+                        .send(Message::HelloAck {
+                            protocol_version: 1,
+                            accepted,
+                        })
+                        .await
+                        .map_err(SynchronizeError::Transport)?;
+                    if accepted {
+                        Ok(())
+                    } else {
+                        Err(SynchronizeError::HandshakeFailed(
+                            "unsupported Hello".into(),
+                        ))
+                    }
                 }
             }
-            _ => {
-                return Err(PushSynchronizeError::HandshakeFailed(
-                    "expected HelloAck".into(),
-                ));
-            }
+        };
+        let timeout = platform::sleep(config.handshake_timeout);
+        futures::pin_mut!(handshake, timeout);
+        match futures::future::select(handshake, timeout).await {
+            futures::future::Either::Left((result, _)) => result?,
+            futures::future::Either::Right(_) => return Err(SynchronizeError::SessionTimeout),
         }
 
         // Main bidirectional loop using futures::select!
@@ -236,6 +265,7 @@ where
                             // Track local generation
                             let generation = event.generation;
                             local_generations.insert(event.key.clone(), generation);
+                        outstanding.insert(event.key.clone(), generation);
 
                             let msg = PushMessage::ChangeEvent(event);
                             transport.send(msg).await
@@ -354,7 +384,7 @@ where
 
                 // Termination check
                 _ = async {
-                    if outbound_exhausted && inbound_closed {
+                    if outbound_exhausted && outstanding.is_empty() && (_received_done || inbound_closed) {
                         futures::future::ready(()).await
                     } else {
                         futures::future::pending().await

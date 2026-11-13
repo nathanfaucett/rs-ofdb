@@ -38,6 +38,7 @@ impl<E> From<Error<E>> for SynchronizeError<E> {
 /// Configuration for synchronize.
 #[derive(Debug, Clone)]
 pub struct SynchronizeConfig {
+    pub role: crate::SyncRole,
     /// Protocol configuration.
     pub protocol: Config,
     /// Maximum time to wait for handshake.
@@ -51,6 +52,7 @@ pub struct SynchronizeConfig {
 impl Default for SynchronizeConfig {
     fn default() -> Self {
         Self {
+            role: crate::SyncRole::Initiator,
             protocol: Config::default(),
             handshake_timeout: Duration::from_secs(10),
             message_timeout: Duration::from_secs(30),
@@ -96,43 +98,67 @@ where
     let mut local_generations: HashMap<StorageKey, u64> = HashMap::new();
     let mut remote_generations: HashMap<StorageKey, u64> = HashMap::new();
     let mut pending_acks: HashMap<StorageKey, u64> = HashMap::new();
+    let mut outstanding = HashMap::new();
     let mut sent_done = false;
     let mut _received_done = false;
 
-    // Handshake
-    let manifest_digest = [0u8; 32]; // TODO: compute actual manifest digest
     let hello = Message::Hello(crate::protocol::HelloConfig {
         protocol_version: 1,
-        manifest_digest,
+        manifest_digest: [0; 32],
         config: config.protocol.clone(),
     });
-    transport
-        .send(hello)
-        .await
-        .map_err(SynchronizeError::Transport)?;
-    result.bytes_sent += 1; // approximate
-
-    // Wait for HelloAck
-    let hello_ack = tokio::time::timeout(config.handshake_timeout, transport.receive())
-        .await
-        .map_err(|_| SynchronizeError::SessionTimeout)?
-        .map_err(SynchronizeError::Transport)?;
-
-    let accepted = match hello_ack {
-        Message::HelloAck { accepted, .. } => accepted,
-        msg => {
-            return Err(SynchronizeError::HandshakeFailed(format!(
-                "expected HelloAck, got {:?}",
-                msg
-            )));
+    let handshake = async {
+        match config.role {
+            crate::SyncRole::Initiator => {
+                transport
+                    .send(hello)
+                    .await
+                    .map_err(SynchronizeError::Transport)?;
+                match transport
+                    .receive()
+                    .await
+                    .map_err(SynchronizeError::Transport)?
+                {
+                    Message::HelloAck {
+                        protocol_version: 1,
+                        accepted: true,
+                    } => Ok(()),
+                    _ => Err(SynchronizeError::HandshakeFailed(
+                        "expected accepted version-one HelloAck".into(),
+                    )),
+                }
+            }
+            crate::SyncRole::Responder => {
+                let accepted = matches!(
+                    transport
+                        .receive()
+                        .await
+                        .map_err(SynchronizeError::Transport)?,
+                    Message::Hello(crate::protocol::HelloConfig {
+                        protocol_version: 1,
+                        ..
+                    })
+                );
+                transport
+                    .send(Message::HelloAck {
+                        protocol_version: 1,
+                        accepted,
+                    })
+                    .await
+                    .map_err(SynchronizeError::Transport)?;
+                if accepted {
+                    Ok(())
+                } else {
+                    Err(SynchronizeError::HandshakeFailed(
+                        "unsupported Hello".into(),
+                    ))
+                }
+            }
         }
     };
-
-    if !accepted {
-        return Err(SynchronizeError::HandshakeFailed(
-            "peer rejected handshake".into(),
-        ));
-    }
+    tokio::time::timeout(config.handshake_timeout, handshake)
+        .await
+        .map_err(|_| SynchronizeError::SessionTimeout)??;
 
     // Main bidirectional loop
     let mut outbound_exhausted = false;
@@ -154,6 +180,7 @@ where
                         // Track local generation
                         let generation = event.generation;
                         local_generations.insert(event.key.clone(), generation);
+                        outstanding.insert(event.key.clone(), generation);
 
                         let msg = Message::ChangeEvent(event);
                         transport.send(msg).await
@@ -225,8 +252,8 @@ where
                             }
                             Message::Ack { acknowledgments } => {
                                 // Peer acknowledged our events
-                                for (key, _generation) in acknowledgments {
-                                    pending_acks.remove(&key);
+                                for (key, generation) in acknowledgments {
+                                    if outstanding.get(&key).is_some_and(|pending| *pending <= generation) { outstanding.remove(&key); }
                                 }
                             }
                             Message::Done { final_generations } => {
@@ -234,9 +261,7 @@ where
                                 // Update remote generations with final values
                                 remote_generations.extend(final_generations);
                             }
-                            Message::Close => {
-                                inbound_closed = true;
-                            }
+                            Message::Close => { break; }
                             Message::HelloAck { .. } => {
                                 // Ignore duplicate hello ack
                             }
@@ -254,7 +279,7 @@ where
                 }
             }
             // Check termination conditions
-            _ = async {}, if outbound_exhausted && inbound_closed => {
+            _ = async {}, if outbound_exhausted && outstanding.is_empty() && (_received_done || inbound_closed) => {
                 break;
             }
         }
@@ -292,33 +317,70 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Config;
-    use crate::transport::mock::MockTransport;
-    use btree::{ChangeEvent, StorageKey};
-    use futures::stream;
+    use futures::{channel::mpsc, stream};
+    use std::sync::{Arc, Mutex};
 
+    struct Channel(
+        mpsc::UnboundedSender<Message>,
+        mpsc::UnboundedReceiver<Message>,
+    );
+    impl SyncTransport for Channel {
+        type Error = String;
+        async fn send(&mut self, message: Message) -> Result<(), String> {
+            self.0
+                .unbounded_send(message)
+                .map_err(|error| error.to_string())
+        }
+        async fn receive(&mut self) -> Result<Message, String> {
+            self.1.next().await.ok_or_else(|| "closed".into())
+        }
+    }
     #[tokio::test]
-    async fn synchronize_compiles() {
-        let config = Config::default();
-        let transport = MockTransport::new(config.clone());
-        let _peer = transport.peer();
-
-        // Create a simple outbound stream with one event
-        let event = ChangeEvent {
-            key: StorageKey::kv(b"key1".to_vec()),
-            blob: vec![1, 2, 3],
+    async fn initiator_and_responder_exchange_changes_and_finish() {
+        let (a, ar) = mpsc::unbounded();
+        let (b, br) = mpsc::unbounded();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let left_seen = seen.clone();
+        let right_seen = seen.clone();
+        let event = |key: &[u8], byte| ChangeEvent {
+            key: StorageKey::kv(key.to_vec()),
+            blob: vec![byte],
             generation: 1,
         };
-        let outbound = stream::iter(vec![event]);
-
-        let sync_config = SynchronizeConfig {
-            protocol: config.clone(),
-            handshake_timeout: std::time::Duration::from_secs(1),
-            message_timeout: std::time::Duration::from_secs(1),
-            send_done_on_exhaust: true,
-        };
-
-        // Just testing the function compiles - mock doesn't fully implement protocol
-        let _ = synchronize(transport, outbound, |_e| async move { Ok(()) }, sync_config).await;
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                synchronize(
+                    Channel(a, br),
+                    stream::iter([event(b"left", 7)]),
+                    move |change| {
+                        left_seen.lock().expect("observations").push(change.blob);
+                        async { Ok(()) }
+                    },
+                    SynchronizeConfig {
+                        role: crate::SyncRole::Initiator,
+                        ..Default::default()
+                    }
+                ),
+                synchronize(
+                    Channel(b, ar),
+                    stream::iter([event(b"right", 9)]),
+                    move |change| {
+                        right_seen.lock().expect("observations").push(change.blob);
+                        async { Ok(()) }
+                    },
+                    SynchronizeConfig {
+                        role: crate::SyncRole::Responder,
+                        ..Default::default()
+                    }
+                ),
+            )
+        })
+        .await
+        .expect("finite sessions must complete");
+        assert_eq!(result.0.expect("initiator exchange").events_received, 1);
+        assert_eq!(result.1.expect("responder exchange").events_received, 1);
+        let mut seen = seen.lock().expect("observations").clone();
+        seen.sort();
+        assert_eq!(seen, vec![vec![7], vec![9]]);
     }
 }

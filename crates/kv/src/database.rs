@@ -400,28 +400,6 @@ impl Database {
         }
     }
 
-    /// Exports winning generations, including tombstones, from one store snapshot.
-    #[cfg(feature = "sync")]
-    /// DEPRECATED: Use push-based synchronization instead.
-    pub async fn export_snapshots(&self) -> Result<Vec<crate::KvSnapshot>, Error> {
-        Err(Error::Storage {
-            kind: crate::ErrorKind::UnsupportedOperation,
-            message: "export_snapshots is deprecated; use push-based synchronize".to_string(),
-        })
-    }
-
-    /// Imports all snapshots atomically. A failed import commits no changes.
-    /// Caller must authorize this direct atomic apply; production received operations
-    /// should use `synchronize_checked` for per-batch authorization/cancellation.
-    #[cfg(feature = "sync")]
-    /// DEPRECATED: Use push-based synchronization instead.
-    pub async fn import_snapshots(&self, _snapshots: Vec<crate::KvSnapshot>) -> Result<(), Error> {
-        Err(Error::Storage {
-            kind: crate::ErrorKind::UnsupportedOperation,
-            message: "import_snapshots is deprecated; use push-based synchronize".to_string(),
-        })
-    }
-
     /// Synchronization: streams local changes to peer and applies remote changes.
     /// Uses the store's change subscription for outbound events and imports inbound events directly.
     #[cfg(feature = "sync")]
@@ -479,45 +457,6 @@ impl Database {
 
         sync::synchronize(transport, outbound, apply_inbound, config).await
     }
-
-    /// DEPRECATED: Use push-based `synchronize` instead.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_checked<T, Q, U>(
-        &self,
-        _transport: &mut T,
-        _role: crate::SyncRole,
-        _config: crate::SyncConfig,
-        _check: Q,
-    ) -> Result<(), crate::SyncError<T::Error>>
-    where
-        T: crate::SyncTransport,
-        Q: FnMut() -> U,
-        U: core::future::Future<Output = Result<(), String>>,
-    {
-        Err(crate::SyncError::Apply(
-            "synchronize_checked is deprecated; use push-based synchronize".to_string(),
-        ))
-    }
-
-    /// DEPRECATED: Use push-based `synchronize` instead.
-    #[cfg(feature = "sync")]
-    pub async fn synchronize_selected_checked<T, Q, U>(
-        &self,
-        _changes: &mut crate::ChangeSubscription,
-        _transport: &mut T,
-        _role: crate::SyncRole,
-        _config: crate::SyncConfig,
-        _check: Q,
-    ) -> Result<(), crate::SyncError<T::Error>>
-    where
-        T: crate::SyncTransport,
-        Q: FnMut() -> U,
-        U: core::future::Future<Output = Result<(), String>>,
-    {
-        Err(crate::SyncError::Apply(
-            "synchronize_selected_checked is deprecated; use push-based synchronize".to_string(),
-        ))
-    }
 }
 
 async fn read_get<B: BTree<Vec<u8>, Vec<u8>>>(
@@ -556,11 +495,13 @@ async fn write_delete<B: BTree<Vec<u8>, Vec<u8>>>(
 async fn read_scan<B: BTree<Vec<u8>, Vec<u8>>>(
     store: &KvStore<B>,
     start: &str,
-    _end: &str,
+    end: &str,
     now: i64,
 ) -> Result<Vec<(String, Value)>, Error> {
     let transaction = store.transaction().await?;
-    let result = transaction.scan_prefix(start, now).await?;
+    let result = transaction
+        .scan(start.to_owned()..end.to_owned(), now)
+        .await?;
     transaction.rollback().await?;
     Ok(result)
 }
@@ -604,7 +545,6 @@ mod tests {
     use super::Database;
 
     #[test]
-    #[ignore]
     fn facade_preserves_expiry_and_scan_contract() {
         block_on(async {
             let database = Database::in_memory();
@@ -638,3 +578,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(feature = "sync")]
+#[path = "kv_history.rs"]
+mod kv_history;

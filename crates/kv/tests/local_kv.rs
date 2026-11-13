@@ -89,15 +89,22 @@ where
     assert_eq!(tx.get("expires", 10).await.expect("get at expiry"), None);
 
     assert_eq!(
-        tx.scan("prefix", 0).await.expect("scan range"),
+        tx.scan("prefix".into().."prefix~".into(), 0)
+            .await
+            .expect("scan range"),
         vec![
             ("prefixX".into(), Value::Blob(vec![4])),
             ("prefix|get|5".into(), Value::Blob(vec![3])),
         ]
     );
-    assert!(tx.scan("test~", 0).await.expect("empty range").is_empty());
     assert!(
-        tx.scan("z", 0)
+        tx.scan("test~".into().."test~".into(), 0)
+            .await
+            .expect("empty range")
+            .is_empty()
+    );
+    assert!(
+        tx.scan("z".into().."z~".into(), 0)
             .await
             .expect("absent prefix range")
             .is_empty()

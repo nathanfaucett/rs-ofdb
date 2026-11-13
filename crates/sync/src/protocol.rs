@@ -12,6 +12,12 @@ const PROTOCOL_VERSION: u8 = 1;
 /// Maximum message size in bytes (1 MiB).
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncRole {
+    Initiator,
+    Responder,
+}
+
 /// Configuration for the sync protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {

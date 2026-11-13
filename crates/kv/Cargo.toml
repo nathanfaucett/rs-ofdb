@@ -55,6 +55,7 @@ redb = [
 ]
 server = ["remote", "dep:kv-server"]
 sync = [
+    "dep:postcard",
     "dep:serde",
     "dep:platform",
     "std",
@@ -163,3 +164,14 @@ required-features = ["remote", "in-memory", "redb", "server"]
 [[test]]
 name = "remote_facade_transaction"
 required-features = ["remote", "in-memory", "server"]
+
+[dependencies.postcard]
+version = "1.1"
+default-features = false
+features = ["alloc"]
+optional = true
+
+[dev-dependencies.futures-channel]
+version = "0.3"
+default-features = false
+features = ["sink"]

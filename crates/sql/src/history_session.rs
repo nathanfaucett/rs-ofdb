@@ -92,6 +92,45 @@ impl Database {
                 .map_err(crate::error::from_engine),
         }
     }
+    pub async fn exchange_resource_history<T, Q, U>(
+        &self,
+        transport: &mut T,
+        config: &SessionConfig,
+        role: SyncRole,
+        directory: impl AsRef<std::path::Path>,
+        check: Q,
+    ) -> Result<SyncResult, SyncError<T::Error>>
+    where
+        T: SyncTransport,
+        T::Error: core::fmt::Display,
+        Q: FnMut() -> U + platform::MaybeSend,
+        U: core::future::Future<Output = Result<(), String>> + platform::MaybeSend,
+    {
+        let factory = self.native_stage_factory(directory);
+        match &self.backend {
+            #[cfg(feature = "in-memory")]
+            DatabaseBackend::InMemory(engine) => {
+                history::synchronize_with_stage_factory_checked(
+                    engine, transport, config, role, &factory, check,
+                )
+                .await
+            }
+            #[cfg(feature = "redb")]
+            DatabaseBackend::File(resource) => resource
+                .session(sync_stage(|| async {
+                    let engine = resource
+                        .read()
+                        .await
+                        .map_err(|error| SyncError::PreApply(error.to_string()))?;
+                    history::synchronize_with_stage_factory_checked(
+                        &*engine, transport, config, role, &factory, check,
+                    )
+                    .await
+                }))
+                .await
+                .map_err(|error| SyncError::PreApply(error.to_string()))?,
+        }
+    }
     fn native_stage_factory(
         &self,
         directory: impl AsRef<std::path::Path>,

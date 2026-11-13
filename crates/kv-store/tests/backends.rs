@@ -67,7 +67,7 @@ fn redb_public_api_persists_live_values_and_tombstones_after_reopen() {
         );
         assert_eq!(write.get("expired", 10).await.unwrap(), None);
         assert_eq!(
-            write.scan("live", 0).await.unwrap(),
+            write.scan_prefix("live", 0).await.unwrap(),
             vec![("live".into(), Value::Blob(vec![1, 2]))]
         );
         write.commit().await.unwrap();

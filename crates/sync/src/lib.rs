@@ -8,8 +8,8 @@ mod transport;
 mod iroh_transport;
 
 pub use protocol::{
-    AckConfig, Config, Error, HelloConfig, MAX_MESSAGE_BYTES, Message, SyncResult, decode_message,
-    encode_message,
+    AckConfig, Config, Error, HelloConfig, MAX_MESSAGE_BYTES, Message, SyncResult, SyncRole,
+    decode_message, encode_message,
 };
 pub use transport::SyncTransport;
 

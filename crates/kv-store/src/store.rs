@@ -17,7 +17,7 @@ use uuid::Uuid;
 use value::Value;
 
 use crate::{
-    ChangeSummary, KvHistory, NativeChange, decode_document_id, encode_document_id,
+    ChangeApply, ChangeSummary, KvHistory, NativeChange, decode_document_id, encode_document_id,
     value_document::{new_document, read_document, write_live, write_tombstone},
 };
 
@@ -52,7 +52,6 @@ where
         }
     }
 
-    /// Get the change signal for subscribing to committed changes.
     pub fn change_signal(&self) -> &ChangeSignal {
         &self.change_signal
     }
@@ -64,7 +63,7 @@ where
         storage_table: &str,
         work: &btree::ChangeWork,
     ) -> Vec<KvInvalidation> {
-        let mut result = BTreeSet::new();
+        let mut result = std::collections::BTreeSet::new();
         for invalidation in work.invalidations() {
             let btree::StorageInvalidation::Key { table, key } = invalidation else {
                 return vec![KvInvalidation::All];
@@ -110,60 +109,87 @@ impl<T> KvTransaction<T>
 where
     T: BTreeTransaction<Vec<u8>, Vec<u8>>,
 {
-    pub async fn get(&self, key: &str, _now: i64) -> BTreeResult<Option<Value>> {
+    pub async fn get(&self, key: &str, now: i64) -> BTreeResult<Option<Value>> {
         let Some((_, document)) = self.latest(key).await? else {
             return Ok(None);
         };
         let state = read_document(&document)?;
-        if state.tombstone {
+        if state.tombstone || state.expires_at.is_some_and(|expiry| now >= expiry) {
             return Ok(None);
         }
         Ok(state.value)
     }
 
-    pub async fn scan(&self, prefix: &str, _now: i64) -> BTreeResult<Vec<(String, Value)>> {
-        let range = (
-            Bound::Included(lower_id(prefix)),
-            Bound::Included(upper_id(prefix)),
-        );
-        let documents = self.inner.range(range);
-        pin_mut!(documents);
-        let mut results = Vec::new();
-        while let Some(item) = documents.next().await {
-            let (id, document) = item?;
-            decode_document_id(&id)?;
-            let state = read_document(&document)?;
-            if state.tombstone {
-                continue;
-            }
-            let key = String::from_utf8(id[id.len() - 16..].to_vec())
-                .map_err(|_| BTreeError::custom("invalid key encoding"))?;
-            results.push((key, state.value.unwrap()));
+    pub async fn scan(
+        &self,
+        range: std::ops::Range<String>,
+        now: i64,
+    ) -> BTreeResult<Vec<(String, Value)>> {
+        if range.start >= range.end {
+            return Ok(Vec::new());
         }
-        Ok(results)
+        self.scan_bounds(
+            (
+                Bound::Included(lower_id(&range.start)),
+                Bound::Excluded(logical_prefix(&range.end)),
+            ),
+            now,
+        )
+        .await
     }
 
-    pub async fn scan_prefix(&self, prefix: &str, _now: i64) -> BTreeResult<Vec<(String, Value)>> {
-        self.scan(prefix, 0).await
+    pub async fn scan_prefix(&self, prefix: &str, now: i64) -> BTreeResult<Vec<(String, Value)>> {
+        let start = encoded_key_prefix(prefix);
+        let end = prefix_end(start.clone());
+        let bounds = match end {
+            Some(end) => (Bound::Included(start), Bound::Excluded(end)),
+            None => (Bound::Included(start), Bound::Unbounded),
+        };
+        self.scan_bounds(bounds, now).await
     }
 
-    pub async fn scan_all(&self, _now: i64) -> BTreeResult<Vec<(String, Value)>> {
-        let range = (Bound::<Vec<u8>>::Unbounded, Bound::Unbounded);
-        let documents = self.inner.range(range);
+    async fn scan_bounds(
+        &self,
+        bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>),
+        now: i64,
+    ) -> BTreeResult<Vec<(String, Value)>> {
+        let documents = self.inner.range(bounds);
         pin_mut!(documents);
-        let mut results = Vec::new();
+        let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
         while let Some(item) = documents.next().await {
             let (id, document) = item?;
-            decode_document_id(&id)?;
-            let state = read_document(&document)?;
-            if state.tombstone {
-                continue;
-            }
-            let key = String::from_utf8(id[id.len() - 16..].to_vec())
-                .map_err(|_| BTreeError::custom("invalid key encoding"))?;
-            results.push((key, state.value.unwrap()));
+            let (key, generation) = decode_document_id(&id)?;
+            latest.insert(key, (generation, document));
         }
-        Ok(results)
+        latest
+            .into_iter()
+            .try_fold(Vec::new(), |mut visible, (key, (_, document))| {
+                let state = read_document(&document)?;
+                if !state.tombstone && !state.expires_at.is_some_and(|expiry| now >= expiry) {
+                    visible.push((key, state.value.ok_or(BTreeError::InvalidDocument)?));
+                }
+                Ok(visible)
+            })
+    }
+
+    pub async fn scan_all(&self, now: i64) -> BTreeResult<Vec<(String, Value)>> {
+        let documents = self.inner.range(..);
+        pin_mut!(documents);
+        let mut latest = BTreeMap::<String, (Uuid, AutoCommit)>::new();
+        while let Some(item) = documents.next().await {
+            let (id, document) = item?;
+            let (key, generation) = decode_document_id(&id)?;
+            latest.insert(key, (generation, document));
+        }
+        latest
+            .into_iter()
+            .try_fold(Vec::new(), |mut visible, (key, (_, document))| {
+                let state = read_document(&document)?;
+                if !state.tombstone && !state.expires_at.is_some_and(|expiry| now >= expiry) {
+                    visible.push((key, state.value.ok_or(BTreeError::InvalidDocument)?));
+                }
+                Ok(visible)
+            })
     }
 
     pub async fn set(
@@ -177,10 +203,10 @@ where
             Some((id, document)) => {
                 let state = read_document(&document)?;
                 if !state.tombstone {
+                    self.modified_keys.insert(id.clone());
                     self.inner
-                        .update(id.clone(), move |doc| write_live(doc, value, expires_at))
+                        .update(id, move |doc| write_live(doc, value, expires_at))
                         .await?;
-                    self.modified_keys.insert(id);
                     return Ok(());
                 }
                 let next = Uuid::new_v7((self.timestamp_provider)());
@@ -200,10 +226,11 @@ where
                 next
             }
         };
-        let encoded_id = encode_document_id(key, id);
-        self.modified_keys.insert(encoded_id.clone());
         self.inner
-            .insert(encoded_id, new_document(value, expires_at)?)
+            .insert(
+                encode_document_id(key, id),
+                new_document(value, expires_at)?,
+            )
             .await
     }
 
@@ -219,73 +246,27 @@ where
         Ok(())
     }
 
-    pub async fn history(&self, key: &str) -> BTreeResult<KvHistory> {
-        let documents = self.inner.range((
-            Bound::Included(lower_id(key)),
-            Bound::Included(upper_id(key)),
-        ));
-        pin_mut!(documents);
-        let mut history = KvHistory {
-            id: Vec::new(),
-            heads: Vec::new(),
-            changes: Vec::new(),
-        };
-        while let Some(item) = documents.next().await {
-            let (id, mut document) = item?;
-            decode_document_id(&id)?;
-            let (_key, _generation) = decode_document_id(&id)?;
-            let _state = read_document(&document)?;
-            if history.id.is_empty() {
-                history.id = id.clone();
-                history.heads = document.get_heads().into_iter().map(|h| h.0).collect();
-            }
-            let summary = ChangeSummary {
-                hash: document.get_heads().first().map(|h| h.0).unwrap_or([0; 32]),
-                deps: Vec::new(),
-            };
-            history.changes.push(summary);
-        }
-        Ok(history)
+    /// Inspect only the latest generation of this logical key, without saving a snapshot.
+    pub async fn history(&self, key: &str) -> BTreeResult<Option<KvHistory>> {
+        self.latest(key)
+            .await?
+            .map(|(id, document)| history_parts(id, document))
+            .transpose()
     }
 
-    pub async fn histories(&self, prefix: &str) -> BTreeResult<Vec<KvHistory>> {
-        let range = (
-            Bound::Included(lower_id(prefix)),
-            Bound::Included(upper_id(prefix)),
-        );
-        let documents = self.inner.range(range);
+    pub async fn histories(&self) -> BTreeResult<Vec<KvHistory>> {
+        let documents = self.inner.range(..);
         pin_mut!(documents);
-        let mut histories = Vec::new();
-        let mut current_key = None;
-        let mut current_history = KvHistory::default();
+        let mut latest = BTreeMap::new();
         while let Some(item) = documents.next().await {
-            let (id, mut document) = item?;
-            decode_document_id(&id)?;
-            let (key, _generation) = decode_document_id(&id)?;
-            let _state = read_document(&document)?;
-            if current_key.as_ref() != Some(&key) {
-                if current_key.is_some() {
-                    histories.push(current_history);
-                }
-                current_key = Some(key.clone());
-                current_history = KvHistory {
-                    id: id.clone(),
-                    heads: document.get_heads().into_iter().map(|h| h.0).collect(),
-                    changes: Vec::new(),
-                };
-            }
-            let summary = ChangeSummary {
-                hash: document.get_heads().first().map(|h| h.0).unwrap_or([0; 32]),
-                deps: Vec::new(),
-            };
-            current_history.changes.push(summary);
+            let (id, document) = item?;
+            let (key, _) = decode_document_id(&id)?;
+            latest.insert(key, history_parts(id, document));
         }
-        if current_key.is_some() {
-            histories.push(current_history);
-        }
-        Ok(histories)
+        latest.into_values().collect()
     }
 
+    /// Export native changes even when their only physical representation is a snapshot.
     pub async fn export_changes(
         &self,
         id: &[u8],
@@ -296,7 +277,7 @@ where
             return Ok(Vec::new());
         };
         read_document(&document)?;
-        let known = known.iter().collect::<BTreeSet<_>>();
+        let known = known.iter().collect::<std::collections::BTreeSet<_>>();
         Ok(document
             .get_changes(&[])
             .into_iter()
@@ -311,23 +292,67 @@ where
 
     /// Validate the entire candidate before writing. A gap leaves this transaction untouched.
     /// Other operation errors still require caller rollback of the enclosing batch.
-    pub async fn import_changes(&mut self, id: &[u8], changes: &[NativeChange]) -> BTreeResult<()> {
-        decode_document_id(id)?;
-        let mut document = self
-            .inner
-            .get(&id.to_vec())
-            .await?
-            .map(|doc| read_document(&doc).map(|_| doc))
-            .transpose()?
-            .unwrap_or_else(|| new_document(Value::Null, None).expect("new document"));
-        for change in changes {
-            let change = automerge::Change::from_bytes(change.payload.clone())
-                .map_err(|e| BTreeError::custom(format!("invalid change: {}", e)))?;
-            document
-                .apply_changes([change])
-                .map_err(|e| BTreeError::custom(format!("apply change failed: {}", e)))?;
+    pub async fn import_changes(
+        &mut self,
+        id: &[u8],
+        changes: &[NativeChange],
+    ) -> BTreeResult<ChangeApply> {
+        let logical_key = decode_document_id(id)?.0;
+        let before = self.history(&logical_key).await?;
+        let result = async {
+            let (key, generation) = decode_document_id(id)?;
+            let parsed = changes
+                .iter()
+                .map(|claimed| {
+                    let change = automerge::Change::from_bytes(claimed.payload.clone())
+                        .map_err(BTreeError::custom)?;
+                    if change.hash().0 != claimed.hash
+                        || change.deps().iter().map(|hash| hash.0).collect::<Vec<_>>()
+                            != claimed.deps
+                    {
+                        return Err(BTreeError::InvalidDocument);
+                    }
+                    Ok(change)
+                })
+                .collect::<BTreeResult<Vec<_>>>()?;
+            let mut document = match self.latest(&key).await? {
+                Some((current_id, document)) => {
+                    let (_, current_generation) = decode_document_id(&current_id)?;
+                    if generation < current_generation {
+                        return Ok(ChangeApply::Applied);
+                    }
+                    if generation == current_generation {
+                        document
+                    } else {
+                        AutoCommit::new()
+                    }
+                }
+                None => AutoCommit::new(),
+            };
+            let mut available = document
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.hash())
+                .collect::<std::collections::BTreeSet<_>>();
+            for change in &parsed {
+                if change.deps().iter().any(|dep| !available.contains(dep)) {
+                    return Ok(ChangeApply::MissingDependencies);
+                }
+                available.insert(change.hash());
+            }
+            document.apply_changes(parsed).map_err(BTreeError::custom)?;
+            read_document(&document)?;
+            self.import_snapshot(snapshot_parts(id.to_vec(), document))
+                .await?;
+            Ok(ChangeApply::Applied)
         }
-        self.inner.insert(id.to_vec(), document).await
+        .await;
+        if result.is_ok() && self.history(&logical_key).await? != before {
+            if let Some(after) = self.history(&logical_key).await? {
+                self.modified_keys.insert(after.id);
+            }
+        }
+        result
     }
 
     pub async fn export_snapshots(&self) -> BTreeResult<Vec<(DocumentChangeKey, Vec<u8>)>> {
@@ -358,50 +383,72 @@ where
 
     pub async fn import_snapshot(
         &mut self,
-        id: &[u8; 16],
-        snapshot: AutoCommit,
+        snapshot: (DocumentChangeKey, Vec<u8>),
     ) -> BTreeResult<()> {
-        self.inner.insert(id.to_vec(), snapshot).await
+        let logical_key = decode_document_id(&snapshot.0.id)?.0;
+        let before = self.history(&logical_key).await?;
+        let result = async {
+            let (key, payload) = snapshot;
+            let mut incoming = validate_snapshot(&key, &payload)?;
+            let (logical_key, generation) = decode_document_id(&key.id)?;
+            if let Some((id, mut current)) = self.latest(&logical_key).await? {
+                read_document(&current)?;
+                let (_, current_generation) = decode_document_id(&id)?;
+                if generation < current_generation {
+                    return Ok(());
+                }
+                if generation == current_generation {
+                    let current_heads = current.get_heads();
+                    let incoming_heads = incoming.get_heads();
+                    if incoming_heads
+                        .iter()
+                        .all(|head| current.get_change_by_hash(head).is_some())
+                    {
+                        return Ok(());
+                    }
+                    if current_heads
+                        .iter()
+                        .all(|head| incoming.get_change_by_hash(head).is_some())
+                    {
+                        self.inner.insert(id, incoming).await?;
+                        return Ok(());
+                    }
+                    current.merge(&mut incoming).map_err(BTreeError::custom)?;
+                    read_document(&current)?;
+                    self.inner.insert(id, current).await?;
+                    return Ok(());
+                }
+                self.remove_key_generations(&logical_key).await?;
+            }
+            self.inner.insert(key.id, incoming).await
+        }
+        .await;
+        if result.is_ok() && self.history(&logical_key).await? != before {
+            if let Some(after) = self.history(&logical_key).await? {
+                self.modified_keys.insert(after.id);
+            }
+        }
+        result
     }
 
     pub async fn commit(self) -> BTreeResult<()> {
-        // Emit ChangeEvents for all modified keys before committing
         let mut events = Vec::new();
         for key in &self.modified_keys {
-            if let Some(mut document) = self.inner.get(key).await?
-                && let Ok(state) = read_document(&document)
-            {
-                if !state.tombstone {
-                    // Get the latest changes for this document
-                    let changes = document.get_changes(&[]);
-                    if let Some(change) = changes.last() {
-                        let storage_key = StorageKey::kv(key.clone());
-                        events.push(ChangeEvent {
-                            key: storage_key,
-                            blob: change.raw_bytes().to_vec(),
-                            generation: change.seq(),
-                        });
-                    }
-                } else {
-                    // For tombstones, emit a sentinel event with empty blob
-                    let storage_key = StorageKey::kv(key.clone());
+            if let Some(mut document) = self.inner.get(key).await? {
+                read_document(&document)?;
+                if let Some(change) = document.get_changes(&[]).last() {
                     events.push(ChangeEvent {
-                        key: storage_key,
-                        blob: Vec::new(),
-                        generation: 0,
+                        key: StorageKey::kv(key.clone()),
+                        blob: change.raw_bytes().to_vec(),
+                        generation: change.seq(),
                     });
                 }
             }
         }
-
-        // Commit the inner transaction
         self.inner.commit().await?;
-
-        // Emit the change events
         if !events.is_empty() {
             self.change_signal.committed_with_events(events);
         }
-
         Ok(())
     }
 
@@ -430,19 +477,31 @@ where
             Bound::Included(upper_id(key)),
         ));
         pin_mut!(entries);
-        while let Some(item) = entries.next().await {
-            let (id, _) = item?;
-            self.modified_keys.insert(id);
+        while let Some(entry) = entries.next().await {
+            entry?;
         }
         Ok(())
     }
 }
 
-fn validate_generation(generation: Uuid) -> BTreeResult<()> {
-    if generation.is_nil() {
-        return Err(BTreeError::custom("nil UUID is not a valid generation"));
-    }
-    Ok(())
+fn history_parts(id: Vec<u8>, mut document: AutoCommit) -> BTreeResult<KvHistory> {
+    read_document(&document)?;
+    Ok(KvHistory {
+        id,
+        heads: document
+            .get_heads()
+            .into_iter()
+            .map(|hash| hash.0)
+            .collect(),
+        changes: document
+            .get_changes(&[])
+            .into_iter()
+            .map(|change| ChangeSummary {
+                hash: change.hash().0,
+                deps: change.deps().iter().map(|hash| hash.0).collect(),
+            })
+            .collect(),
+    })
 }
 
 fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, Vec<u8>) {
@@ -450,27 +509,64 @@ fn snapshot_parts(id: Vec<u8>, mut document: AutoCommit) -> (DocumentChangeKey, 
     (key, document.save())
 }
 
+fn validate_snapshot(key: &DocumentChangeKey, payload: &[u8]) -> BTreeResult<AutoCommit> {
+    decode_document_id(&key.id)?;
+    if key.r#type != btree_automerge::DocumentType::Snapshot {
+        return Err(BTreeError::InvalidDocument);
+    }
+    let mut document = AutoCommit::load(payload).map_err(BTreeError::custom)?;
+    if document.save() != payload || key.change_hash != hash_heads(document.get_heads()) {
+        return Err(BTreeError::InvalidDocument);
+    }
+    read_document(&document)?;
+    Ok(document)
+}
+
+fn validate_generation(generation: Uuid) -> BTreeResult<()> {
+    if generation.get_version_num() != 7 {
+        return Err(BTreeError::custom("Generation UUID must use version 7"));
+    }
+    Ok(())
+}
+
 fn logical_prefix(key: &str) -> Vec<u8> {
-    let mut prefix = Vec::new();
-    prefix.extend_from_slice(key.as_bytes());
-    prefix.push(0);
-    prefix
+    let mut bytes = encoded_key_prefix(key);
+    bytes.extend_from_slice(&[0, 0]);
+    bytes
 }
 
 fn encoded_key_prefix(key: &str) -> Vec<u8> {
-    let mut prefix = logical_prefix(key);
-    prefix.extend_from_slice(&[0u8; 16]);
-    prefix
+    let mut bytes = Vec::with_capacity(key.len());
+    for byte in key.bytes() {
+        if byte == 0 {
+            bytes.extend_from_slice(&[0, 255]);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    bytes
+}
+
+fn prefix_end(mut prefix: Vec<u8>) -> Option<Vec<u8>> {
+    let last_incrementable = prefix.iter().rposition(|byte| *byte < u8::MAX)?;
+    prefix[last_incrementable] += 1;
+    prefix.truncate(last_incrementable + 1);
+    Some(prefix)
 }
 
 fn lower_id(key: &str) -> Vec<u8> {
-    encoded_key_prefix(key)
+    let mut id = logical_prefix(key);
+    id.extend_from_slice(&[0; 16]);
+    id
 }
 
 fn upper_id(key: &str) -> Vec<u8> {
-    let mut upper = logical_prefix(key);
-    upper.extend_from_slice(&[255u8; 16]);
-    upper
+    let mut id = logical_prefix(key);
+    let mut generation = [255; 16];
+    generation[6] = 0x7f;
+    generation[8] = 0xbf;
+    id.extend_from_slice(&generation);
+    id
 }
 
 #[cfg(test)]
