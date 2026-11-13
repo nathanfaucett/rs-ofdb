@@ -82,7 +82,7 @@ pub use transaction::Transaction as KvTransaction;
 
 #[cfg(feature = "sync")]
 /// Snapshot of a key-value pair for synchronization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KvSnapshot {
     pub key: String,
     pub payload: Vec<u8>,

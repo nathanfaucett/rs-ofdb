@@ -2503,6 +2503,7 @@ dependencies = [
  "ofdb-sync",
  "ofdb-value",
  "redb",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

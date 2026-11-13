@@ -55,6 +55,7 @@ redb = [
 ]
 server = ["remote", "dep:kv-server"]
 sync = [
+    "dep:serde",
     "dep:platform",
     "std",
     "dep:btree",
@@ -100,6 +101,7 @@ hyper-util = { version = "0.1", default-features = false, features = [
 redb = { version = "4.3", default-features = false, features = [
     "uuid",
 ], optional = true }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"], optional = true }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 tokio = { version = "1.0", default-features = false, features = [
     "time",
