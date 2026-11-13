@@ -1,0 +1,84 @@
+[package]
+name = "ofdb-sql-history"
+description = "Transport-neutral synchronization for engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "history"
+
+[features]
+native-stage = ["dep:tempfile"]
+
+[dependencies.engine]
+version = "0.1"
+path = "../sql-engine"
+package = "ofdb-sql-engine"
+default-features = false
+features = []
+
+[dependencies.futures]
+version = "0.3"
+default-features = false
+features = []
+
+[dependencies.platform]
+version = "0.1"
+path = "../platform"
+package = "ofdb-platform"
+default-features = false
+features = []
+
+[dependencies.postcard]
+version = "1.1"
+default-features = false
+features = ["alloc"]
+
+[dependencies.serde]
+version = "1.0"
+default-features = false
+features = ["alloc", "derive"]
+
+[dependencies.sha2]
+version = "0.10"
+default-features = false
+features = []
+
+[dependencies.thiserror]
+version = "2.0"
+default-features = false
+features = []
+
+[dependencies.uuid]
+version = "1.29"
+default-features = false
+features = ["serde"]
+
+[dependencies.value]
+version = "0.1"
+path = "../value"
+package = "ofdb-value"
+default-features = false
+features = []
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies.tempfile]
+version = "3.27"
+default-features = false
+features = []
+optional = true
+
+[dev-dependencies.engine]
+version = "0.1"
+path = "../sql-engine"
+package = "ofdb-sql-engine"
+default-features = false
+features = ["in-memory", "std"]
+
+[dev-dependencies.futures]
+version = "0.3"
+default-features = false
+features = ["async-await", "executor", "std"]

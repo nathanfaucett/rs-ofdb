@@ -2616,6 +2616,7 @@ dependencies = [
  "ofdb-sql-engine-automerge",
  "ofdb-sql-engine-indexeddb",
  "ofdb-sql-engine-redb",
+ "ofdb-sql-history",
  "ofdb-sql-macros",
  "ofdb-sql-protocol",
  "ofdb-sql-query",
@@ -2724,6 +2725,22 @@ dependencies = [
  "ofdb-sql-engine",
  "ofdb-value",
  "redb",
+ "uuid",
+]
+
+[[package]]
+name = "ofdb-sql-history"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ofdb-platform",
+ "ofdb-sql-engine",
+ "ofdb-value",
+ "postcard",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
  "uuid",
 ]
 

@@ -42,7 +42,8 @@ indexeddb = [
 in-memory = ["dep:platform", "engine/in-memory", "dep:engine-automerge", "std"]
 remote = ["dep:platform", "dep:client", "client/unix", "dep:tokio", "std"]
 server = ["dep:sql-server", "std"]
-native-stage = []
+native-stage = ["validated-history"]
+validated-history = ["sync", "dep:history"]
 
 [lib]
 name = "ofdb_sql"
@@ -134,3 +135,12 @@ required-features = ["sql", "redb"]
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # Browser persistence
 engine-indexeddb = { version = "0.1", path = "../sql-engine-indexeddb", package = "ofdb-sql-engine-indexeddb", default-features = false, optional = true }
+
+# Scoped, staged security-history exchange
+[dependencies.history]
+package = "ofdb-sql-history"
+version = "0.1"
+path = "../sql-history"
+default-features = false
+features = ["native-stage"]
+optional = true

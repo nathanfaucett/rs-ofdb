@@ -58,3 +58,6 @@ pub use client::{Client, Transaction};
 ))]
 pub use database::Database;
 pub use error::{Error, ErrorKind};
+
+#[cfg(feature = "validated-history")]
+pub use history;

@@ -887,3 +887,7 @@ mod tests {
 fn native_error(error: std::io::Error) -> QueryError {
     QueryError::new(crate::ErrorKind::Storage, error.to_string())
 }
+
+#[cfg(all(feature = "validated-history", not(target_arch = "wasm32")))]
+#[path = "history_session.rs"]
+mod history_session;
