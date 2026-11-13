@@ -5,6 +5,7 @@ The SQL facade provides an embedded control handle, `Database`, and a query and 
 - `in-memory` or `redb` enables a native embedded database backend; `in-memory` also runs in browsers.
 - `indexeddb` enables browser persistence on `wasm32-unknown-unknown` with async `Database::open_indexeddb(name)`.
 - `remote` enables the remote gRPC client and connection constructors.
+- `postgres` enables `Client::connect_postgres(connection_string)` on a native Tokio runtime. It is independent of `remote`.
 - `sql` enables SQL-text translation. Typed statements do not require it.
 - `sync` enables one-shot sessions and the continuous change-driven lifecycle. Transport and peer authorization remain caller-owned.
 - `server` enables SQL request serving through `Database::serve_tcp` and, on Unix, `Database::serve_unix`.
@@ -13,6 +14,39 @@ The SQL facade provides an embedded control handle, `Database`, and a query and 
 Default features are empty. Remote-only builds do not include a local SQL engine or sync implementation. Neither handle has a default request deadline. `Client::with_deadline(Duration)` applies to embedded and remote queries. A configured native embedded deadline requires a Tokio runtime with time enabled; browser deadlines use platform timers; an untimed embedded query does not require one. A timeout does not prove rollback or guarantee interruption of blocking storage work.
 
 `serve_tcp` and `serve_unix` borrow the embedded database and serve a shared engine clone. The caller owns the database handle and shutdown future. The serving future owns the bound listener until shutdown. The caller owns Unix socket path cleanup. Sync is a separate explicit operation. An interrupted session can leave already-applied batches committed; run sync again to reconcile. SQL transactions use `Client::transaction()` for embedded and remote access. A remote transaction holds one server-side engine transaction across calls; dropping its handle rolls it back. Each execute batch is atomic within the transaction. Commit applies the transaction as one engine operation; rollback discards it. Remote calls do not share a transaction unless they use the same transaction handle.
+
+## PostgreSQL query backend
+
+Enable `postgres` and add `sql` for SQL-text translation. The backend compiles the
+shared statements to PostgreSQL SQL with quoted identifiers and bound values.
+It does not send requests to an ofdb service or create a local engine. Supported
+values are UUID, boolean, signed integer, floating point, text, binary, JSON,
+and null. PostgreSQL-specific types, including NUMERIC results from BIGINT sums,
+return `Unsupported` rather than silently narrowing values. Existing SQL-parser
+limits still apply; typed statements can express more than SQL-text translation.
+
+Each transaction uses a dedicated serializable PostgreSQL connection. Dropping
+it closes the connection and rolls back uncommitted work. A failed statement,
+translation, or cancelled execution prevents later commit. Each client batch is
+one transaction. Serialization failures require caller-owned retries. CRDT
+conflict reads validate keys and return empty results; conflict resolution and
+native read limits return `Unsupported`. This backend has no sync or host handle.
+
+Connection settings require explicit `sslmode=disable`. The current driver has no
+TLS support; use a private Unix socket or trusted TLS tunnel. Set `connect_timeout`
+in the settings and `Client::with_deadline` for operation deadlines. A lost commit
+response can have an unknown durable outcome. Connection construction does not
+apply an application schema.
+
+Run the live test against a disposable PostgreSQL database:
+
+```sh
+OF_TEST_POSTGRES_URL='host=127.0.0.1 dbname=of_test user=of sslmode=disable connect_timeout=5' \
+  cargo test -p ofdb-sql --no-default-features --features postgres,sql --test postgres -- --include-ignored
+```
+
+The test creates a table inside rollback-only transactions and checks value
+conversion, failed commits, translation failures, and rollback on drop.
 
 ## Explicit application migrations
 

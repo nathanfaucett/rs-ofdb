@@ -50,6 +50,8 @@ enum Backend {
     Embedded(crate::Database),
     #[cfg(feature = "remote")]
     Remote(SqlClient),
+    #[cfg(feature = "postgres")]
+    Postgres(crate::postgres::PostgresBackend),
 }
 
 impl fmt::Debug for Client {
@@ -67,6 +69,8 @@ impl fmt::Debug for Client {
                     Backend::Embedded(_) => "Embedded",
                     #[cfg(feature = "remote")]
                     Backend::Remote(_) => "Remote",
+                    #[cfg(feature = "postgres")]
+                    Backend::Postgres(_) => "Postgres",
                 },
             )
             .field("request_deadline", &self.request_deadline)
@@ -91,6 +95,8 @@ enum TransactionBackend {
     Embedded(crate::database::EmbeddedTransaction),
     #[cfg(feature = "remote")]
     Remote(tokio::sync::Mutex<client::Transaction>),
+    #[cfg(feature = "postgres")]
+    Postgres(crate::postgres::PostgresTransaction),
 }
 
 impl Transaction {
@@ -113,6 +119,10 @@ impl Transaction {
                 ))]
                 TransactionBackend::Embedded(transaction) => {
                     transaction.set_read_limits(entries, bytes).await
+                }
+                #[cfg(feature = "postgres")]
+                TransactionBackend::Postgres(_) => {
+                    Err(crate::postgres_statement::unsupported("native read limits"))
                 }
                 #[cfg(feature = "remote")]
                 TransactionBackend::Remote(_) => Err(QueryError::new(
@@ -149,6 +159,13 @@ impl Transaction {
                     TransactionBackend::Embedded(transaction) => {
                         transaction.row_conflicts(table, key).await
                     }
+                    #[cfg(feature = "postgres")]
+                    TransactionBackend::Postgres(transaction) => {
+                        transaction
+                            .validate_keys(table, core::slice::from_ref(key))
+                            .await?;
+                        Ok(Vec::new())
+                    }
                     #[cfg(feature = "remote")]
                     TransactionBackend::Remote(transaction) => {
                         transaction.lock().await.row_conflicts(table, key).await
@@ -184,6 +201,13 @@ impl Transaction {
                     ))]
                     TransactionBackend::Embedded(transaction) => {
                         transaction.row_conflict_values(table, key).await
+                    }
+                    #[cfg(feature = "postgres")]
+                    TransactionBackend::Postgres(transaction) => {
+                        transaction
+                            .validate_keys(table, core::slice::from_ref(key))
+                            .await?;
+                        Ok(Vec::new())
                     }
                     #[cfg(feature = "remote")]
                     TransactionBackend::Remote(transaction) => {
@@ -228,6 +252,8 @@ impl Transaction {
                 all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
             ))]
             TransactionBackend::Embedded(transaction) => transaction.execute(statements).await,
+            #[cfg(feature = "postgres")]
+            TransactionBackend::Postgres(transaction) => transaction.execute(statements).await,
             #[cfg(feature = "remote")]
             TransactionBackend::Remote(transaction) => {
                 transaction.get_mut().execute(statements).await
@@ -267,6 +293,13 @@ impl Transaction {
             ))]
             TransactionBackend::Embedded(transaction) => {
                 transaction.execute_translated(translation).await
+            }
+            #[cfg(feature = "postgres")]
+            TransactionBackend::Postgres(transaction) => {
+                transaction.begin_translation()?;
+                let statements = translation.await?;
+                transaction.finish_translation();
+                transaction.execute(statements).await
             }
             #[cfg(feature = "remote")]
             TransactionBackend::Remote(transaction) => {
@@ -337,6 +370,8 @@ impl Transaction {
                     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
                 ))]
                 TransactionBackend::Embedded(transaction) => transaction.commit().await,
+                #[cfg(feature = "postgres")]
+                TransactionBackend::Postgres(transaction) => transaction.commit().await,
                 #[cfg(feature = "remote")]
                 TransactionBackend::Remote(transaction) => transaction.into_inner().commit().await,
             }
@@ -354,6 +389,8 @@ impl Transaction {
                     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
                 ))]
                 TransactionBackend::Embedded(transaction) => transaction.rollback().await,
+                #[cfg(feature = "postgres")]
+                TransactionBackend::Postgres(transaction) => transaction.rollback().await,
                 #[cfg(feature = "remote")]
                 TransactionBackend::Remote(transaction) => {
                     transaction.into_inner().rollback().await
@@ -365,6 +402,15 @@ impl Transaction {
 }
 
 impl Client {
+    /// Connects with explicit sslmode=disable. Use a Unix socket or trusted TLS tunnel.
+    #[cfg(feature = "postgres")]
+    pub async fn connect_postgres(config: &str) -> Result<Self, QueryError> {
+        Ok(Self {
+            backend: Backend::Postgres(crate::postgres::PostgresBackend::connect(config).await?),
+            request_deadline: None,
+        })
+    }
+
     /// Returns conflicted column names from one read snapshot.
     /// An empty result means no conflicts, not that the row exists or is authorized.
     #[inline(never)]
@@ -388,6 +434,13 @@ impl Client {
                         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
                     ))]
                     Backend::Embedded(database) => database.query_row_conflicts(table, key).await,
+                    #[cfg(feature = "postgres")]
+                    Backend::Postgres(client) => {
+                        client
+                            .validate_keys(table, core::slice::from_ref(key))
+                            .await?;
+                        Ok(Vec::new())
+                    }
                     #[cfg(feature = "remote")]
                     Backend::Remote(client) => client.row_conflicts(table, key).await,
                 }
@@ -425,6 +478,11 @@ impl Client {
                     Backend::Embedded(database) => {
                         database.query_row_conflicts_batch(table, keys).await
                     }
+                    #[cfg(feature = "postgres")]
+                    Backend::Postgres(client) => {
+                        client.validate_keys(table, keys).await?;
+                        Ok(vec![Vec::new(); keys.len()])
+                    }
                     #[cfg(feature = "remote")]
                     Backend::Remote(client) => client.row_conflicts_batch(table, keys).await,
                 }
@@ -458,6 +516,13 @@ impl Client {
                     ))]
                     Backend::Embedded(database) => {
                         database.query_row_conflict_values(table, key).await
+                    }
+                    #[cfg(feature = "postgres")]
+                    Backend::Postgres(client) => {
+                        client
+                            .validate_keys(table, core::slice::from_ref(key))
+                            .await?;
+                        Ok(Vec::new())
                     }
                     #[cfg(feature = "remote")]
                     Backend::Remote(client) => client.row_conflict_values(table, key).await,
@@ -494,6 +559,10 @@ impl Client {
                     Backend::Embedded(database) => {
                         database.query_resolve_row(table, key, values).await
                     }
+                    #[cfg(feature = "postgres")]
+                    Backend::Postgres(_) => Err(crate::postgres_statement::unsupported(
+                        "conflict resolution",
+                    )),
                     #[cfg(feature = "remote")]
                     Backend::Remote(client) => client.resolve_row(table, key, values).await,
                 }
@@ -512,6 +581,10 @@ impl Client {
                 ))]
                 Backend::Embedded(database) => {
                     TransactionBackend::Embedded(database.begin_transaction().await?)
+                }
+                #[cfg(feature = "postgres")]
+                Backend::Postgres(client) => {
+                    TransactionBackend::Postgres(client.transaction().await?)
                 }
                 #[cfg(feature = "remote")]
                 Backend::Remote(client) => {
@@ -622,6 +695,8 @@ impl Client {
                 all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
             ))]
             Backend::Embedded(database) => database.query_execute_untimed(statements).await,
+            #[cfg(feature = "postgres")]
+            Backend::Postgres(client) => client.execute(statements).await,
             #[cfg(feature = "remote")]
             Backend::Remote(client) => client.execute(statements).await,
         }
@@ -651,8 +726,9 @@ impl Client {
                         .query_translate_and_execute(query, translator)
                         .await
                 }
-                #[cfg(feature = "remote")]
-                Backend::Remote(_) => {
+                #[cfg(any(feature = "remote", feature = "postgres"))]
+                #[allow(unreachable_patterns)]
+                _ => {
                     let statements = translator.translate(query).await.map_err(|error| {
                         QueryError::new(
                             QueryErrorKind::Validation,
@@ -684,8 +760,9 @@ impl Client {
                         .query_translate_and_execute_with_params(query, params, translator)
                         .await
                 }
-                #[cfg(feature = "remote")]
-                Backend::Remote(_) => {
+                #[cfg(any(feature = "remote", feature = "postgres"))]
+                #[allow(unreachable_patterns)]
+                _ => {
                     let statements = translator
                         .translate_with_params(query, params)
                         .await
@@ -717,8 +794,9 @@ impl Client {
                 Backend::Embedded(database) => {
                     database.query_translate_and_select(query, translator).await
                 }
-                #[cfg(feature = "remote")]
-                Backend::Remote(_) => {
+                #[cfg(any(feature = "remote", feature = "postgres"))]
+                #[allow(unreachable_patterns)]
+                _ => {
                     let mut results = self
                         .translate_and_execute_untimed(query, translator)
                         .await?;
@@ -741,7 +819,7 @@ impl Client {
         .await
     }
 
-    #[cfg(feature = "remote")]
+    #[cfg(any(feature = "remote", feature = "postgres"))]
     async fn translate_and_execute_untimed<T: Translator>(
         &self,
         query: &str,

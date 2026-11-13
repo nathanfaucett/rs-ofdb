@@ -6,6 +6,7 @@ extern crate alloc;
 mod api;
 #[cfg(any(
     feature = "remote",
+    feature = "postgres",
     feature = "redb",
     feature = "in-memory",
     feature = "sync",
@@ -24,6 +25,7 @@ mod error;
     feature = "sql",
     any(
         feature = "remote",
+        feature = "postgres",
         feature = "redb",
         feature = "in-memory",
         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
@@ -34,6 +36,7 @@ mod migration;
     feature = "sql",
     any(
         feature = "remote",
+        feature = "postgres",
         feature = "redb",
         feature = "in-memory",
         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
@@ -44,6 +47,7 @@ pub use migration::{Migration, MigrationError, MigrationPhase, MigrationRecord, 
 pub use api::*;
 #[cfg(any(
     feature = "remote",
+    feature = "postgres",
     feature = "redb",
     feature = "in-memory",
     feature = "sync",
@@ -64,3 +68,10 @@ pub use history;
 
 #[cfg(feature = "redb")]
 pub use engine_redb::SharedDatabase;
+
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+mod postgres_statement;
+#[cfg(feature = "postgres")]
+pub use postgres_statement::PostgresStatement;

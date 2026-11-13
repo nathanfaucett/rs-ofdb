@@ -41,6 +41,7 @@ indexeddb = [
     "std",
 ]
 in-memory = ["dep:platform", "engine/in-memory", "dep:engine-automerge", "std"]
+postgres = ["dep:platform", "dep:tokio-postgres", "dep:serde_json", "dep:tokio", "tokio/rt", "value/serde_json", "std"]
 remote = ["dep:platform", "dep:client", "client/unix", "dep:tokio", "std"]
 server = ["dep:sql-server", "std"]
 native-stage = ["validated-history"]
@@ -78,6 +79,10 @@ value = { version = "0.1", package = "ofdb-value", path = "../value", default-fe
 ] }
 sql-server = { version = "0.1", package = "ofdb-sql-server", path = "../sql-server", default-features = false, features = [
 ], optional = true }
+
+# PostgreSQL
+serde_json = { version = "1.0", default-features = false, features = ["std"], optional = true }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-uuid-1", "with-serde_json-1"], optional = true }
 
 # External dependencies
 automerge = { version = "0.12", default-features = false, optional = true }
