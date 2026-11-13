@@ -1,3 +1,4 @@
+mod catalog_cache;
 mod codec;
 mod commit_invalidation;
 
