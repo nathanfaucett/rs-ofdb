@@ -14,6 +14,20 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::value::{parse_json, write_json};
 
+/// TypeScript interface for the sync transport that JavaScript must implement.
+/// The send method must return a Promise (async).
+#[wasm_bindgen(typescript_custom_section)]
+const TS_SYNC_TRANSPORT: &'static str = r#"
+export interface SqlSyncTransport {
+  send(data: Uint8Array): Promise<unknown>;
+  receive(): Promise<Uint8Array>;
+}
+export interface KvSyncTransport {
+  send(data: Uint8Array): Promise<unknown>;
+  receive(): Promise<Uint8Array>;
+}
+"#;
+
 /// Push sync configuration.
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
@@ -535,6 +549,7 @@ pub struct JsSqlSyncTransport {
 #[wasm_bindgen]
 impl JsPushSyncTransport {
     #[wasm_bindgen(constructor)]
+    #[wasm_bindgen(typescript_type = "SqlSyncTransport | KvSyncTransport")]
     pub fn new(transport: JsValue) -> Self {
         Self { inner: transport }
     }
@@ -555,6 +570,7 @@ impl From<JsPushSyncTransport> for JsSqlSyncTransport {
 #[wasm_bindgen]
 impl JsKvSyncTransport {
     #[wasm_bindgen(constructor)]
+    #[wasm_bindgen(typescript_type = "KvSyncTransport")]
     pub fn new(transport: JsValue) -> Self {
         Self { inner: JsPushSyncTransport::new(transport) }
     }
@@ -563,6 +579,7 @@ impl JsKvSyncTransport {
 #[wasm_bindgen]
 impl JsSqlSyncTransport {
     #[wasm_bindgen(constructor)]
+    #[wasm_bindgen(typescript_type = "SqlSyncTransport")]
     pub fn new(transport: JsValue) -> Self {
         Self { inner: JsPushSyncTransport::new(transport) }
     }

@@ -25,6 +25,17 @@ sync = [
     "std",
     "in-memory",
 ]
+wasm = [
+    "dep:platform",
+    "dep:sync",
+    "sync/wasm",
+    "dep:engine",
+    "dep:engine-automerge",
+    "dep:automerge",
+    "dep:btree",
+    "std",
+    "in-memory",
+]
 redb = [
     "dep:platform",
     "dep:engine",

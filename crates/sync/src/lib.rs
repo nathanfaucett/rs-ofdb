@@ -13,17 +13,20 @@ pub use protocol::{
 };
 pub use transport::SyncTransport;
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "std", not(feature = "wasm")))]
 mod sync;
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "std", not(feature = "wasm")))]
 pub use sync::{SynchronizeConfig, SynchronizeError, synchronize};
 
-#[cfg(all(feature = "std", target_arch = "wasm32"))]
+#[cfg(feature = "wasm")]
 mod wasm_sync;
 
-#[cfg(all(feature = "std", target_arch = "wasm32"))]
-pub use wasm_sync::{SynchronizeConfig, SynchronizeError, synchronize};
+#[cfg(feature = "wasm")]
+pub use wasm_sync::{
+    SynchronizeConfig, SynchronizeError, synchronize,
+    PushConfig, PushResult, PushMessage, PushSyncTransport, PushSynchronizeConfig, PushSynchronizeError,
+};
 
 #[cfg(feature = "iroh")]
 pub use iroh_transport::IrohTransport;

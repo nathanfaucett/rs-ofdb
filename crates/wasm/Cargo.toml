@@ -15,7 +15,7 @@ name = "ofdb_wasm"
 [features]
 default = ["indexeddb"]
 indexeddb = ["ofdb-kv/indexeddb", "ofdb-sql/indexeddb"]
-sync = ["ofdb-kv/sync", "ofdb-sql/sync", "indexeddb"]
+sync = ["ofdb-kv/wasm", "ofdb-sql/wasm", "indexeddb"]
 
 [dependencies]
 # Internal
@@ -29,7 +29,7 @@ ofdb-value = { version = "0.1", path = "../value", package = "ofdb-value", defau
 ofdb-btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
     "std",
 ] }
-ofdb-sync = { version = "0.1", path = "../sync", package = "ofdb-sync", default-features = false, features = [
+ofdb-sync = { version = "0.1", path = "../sync", package = "ofdb-sync", default-features = false, features = ["wasm", 
     "std",
 ] }
 
@@ -48,5 +48,3 @@ wasm-bindgen-test = { version = "0.3", default-features = false }
 [profile.release]
 panic = "unwind"
 
-[lints]
-workspace = true

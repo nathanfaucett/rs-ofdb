@@ -65,6 +65,17 @@ sync = [
     "dep:kv-store",
     "dep:uuid",
 ]
+wasm = [
+    "dep:postcard",
+    "dep:serde",
+    "dep:platform",
+    "std",
+    "dep:btree",
+    "dep:sync",
+    "sync/wasm",
+    "dep:kv-store",
+    "dep:uuid",
+]
 
 [dependencies]
 # Platform execution

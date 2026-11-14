@@ -699,7 +699,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -741,6 +740,8 @@ dependencies = [
  "ofdb-platform",
  "ofdb-sync",
  "ofdb-value",
+ "postcard",
+ "serde",
  "serde_json",
  "uuid",
 ]

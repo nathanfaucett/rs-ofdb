@@ -1,8 +1,8 @@
 // WASM-specific push synchronization using web-sys timers and futures::select!
 // Does not require tokio runtime.
 
-use crate::protocol::{Error, HelloConfig, PushConfig, PushMessage, PushResult};
-use crate::transport::PushSyncTransport;
+use crate::protocol::{Config, Error, HelloConfig, Message, SyncResult};
+use crate::transport::SyncTransport;
 use btree::{ChangeEvent, StorageKey};
 use core::future::Future;
 use core::pin::Pin;
@@ -16,6 +16,12 @@ use std::time::Duration;
 use thiserror::Error;
 use wasm_bindgen::prelude::*;
 use web_sys::window;
+
+// Type aliases for WASM compatibility (expected by ofdb-wasm crate)
+pub type PushConfig = Config;
+pub type PushMessage = Message;
+pub type PushResult = SyncResult;
+pub use crate::transport::SyncTransport as PushSyncTransport;
 
 /// Error during push synchronization.
 #[derive(Debug, Error)]
@@ -43,12 +49,17 @@ pub enum PushSynchronizeError<E> {
 impl<E> From<Error<E>> for PushSynchronizeError<E> {
     fn from(e: Error<E>) -> Self {
         PushSynchronizeError::Protocol(e)
+
+
+
     }
 }
 
 /// Configuration for push_synchronize.
 #[derive(Debug, Clone)]
 pub struct PushSynchronizeConfig {
+    /// Role in the synchronization (Initiator or Responder).
+    pub role: crate::SyncRole,
     /// Protocol configuration.
     pub protocol: PushConfig,
     /// Maximum time to wait for handshake.
@@ -68,6 +79,9 @@ impl Default for PushSynchronizeConfig {
             message_timeout: Duration::from_secs(30),
             send_done_on_exhaust: true,
         }
+
+
+
     }
 }
 
@@ -85,6 +99,9 @@ impl WasmSleep {
             handle: None,
             done: false,
         }
+
+
+
     }
 }
 
@@ -116,6 +133,9 @@ impl Future for WasmSleep {
         }
 
         Poll::Pending
+
+
+
     }
 }
 
@@ -126,6 +146,9 @@ impl Drop for WasmSleep {
                 let _ = window.clear_timeout_with_handle(handle);
             }
         }
+
+
+
     }
 }
 
@@ -145,6 +168,9 @@ where
     select! {
         res = future.fuse() => Ok(res),
         _ = timer.fuse() => Err(()),
+
+
+
     }
 }
 
@@ -193,23 +219,24 @@ where
             manifest_digest: [0; 32],
             config: config.protocol.clone(),
         });
-        let handshake = async {
+        // Perform handshake with timeout
+        let handshake_result = wasm_timeout(config.handshake_timeout, async {
             match config.role {
                 crate::SyncRole::Initiator => {
                     transport
                         .send(hello)
                         .await
-                        .map_err(SynchronizeError::Transport)?;
+                        .map_err(PushSynchronizeError::Transport)?;
                     match transport
                         .receive()
                         .await
-                        .map_err(SynchronizeError::Transport)?
+                        .map_err(PushSynchronizeError::Transport)?
                     {
                         Message::HelloAck {
                             protocol_version: 1,
                             accepted: true,
                         } => Ok(()),
-                        _ => Err(SynchronizeError::HandshakeFailed(
+                        _ => Err(PushSynchronizeError::HandshakeFailed(
                             "expected accepted version-one HelloAck".into(),
                         )),
                     }
@@ -219,7 +246,7 @@ where
                         transport
                             .receive()
                             .await
-                            .map_err(SynchronizeError::Transport)?,
+                            .map_err(PushSynchronizeError::Transport)?,
                         Message::Hello(crate::protocol::HelloConfig {
                             protocol_version: 1,
                             ..
@@ -231,23 +258,18 @@ where
                             accepted,
                         })
                         .await
-                        .map_err(SynchronizeError::Transport)?;
+                        .map_err(PushSynchronizeError::Transport)?;
                     if accepted {
                         Ok(())
                     } else {
-                        Err(SynchronizeError::HandshakeFailed(
+                        Err(PushSynchronizeError::HandshakeFailed(
                             "unsupported Hello".into(),
                         ))
                     }
                 }
             }
-        };
-        let timeout = platform::sleep(config.handshake_timeout);
-        futures::pin_mut!(handshake, timeout);
-        match futures::future::select(handshake, timeout).await {
-            futures::future::Either::Left((result, _)) => result?,
-            futures::future::Either::Right(_) => return Err(SynchronizeError::SessionTimeout),
-        }
+        }).await;
+        let _ = handshake_result.map_err(|_| PushSynchronizeError::SessionTimeout)?;
 
         // Main bidirectional loop using futures::select!
         loop {
@@ -267,7 +289,7 @@ where
                             local_generations.insert(event.key.clone(), generation);
                         outstanding.insert(event.key.clone(), generation);
 
-                            let msg = PushMessage::ChangeEvent(event);
+                            let msg = Message::ChangeEvent(event);
                             transport.send(msg).await
                                 .map_err(PushSynchronizeError::Transport)?;
                             result.events_sent += 1;
@@ -276,9 +298,7 @@ where
                         None => {
                             outbound_exhausted = true;
                             if config.send_done_on_exhaust && !sent_done {
-                                let done = PushMessage::Done {
-                                    final_generations: local_generations.clone(),
-                                };
+                                let done = Message::Done { final_generations: local_generations.clone() };
                                 transport.send(done).await
                                     .map_err(PushSynchronizeError::Transport)?;
                                 sent_done = true;
@@ -299,7 +319,7 @@ where
                         Ok(Ok(message)) => {
                             result.bytes_received += 1; // approximate
                             match message {
-                                PushMessage::ChangeEvent(event) => {
+                                Message::ChangeEvent(event) => {
                                     // Track remote generation
                                     let generation = event.generation;
                                     let key = event.key.clone();
@@ -315,45 +335,45 @@ where
 
                                     // Send ACK if immediate
                                     if config.protocol.immediate_ack {
-                                        let ack = PushMessage::Ack {
+                                        let ack = Message::Ack {
                                             acknowledgments: std::mem::take(&mut pending_acks),
                                         };
                                         transport.send(ack).await
                                             .map_err(PushSynchronizeError::Transport)?;
                                     }
                                 }
-                                PushMessage::SnapshotRequest { key: _, min_generation: _ } => {
+                                Message::SnapshotRequest { key: _, min_generation: _ } => {
                                     // TODO: Implement snapshot serving
                                     // For now, send Close to indicate we can't serve
-                                    let close = PushMessage::Close;
+                                    let close = Message::Close;
                                     transport.send(close).await
                                         .map_err(PushSynchronizeError::Transport)?;
                                 }
-                                PushMessage::Snapshot { key, blob, generation } => {
+                                Message::Snapshot { key, blob, generation } => {
                                     // Apply snapshot
                                     let event = ChangeEvent { key, blob, generation };
                                     apply_inbound(event).await
                                         .map_err(PushSynchronizeError::Apply)?;
                                     result.snapshots_received += 1;
                                 }
-                                PushMessage::Ack { acknowledgments } => {
+                                Message::Ack { acknowledgments } => {
                                     // Peer acknowledged our events
                                     for (key, _generation) in acknowledgments {
                                         pending_acks.remove(&key);
                                     }
                                 }
-                                PushMessage::Done { final_generations } => {
+                                Message::Done { final_generations } => {
                                     received_done = true;
                                     // Update remote generations with final values
                                     remote_generations.extend(final_generations);
                                 }
-                                PushMessage::Close => {
+                                Message::Close => {
                                     inbound_closed = true;
                                 }
-                                PushMessage::HelloAck { .. } => {
+                                Message::HelloAck { .. } => {
                                     // Ignore duplicate hello ack
                                 }
-                                PushMessage::Hello { .. } => {
+                                Message::Hello { .. } => {
                                     // Ignore duplicate hello
                                 }
                             }
@@ -375,7 +395,7 @@ where
                         wasm_sleep(Duration::from_millis(100)).await
                     }
                 }.fuse() => {
-                    let ack = PushMessage::Ack {
+                    let ack = Message::Ack {
                         acknowledgments: std::mem::take(&mut pending_acks),
                     };
                     transport.send(ack).await
@@ -384,7 +404,7 @@ where
 
                 // Termination check
                 _ = async {
-                    if outbound_exhausted && outstanding.is_empty() && (_received_done || inbound_closed) {
+                    if outbound_exhausted && outstanding.is_empty() && (received_done || inbound_closed) {
                         futures::future::ready(()).await
                     } else {
                         futures::future::pending().await
@@ -401,9 +421,7 @@ where
 
         // Send final DONE if not already sent
         if !sent_done {
-            let done = PushMessage::Done {
-                final_generations: local_generations,
-            };
+            let done = Message::Done { final_generations: local_generations.clone() };
             transport
                 .send(done)
                 .await
@@ -411,9 +429,32 @@ where
         }
 
         // Send final CLOSE
-        let close = PushMessage::Close;
+        let close = Message::Close;
         let _ = transport.send(close).await;
 
         Ok(result)
     }
 }
+
+/// Configuration for push_synchronize (re-export with expected name).
+pub type SynchronizeConfig = PushSynchronizeConfig;
+
+/// Type alias for error (re-export with expected name).
+pub type SynchronizeError<E> = PushSynchronizeError<E>;
+
+/// Run push-based synchronization (re-export with expected name).
+pub fn synchronize<T, F, S, Fut>(
+    transport: T,
+    outbound: S,
+    apply_inbound: F,
+    config: SynchronizeConfig,
+) -> impl Future<Output = Result<PushResult, PushSynchronizeError<T::Error>>>
+where
+    T: PushSyncTransport,
+    S: Stream<Item = ChangeEvent> + Unpin,
+    F: FnMut(ChangeEvent) -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    push_synchronize(transport, outbound, apply_inbound, config)
+}
+

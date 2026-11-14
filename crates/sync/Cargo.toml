@@ -16,6 +16,7 @@ name = "sync"
 default = ["std"]
 std = ["dep:tokio", "futures/std", "btree/std", "btree/changes"]
 iroh = ["dep:iroh", "std"]
+wasm = ["futures/std", "btree/std", "btree/changes", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 [dependencies]
 # Platform timers
@@ -49,11 +50,11 @@ tokio = { version = "1.0", default-features = false, features = [
 ], optional = true }
 iroh = { version = "1.4", default-features = false, optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2", default-features = false }
-wasm-bindgen-futures = { version = "0.4", default-features = false }
-js-sys = { version = "0.3", default-features = false }
-web-sys = { version = "0.3", default-features = false, features = ["Window"] }
+# WASM
+wasm-bindgen = { version = "0.2", default-features = false, optional = true }
+wasm-bindgen-futures = { version = "0.4", default-features = false, optional = true }
+js-sys = { version = "0.3", default-features = false, optional = true }
+web-sys = { version = "0.3", default-features = false, features = ["Window"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.0", default-features = false, features = [
