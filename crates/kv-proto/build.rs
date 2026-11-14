@@ -8,8 +8,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         use std::{env, path::PathBuf};
 
-        config =
-            config.file_descriptor_set_path(PathBuf::from(env::var("OUT_DIR")?).join("kv.bin"))
+        config = config.file_descriptor_set_path(PathBuf::from(env::var("OUT_DIR")?).join("kv.bin"));
     };
 
     config.compile_protos(&["proto/kv.proto"], &["proto"])?;

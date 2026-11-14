@@ -27,19 +27,19 @@ pub enum JsonValue {
     Bool(bool),
     Number(JsonNumber),
     String(String),
-    Array(Vec<JsonValue>),
-    Object(BTreeMap<String, JsonValue>),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
 }
 
 impl From<()> for JsonValue {
-    fn from(_: ()) -> Self {
-        JsonValue::Null
+    fn from((): ()) -> Self {
+        Self::Null
     }
 }
 
 impl From<bool> for JsonValue {
     fn from(b: bool) -> Self {
-        JsonValue::Bool(b)
+        Self::Bool(b)
     }
 }
 
@@ -48,29 +48,29 @@ where
     T: Into<JsonNumber>,
 {
     fn from(number: T) -> Self {
-        JsonValue::Number(number.into())
+        Self::Number(number.into())
     }
 }
 
 impl From<String> for JsonValue {
     fn from(s: String) -> Self {
-        JsonValue::String(s)
+        Self::String(s)
     }
 }
 
 impl From<&str> for JsonValue {
     fn from(s: &str) -> Self {
-        JsonValue::String(s.to_string())
+        Self::String(s.to_string())
     }
 }
 
 impl<K, V> FromIterator<(K, V)> for JsonValue
 where
     K: Into<String>,
-    V: Into<JsonValue>,
+    V: Into<Self>,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        JsonValue::Object(
+        Self::Object(
             iter.into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
@@ -80,10 +80,10 @@ where
 
 impl<T> FromIterator<T> for JsonValue
 where
-    T: Into<JsonValue>,
+    T: Into<Self>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        JsonValue::Array(iter.into_iter().map(Into::into).collect())
+        Self::Array(iter.into_iter().map(Into::into).collect())
     }
 }
 
@@ -91,16 +91,16 @@ where
 impl From<serde_json::Value> for JsonValue {
     fn from(value: serde_json::Value) -> Self {
         match value {
-            serde_json::Value::Null => JsonValue::Null,
-            serde_json::Value::Bool(b) => JsonValue::Bool(b),
-            serde_json::Value::Number(n) => JsonValue::Number(n.into()),
-            serde_json::Value::String(s) => JsonValue::String(s),
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(b) => Self::Bool(b),
+            serde_json::Value::Number(n) => Self::Number(n.into()),
+            serde_json::Value::String(s) => Self::String(s),
             serde_json::Value::Array(arr) => {
-                JsonValue::Array(arr.into_iter().map(JsonValue::from).collect())
+                Self::Array(arr.into_iter().map(Self::from).collect())
             }
-            serde_json::Value::Object(obj) => JsonValue::Object(
+            serde_json::Value::Object(obj) => Self::Object(
                 obj.into_iter()
-                    .map(|(k, v)| (k, JsonValue::from(v)))
+                    .map(|(k, v)| (k, Self::from(v)))
                     .collect(),
             ),
         }
@@ -159,25 +159,25 @@ mod conversion_tests {
 impl fmt::Display for JsonValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            JsonValue::Null => write!(f, "null"),
-            JsonValue::Bool(b) => write!(f, "{}", b),
-            JsonValue::Number(n) => write!(f, "{}", n),
-            JsonValue::String(s) => write!(f, "\"{}\"", s),
-            JsonValue::Array(arr) => {
+            Self::Null => write!(f, "null"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Number(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+            Self::Array(arr) => {
                 let items = arr
                     .iter()
-                    .map(|v| v.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "[{}]", items)
+                write!(f, "[{items}]")
             }
-            JsonValue::Object(obj) => {
+            Self::Object(obj) => {
                 let items = obj
                     .iter()
-                    .map(|(k, v)| format!("\"{}\": {}", k, v))
+                    .map(|(k, v)| format!("\"{k}\": {v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(f, "{{{}}}", items)
+                write!(f, "{{{items}}}")
             }
         }
     }

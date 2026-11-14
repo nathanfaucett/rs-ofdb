@@ -24,8 +24,8 @@ mod wasm_sync;
 
 #[cfg(feature = "wasm")]
 pub use wasm_sync::{
-    SynchronizeConfig, SynchronizeError, synchronize,
-    PushConfig, PushResult, PushMessage, PushSyncTransport, PushSynchronizeConfig, PushSynchronizeError,
+    PushConfig, PushMessage, PushResult, PushSyncTransport, PushSynchronizeConfig,
+    PushSynchronizeError, SynchronizeConfig, SynchronizeError, synchronize,
 };
 
 #[cfg(feature = "iroh")]

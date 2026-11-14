@@ -49,9 +49,6 @@ pub enum PushSynchronizeError<E> {
 impl<E> From<Error<E>> for PushSynchronizeError<E> {
     fn from(e: Error<E>) -> Self {
         PushSynchronizeError::Protocol(e)
-
-
-
     }
 }
 
@@ -79,9 +76,6 @@ impl Default for PushSynchronizeConfig {
             message_timeout: Duration::from_secs(30),
             send_done_on_exhaust: true,
         }
-
-
-
     }
 }
 
@@ -99,9 +93,6 @@ impl WasmSleep {
             handle: None,
             done: false,
         }
-
-
-
     }
 }
 
@@ -133,9 +124,6 @@ impl Future for WasmSleep {
         }
 
         Poll::Pending
-
-
-
     }
 }
 
@@ -146,9 +134,6 @@ impl Drop for WasmSleep {
                 let _ = window.clear_timeout_with_handle(handle);
             }
         }
-
-
-
     }
 }
 
@@ -268,7 +253,8 @@ where
                     }
                 }
             }
-        }).await;
+        })
+        .await;
         let _ = handshake_result.map_err(|_| PushSynchronizeError::SessionTimeout)?;
 
         // Main bidirectional loop using futures::select!
@@ -421,7 +407,9 @@ where
 
         // Send final DONE if not already sent
         if !sent_done {
-            let done = Message::Done { final_generations: local_generations.clone() };
+            let done = Message::Done {
+                final_generations: local_generations.clone(),
+            };
             transport
                 .send(done)
                 .await
@@ -457,4 +445,3 @@ where
 {
     push_synchronize(transport, outbound, apply_inbound, config)
 }
-

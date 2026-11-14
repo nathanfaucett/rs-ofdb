@@ -373,7 +373,7 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction")
+                tx.commit().await.expect("commit transaction");
             };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
@@ -381,7 +381,7 @@ mod tests {
                     .await
                     .expect("insert value in transaction");
                 tx.remove(&1).await.expect("remove failed");
-                tx.rollback().await.expect("rollback transaction")
+                tx.rollback().await.expect("rollback transaction");
             };
             assert_eq!(store.get(&1).await.expect("get failed"), Some(100));
             assert_eq!(store.get(&2).await.expect("get failed"), None);
@@ -400,7 +400,7 @@ mod tests {
                 tx.insert(3, 300)
                     .await
                     .expect("insert second value into store");
-                tx.commit().await.expect("commit transaction")
+                tx.commit().await.expect("commit transaction");
             };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
@@ -430,7 +430,7 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction")
+                tx.commit().await.expect("commit transaction");
             };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
@@ -450,7 +450,7 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction")
+                tx.commit().await.expect("commit transaction");
             };
             {
                 let mut tx = store.transaction().await.expect("start transaction");

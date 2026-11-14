@@ -36,84 +36,85 @@ pub enum Value {
 }
 
 impl From<()> for Value {
-    fn from(_: ()) -> Self {
-        Value::Null
+    fn from((): ()) -> Self {
+        Self::Null
     }
 }
 
 impl From<ValueType> for Value {
     fn from(value_type: ValueType) -> Self {
-        Value::Type(value_type)
+        Self::Type(value_type)
     }
 }
 
 impl From<Uuid> for Value {
     fn from(uuid: Uuid) -> Self {
-        Value::Uuid(uuid)
+        Self::Uuid(uuid)
     }
 }
 
 impl From<bool> for Value {
     fn from(b: bool) -> Self {
-        Value::Bool(b)
+        Self::Bool(b)
     }
 }
 
 impl From<i64> for Value {
     fn from(i: i64) -> Self {
-        Value::Integer(i)
+        Self::Integer(i)
     }
 }
 
 impl From<f64> for Value {
     fn from(f: f64) -> Self {
-        Value::Float(f)
+        Self::Float(f)
     }
 }
 
 impl From<String> for Value {
     fn from(s: String) -> Self {
-        Value::Text(s)
+        Self::Text(s)
     }
 }
 
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
-        Value::Text(s.to_string())
+        Self::Text(s.to_string())
     }
 }
 
 impl From<Vec<u8>> for Value {
     fn from(bytes: Vec<u8>) -> Self {
-        Value::Blob(bytes)
+        Self::Blob(bytes)
     }
 }
 
 impl From<JsonValue> for Value {
     fn from(json: JsonValue) -> Self {
-        Value::Json(json)
+        Self::Json(json)
     }
 }
 
 #[cfg(feature = "serde_json")]
 impl From<serde_json::Value> for Value {
     fn from(json: serde_json::Value) -> Self {
-        Value::Json(JsonValue::from(json))
+        Self::Json(JsonValue::from(json))
     }
 }
 
 impl Value {
-    pub fn r#type(&self) -> ValueType {
+    #[must_use]
+    pub const fn r#type(&self) -> ValueType {
         match self {
-            Value::Null => ValueType::Null,
-            Value::Type(_) => ValueType::Type,
-            Value::Uuid(_) => ValueType::Uuid,
-            Value::Bool(_) => ValueType::Bool,
-            Value::Integer(_) => ValueType::Integer,
-            Value::Float(_) => ValueType::Float,
-            Value::Text(_) => ValueType::Text,
-            Value::Blob(_) => ValueType::Blob,
-            Value::Json(_) => ValueType::Json,
+            Self::Null => ValueType::Null,
+            Self::Type(_) => ValueType::Type,
+            Self::Uuid(_) => ValueType::Uuid,
+            Self::Bool(_) => ValueType::Bool,
+            Self::Integer(_) => ValueType::Integer,
+            Self::Float(_) => ValueType::Float,
+            Self::Text(_) => ValueType::Text,
+            Self::Blob(_) => ValueType::Blob,
+            Self::Json(_) => ValueType::Json,
         }
     }
 }
@@ -121,15 +122,15 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Value::Null, Value::Null) => true,
-            (Value::Type(a), Value::Type(b)) => a == b,
-            (Value::Uuid(a), Value::Uuid(b)) => a == b,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Integer(a), Value::Integer(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-            (Value::Text(a), Value::Text(b)) => a == b,
-            (Value::Blob(a), Value::Blob(b)) => a == b,
-            (Value::Json(a), Value::Json(b)) => a == b,
+            (Self::Null, Self::Null) => true,
+            (Self::Type(a), Self::Type(b)) => a == b,
+            (Self::Uuid(a), Self::Uuid(b)) => a == b,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Integer(a), Self::Integer(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Text(a), Self::Text(b)) => a == b,
+            (Self::Blob(a), Self::Blob(b)) => a == b,
+            (Self::Json(a), Self::Json(b)) => a == b,
             _ => false,
         }
     }
@@ -142,15 +143,15 @@ impl Hash for Value {
         self.r#type().hash(state);
 
         match self {
-            Value::Null => {}
-            Value::Type(value_type) => value_type.hash(state),
-            Value::Uuid(bytes) => bytes.hash(state),
-            Value::Bool(value) => value.hash(state),
-            Value::Integer(value) => value.hash(state),
-            Value::Float(value) => value.to_bits().hash(state),
-            Value::Text(text) => text.hash(state),
-            Value::Json(value) => value.hash(state),
-            Value::Blob(bytes) => bytes.hash(state),
+            Self::Null => {}
+            Self::Type(value_type) => value_type.hash(state),
+            Self::Uuid(bytes) => bytes.hash(state),
+            Self::Bool(value) => value.hash(state),
+            Self::Integer(value) => value.hash(state),
+            Self::Float(value) => value.to_bits().hash(state),
+            Self::Text(text) => text.hash(state),
+            Self::Json(value) => value.hash(state),
+            Self::Blob(bytes) => bytes.hash(state),
         }
     }
 }
@@ -164,15 +165,15 @@ impl PartialOrd for Value {
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Value::Null, Value::Null) => Ordering::Equal,
-            (Value::Type(a), Value::Type(b)) => a.rank().cmp(&b.rank()),
-            (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
-            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-            (Value::Text(a), Value::Text(b)) => a.cmp(b),
-            (Value::Json(a), Value::Json(b)) => a.to_string().cmp(&b.to_string()),
-            (Value::Blob(a), Value::Blob(b)) => a.cmp(b),
-            (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.to_bits().cmp(&b.to_bits()),
+            (Self::Null, Self::Null) => Ordering::Equal,
+            (Self::Type(a), Self::Type(b)) => a.rank().cmp(&b.rank()),
+            (Self::Uuid(a), Self::Uuid(b)) => a.cmp(b),
+            (Self::Bool(a), Self::Bool(b)) => a.cmp(b),
+            (Self::Text(a), Self::Text(b)) => a.cmp(b),
+            (Self::Json(a), Self::Json(b)) => a.to_string().cmp(&b.to_string()),
+            (Self::Blob(a), Self::Blob(b)) => a.cmp(b),
+            (Self::Integer(a), Self::Integer(b)) => a.cmp(b),
+            (Self::Float(a), Self::Float(b)) => a.to_bits().cmp(&b.to_bits()),
             // Different variants — deterministic ordering by variant rank
             _ => self.r#type().rank().cmp(&other.r#type().rank()),
         }
@@ -180,82 +181,90 @@ impl Ord for Value {
 }
 
 impl Value {
-    pub fn as_null(&self) -> Option<()> {
+    #[must_use]
+    pub const fn as_null(&self) -> Option<()> {
         match self {
-            Value::Null => Some(()),
+            Self::Null => Some(()),
             _ => None,
         }
     }
 
-    pub fn as_type(&self) -> Option<&ValueType> {
+    #[must_use]
+    pub const fn as_type(&self) -> Option<&ValueType> {
         match self {
-            Value::Type(value_type) => Some(value_type),
+            Self::Type(value_type) => Some(value_type),
             _ => None,
         }
     }
 
-    pub fn to_type(&self) -> Option<ValueType> {
-        self.as_type().cloned()
+    #[must_use]
+    pub const fn to_type(&self) -> Option<ValueType> {
+        self.as_type().copied()
     }
 
-    pub fn as_uuid(&self) -> Option<&Uuid> {
+    #[must_use]
+    pub const fn as_uuid(&self) -> Option<&Uuid> {
         match self {
-            Value::Uuid(uuid) => Some(uuid),
+            Self::Uuid(uuid) => Some(uuid),
             _ => None,
         }
     }
 
-    pub fn to_uuid(&self) -> Option<Uuid> {
+    #[must_use]
+    pub const fn to_uuid(&self) -> Option<Uuid> {
         match self {
-            Value::Uuid(uuid) => Some(*uuid),
+            Self::Uuid(uuid) => Some(*uuid),
             _ => None,
         }
     }
 
-    pub fn as_bool(&self) -> Option<bool> {
+    #[must_use]
+    pub const fn as_bool(&self) -> Option<bool> {
         match self {
-            Value::Bool(b) => Some(*b),
+            Self::Bool(b) => Some(*b),
             _ => None,
         }
     }
 
-    pub fn to_bool(&self) -> Option<bool> {
+    #[must_use]
+    pub const fn to_bool(&self) -> Option<bool> {
         self.as_bool()
     }
 
+    #[must_use]
     pub fn as_integer(&self) -> Option<i64> {
         match self {
-            Value::Integer(i) => Some(*i),
-            Value::Float(f) => {
-                if f.is_finite() && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
-                    Some(*f as i64)
-                } else {
-                    None
-                }
+            Self::Integer(i) => Some(*i),
+            Self::Float(f) => {
+                (f.is_finite() && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64)).then_some(*f as i64)
             }
             _ => None,
         }
     }
 
+    #[must_use]
     pub fn to_integer(&self) -> Option<i64> {
         self.as_integer()
     }
 
-    pub fn as_float(&self) -> Option<f64> {
+    #[must_use]
+    pub const fn as_float(&self) -> Option<f64> {
         match self {
-            Value::Float(f) => Some(*f),
-            Value::Integer(i) => Some(*i as f64),
+            Self::Float(f) => Some(*f),
+            Self::Integer(i) => Some(*i as f64),
             _ => None,
         }
     }
 
-    pub fn to_float(&self) -> Option<f64> {
+    #[must_use]
+    pub const fn to_float(&self) -> Option<f64> {
         self.as_float()
     }
 
-    pub fn as_text(&self) -> Option<&str> {
+    #[must_use]
+    pub const fn as_text(&self) -> Option<&str> {
         match self {
-            Value::Text(s) => Some(s.as_str()),
+            Self::Text(s) => Some(s.as_str()),
             _ => None,
         }
     }
@@ -264,24 +273,28 @@ impl Value {
         self.as_text().map(str::to_string)
     }
 
-    pub fn as_blob(&self) -> Option<&[u8]> {
+    #[must_use]
+    pub const fn as_blob(&self) -> Option<&[u8]> {
         match self {
-            Value::Blob(b) => Some(b.as_slice()),
+            Self::Blob(b) => Some(b.as_slice()),
             _ => None,
         }
     }
 
+    #[must_use]
     pub fn to_blob(&self) -> Option<Vec<u8>> {
-        self.as_blob().map(|blob| blob.to_vec())
+        self.as_blob().map(<[u8]>::to_vec)
     }
 
-    pub fn as_json(&self) -> Option<&JsonValue> {
+    #[must_use]
+    pub const fn as_json(&self) -> Option<&JsonValue> {
         match self {
-            Value::Json(j) => Some(j),
+            Self::Json(j) => Some(j),
             _ => None,
         }
     }
 
+    #[must_use]
     pub fn to_json(&self) -> Option<JsonValue> {
         self.as_json().cloned()
     }
@@ -300,7 +313,8 @@ pub struct Row {
 }
 
 impl Row {
-    pub fn new(values: Vec<Value>) -> Self {
+    #[must_use]
+    pub const fn new(values: Vec<Value>) -> Self {
         Self { values }
     }
 }
@@ -346,7 +360,8 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    pub fn rank(&self) -> u8 {
+    #[must_use]
+    pub const fn rank(&self) -> u8 {
         *self as u8
     }
 }
@@ -366,7 +381,7 @@ impl PartialOrd for ValueType {
 #[cfg(feature = "redb")]
 impl redb::Value for Value {
     type SelfType<'a>
-        = Value
+        = Self
     where
         Self: 'a;
 
@@ -408,7 +423,7 @@ impl redb::Key for Value {
 #[cfg(feature = "redb")]
 impl redb::Value for Row {
     type SelfType<'a>
-        = Row
+        = Self
     where
         Self: 'a;
 
