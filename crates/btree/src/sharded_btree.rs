@@ -23,7 +23,7 @@ pub trait Sharder<K>: MaybeSync + MaybeSend {
     fn shard(&self, key: &K) -> Self::Key;
 }
 
-/// Creates a concrete BTree for a given routing token.
+/// Creates a concrete `BTree` for a given routing token.
 pub trait BTreeShardFactory<K, V, Key>: MaybeSend + MaybeSync
 where
     K: BTreeKey + MaybeSend + MaybeSync,
@@ -40,7 +40,7 @@ where
     fn delete(&self, token: &Key) -> impl Future<Output = BTreeResult<()>> + MaybeSend;
 }
 
-/// A Sharded BTree that supports a dynamic number of shards.
+/// A Sharded `BTree` that supports a dynamic number of shards.
 pub struct ShardedBTree<K, V, F, S>
 where
     K: BTreeKey + MaybeSend + MaybeSync,
@@ -174,7 +174,7 @@ where
     F: BTreeShardFactory<K, V, S::Key> + 'static,
     S: Sharder<K> + 'static,
 {
-    /// Resolves an existing transaction or lazily initializes a new BTree shard using `B::default()`
+    /// Resolves an existing transaction or lazily initializes a new `BTree` shard using `B::default()`
     async fn get_or_create_transaction(
         &self,
         token: S::Key,
@@ -222,7 +222,7 @@ where
             }
 
             let mut items = BTreeMap::new();
-            for entry in self.transactions.iter() {
+            for entry in &self.transactions {
                 let s = entry.value().range(range.clone());
                 pin_mut!(s);
 
@@ -294,14 +294,14 @@ where
     }
 
     async fn commit(self) -> BTreeResult<()> {
-        for (_, tx) in self.transactions.into_iter() {
+        for (_, tx) in self.transactions {
             tx.commit().await?;
         }
         Ok(())
     }
 
     async fn rollback(self) -> BTreeResult<()> {
-        for (_, tx) in self.transactions.into_iter() {
+        for (_, tx) in self.transactions {
             tx.rollback().await?;
         }
         Ok(())

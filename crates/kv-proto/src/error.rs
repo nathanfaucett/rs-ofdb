@@ -31,6 +31,7 @@ impl TryFrom<u8> for ErrorKind {
     }
 }
 
+#[must_use]
 pub fn encode_error_details(kind: ErrorKind, message: &str) -> Vec<u8> {
     let mut details = Vec::with_capacity(ERROR_PREFIX.len() + 1 + message.len());
     details.extend_from_slice(ERROR_PREFIX);
@@ -39,6 +40,7 @@ pub fn encode_error_details(kind: ErrorKind, message: &str) -> Vec<u8> {
     details
 }
 
+#[must_use]
 pub fn decode_error_details(details: &[u8]) -> Option<(ErrorKind, &str)> {
     let payload = details.strip_prefix(ERROR_PREFIX)?;
     let (&kind, message) = payload.split_first()?;

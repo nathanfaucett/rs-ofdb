@@ -9,6 +9,7 @@ use value::{JsonNumber as DomainJsonNumber, JsonValue as DomainJsonValue, Value 
 
 use tonic::Status;
 
+#[must_use]
 pub fn value_to_proto(value: DomainValue) -> ProtoValue {
     let kind = match value {
         DomainValue::Null => proto_value::Kind::Null(()),
@@ -31,7 +32,7 @@ pub fn value_from_proto(value: ProtoValue) -> Result<DomainValue, Status> {
         .kind
         .ok_or_else(|| Status::invalid_argument("missing Value kind"))?;
     match kind {
-        proto_value::Kind::Null(_) => Ok(DomainValue::Null),
+        proto_value::Kind::Null(()) => Ok(DomainValue::Null),
         proto_value::Kind::Type(value_type) => {
             let value_type = ProtoValueType::try_from(value_type)
                 .map_err(|_| Status::invalid_argument("unknown ValueType"))?;
@@ -51,7 +52,7 @@ pub fn value_from_proto(value: ProtoValue) -> Result<DomainValue, Status> {
     }
 }
 
-fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
+const fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     match value_type {
         value::ValueType::Null => ProtoValueType::Null,
         value::ValueType::Type => ProtoValueType::Type,
@@ -65,7 +66,7 @@ fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     }
 }
 
-fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
+const fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
     match value_type {
         ProtoValueType::Null => Some(value::ValueType::Null),
         ProtoValueType::Type => Some(value::ValueType::Type),
@@ -80,7 +81,7 @@ fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType>
     }
 }
 
-fn json_number_to_proto(number: DomainJsonNumber) -> ProtoJsonNumber {
+const fn json_number_to_proto(number: DomainJsonNumber) -> ProtoJsonNumber {
     let kind = match number {
         DomainJsonNumber::I64(value) => json_number::Kind::I64(value),
         DomainJsonNumber::U64(value) => json_number::Kind::U64(value),
@@ -127,7 +128,7 @@ fn json_from_proto(value: ProtoJsonValue) -> Result<DomainJsonValue, Status> {
         .kind
         .ok_or_else(|| Status::invalid_argument("missing JsonValue kind"))?
     {
-        json_value::Kind::Null(_) => Ok(DomainJsonValue::Null),
+        json_value::Kind::Null(()) => Ok(DomainJsonValue::Null),
         json_value::Kind::BoolValue(value) => Ok(DomainJsonValue::Bool(value)),
         json_value::Kind::Number(value) => {
             json_number_from_proto(value).map(DomainJsonValue::Number)
@@ -211,7 +212,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_invalid_and_old_wire_values() {
-        assert!(required_value(None).is_err());
+        required_value(None).unwrap_err();
         for kind in [
             None,
             Some(proto_value::Kind::Type(0)),
@@ -219,7 +220,7 @@ mod tests {
             Some(proto_value::Kind::Uuid(vec![0])),
             Some(proto_value::Kind::Json(kvdb::JsonValue { kind: None })),
         ] {
-            assert!(value_from_proto(kvdb::Value { kind }).is_err());
+            value_from_proto(kvdb::Value { kind }).unwrap_err();
         }
         let duplicate = kvdb::JsonObjectEntry {
             key: "same".into(),
@@ -234,10 +235,10 @@ mod tests {
                 })),
             })),
         };
-        assert!(value_from_proto(value).is_err());
+        value_from_proto(value).unwrap_err();
         // The old bytes field is reserved, not interpreted as a typed value.
         let old = [0x12, 0x03, 1, 2, 3];
         let request = kvdb::SetRequest::decode(old.as_slice()).expect("decode unknown old field");
-        assert!(required_value(request.value).is_err());
+        required_value(request.value).unwrap_err();
     }
 }

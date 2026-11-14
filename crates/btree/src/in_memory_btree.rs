@@ -21,12 +21,14 @@ pub struct InMemoryBTree<K, V> {
 }
 
 impl<K, V> InMemoryBTree<K, V> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
+    #[must_use]
     pub fn with_map(map: BTreeMap<K, V>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(map)),
@@ -73,10 +75,10 @@ pub enum InMemoryTransactionPatchEntry<V> {
 }
 
 impl<V> InMemoryTransactionPatchEntry<V> {
-    pub fn as_option(&self) -> Option<&V> {
+    pub const fn as_option(&self) -> Option<&V> {
         match self {
-            InMemoryTransactionPatchEntry::Present(value) => Some(value),
-            InMemoryTransactionPatchEntry::Deleted => None,
+            Self::Present(value) => Some(value),
+            Self::Deleted => None,
         }
     }
 }
@@ -214,15 +216,15 @@ where
 {
     struct RangeBoundsRef<'a, R>(&'a R);
 
-    impl<'a, R> Copy for RangeBoundsRef<'a, R> {}
+    impl<R> Copy for RangeBoundsRef<'_, R> {}
 
-    impl<'a, R> Clone for RangeBoundsRef<'a, R> {
+    impl<R> Clone for RangeBoundsRef<'_, R> {
         fn clone(&self) -> Self {
             *self
         }
     }
 
-    impl<'a, T: ?Sized, R> RangeBounds<T> for RangeBoundsRef<'a, R>
+    impl<T: ?Sized, R> RangeBounds<T> for RangeBoundsRef<'_, R>
     where
         R: RangeBounds<T>,
     {
@@ -300,7 +302,7 @@ where
         F: FnOnce(&mut V) -> BTreeResult<()>,
     {
         if let Some(value) = self.patch.get(&*self.inner.read().await, &key) {
-            let mut value_clone = value.clone();
+            let mut value_clone = value;
             update_fn(&mut value_clone)?;
             self.patch.insert(key.clone(), value_clone);
             Ok(Some(()))
@@ -328,7 +330,7 @@ where
     }
 
     async fn commit(self) -> BTreeResult<()> {
-        let InMemoryBTreeTransaction { inner, patch } = self;
+        let Self { inner, patch } = self;
         patch.commit(&mut *inner.write().await);
         Ok(())
     }
@@ -371,16 +373,16 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction");
-            }
+                tx.commit().await.expect("commit transaction")
+            };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
                 tx.insert(2, 200)
                     .await
                     .expect("insert value in transaction");
                 tx.remove(&1).await.expect("remove failed");
-                tx.rollback().await.expect("rollback transaction");
-            }
+                tx.rollback().await.expect("rollback transaction")
+            };
             assert_eq!(store.get(&1).await.expect("get failed"), Some(100));
             assert_eq!(store.get(&2).await.expect("get failed"), None);
         });
@@ -398,8 +400,8 @@ mod tests {
                 tx.insert(3, 300)
                     .await
                     .expect("insert second value into store");
-                tx.commit().await.expect("commit transaction");
-            }
+                tx.commit().await.expect("commit transaction")
+            };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
                 tx.insert(2, 200)
@@ -428,8 +430,8 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction");
-            }
+                tx.commit().await.expect("commit transaction")
+            };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
                 tx.remove(&1).await.expect("remove failed");
@@ -448,8 +450,8 @@ mod tests {
                 tx.insert(1, 100)
                     .await
                     .expect("insert initial value into store");
-                tx.commit().await.expect("commit transaction");
-            }
+                tx.commit().await.expect("commit transaction")
+            };
             {
                 let mut tx = store.transaction().await.expect("start transaction");
                 tx.insert(2, 200)

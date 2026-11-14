@@ -31,16 +31,18 @@ pub struct StorageKey {
 }
 
 impl StorageKey {
-    /// Create a StorageKey for KV (empty table).
-    pub fn kv(key: Vec<u8>) -> Self {
+    /// Create a `StorageKey` for KV (empty table).
+    #[must_use]
+    pub const fn kv(key: Vec<u8>) -> Self {
         Self {
             table: String::new(),
             key,
         }
     }
 
-    /// Create a StorageKey for SQL (with table name).
-    pub fn sql(table: String, key: Vec<u8>) -> Self {
+    /// Create a `StorageKey` for SQL (with table name).
+    #[must_use]
+    pub const fn sql(table: String, key: Vec<u8>) -> Self {
         Self { table, key }
     }
 }
@@ -50,7 +52,7 @@ impl StorageKey {
 pub struct ChangeEvent {
     /// Logical key: table (SQL) or empty (KV), plus row/document key
     pub key: StorageKey,
-    /// Raw Automerge change bytes (change.raw_bytes())
+    /// Raw Automerge change bytes (`change.raw_bytes()`)
     pub blob: Vec<u8>,
     /// Optional: generation/version for ordering
     pub generation: u64,
@@ -77,6 +79,7 @@ impl Default for ChangeSignal {
 }
 
 impl ChangeSignal {
+    #[must_use]
     pub fn subscribe(&self) -> ChangeSubscription {
         ChangeSubscription {
             sources: vec![Source {
@@ -188,6 +191,7 @@ pub struct ChangeWork {
 }
 
 impl ChangeWork {
+    #[must_use]
     pub fn invalidations(&self) -> &[StorageInvalidation] {
         &self.invalidations
     }
@@ -222,6 +226,7 @@ impl Clone for ChangeSubscription {
 }
 
 impl ChangeSubscription {
+    #[must_use]
     pub fn merge(mut self, other: Self) -> Self {
         self.sources.extend(other.sources);
         self.identity = Arc::new(());
@@ -231,6 +236,7 @@ impl ChangeSubscription {
     /// Capture work before opening the reconciliation read snapshot. Commits after selection
     /// remain pending even if visible in that snapshot. Re-selecting without ack retries work.
     #[deprecated(since = "0.1.0", note = "use events() stream instead")]
+    #[must_use]
     pub fn select(&self) -> Option<ChangeWork> {
         let mut invalidations = Vec::new();
         let mut watermarks = Vec::new();
@@ -315,9 +321,9 @@ impl ChangeSubscription {
         Ok(())
     }
 
-    /// Returns a stream of ChangeEvent. No select/acknowledge needed.
+    /// Returns a stream of `ChangeEvent`. No select/acknowledge needed.
     /// Each event is delivered exactly once per subscription.
-    pub fn events(&mut self) -> EventStream<'_> {
+    pub const fn events(&mut self) -> EventStream<'_> {
         EventStream {
             sources: &mut self.sources,
             delivered_any: false,
@@ -349,14 +355,14 @@ impl ChangeSubscription {
     }
 }
 
-/// Stream of ChangeEvent returned by ChangeSubscription::events().
+/// Stream of `ChangeEvent` returned by `ChangeSubscription::events()`.
 pub struct EventStream<'a> {
     sources: &'a mut Vec<Source>,
     /// Tracks whether this stream has delivered any events in its lifetime.
     delivered_any: bool,
 }
 
-impl<'a> Stream for EventStream<'a> {
+impl Stream for EventStream<'_> {
     type Item = ChangeEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -408,7 +414,7 @@ impl<'a> Stream for EventStream<'a> {
 
         // Poll each future to register waker
         match Pin::new(&mut waiting).poll_next(cx) {
-            Poll::Ready(Some(Ok(_))) => {
+            Poll::Ready(Some(Ok(()))) => {
                 // New changes available, will be delivered on next poll
                 Poll::Pending
             }

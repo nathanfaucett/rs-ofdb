@@ -5,6 +5,7 @@ pub fn unix_millis() -> i64 {
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[must_use]
 pub fn unix_millis() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
