@@ -50,3 +50,6 @@ uuid = { version = "1.29", default-features = false, features = [
     "v7",
     "serde",
 ] }
+
+[lints]
+workspace = true

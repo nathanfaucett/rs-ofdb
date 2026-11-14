@@ -45,3 +45,6 @@ serde-wasm-bindgen = { version = "0.6", default-features = false, features = [
 ], optional = true }
 wasm-bindgen = { version = "0.2", default-features = false, features = [
 ], optional = true }
+
+[lints]
+workspace = true

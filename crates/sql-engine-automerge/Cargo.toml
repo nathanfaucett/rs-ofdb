@@ -55,3 +55,6 @@ futures = { version = "0.3", default-features = false, features = [
     "executor",
 ] }
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
+
+[lints]
+workspace = true

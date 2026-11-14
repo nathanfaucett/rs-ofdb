@@ -35,3 +35,6 @@ ofdb-sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-fea
 [[test]]
 name = "cli"
 required-features = ["in-memory", "remote"]
+
+[lints]
+workspace = true

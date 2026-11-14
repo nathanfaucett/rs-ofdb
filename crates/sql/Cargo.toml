@@ -150,3 +150,6 @@ path = "../sql-history"
 default-features = false
 features = ["native-stage"]
 optional = true
+
+[lints]
+workspace = true

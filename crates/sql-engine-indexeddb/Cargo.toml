@@ -16,3 +16,6 @@ engine = { version = "0.1", path = "../sql-engine", package = "ofdb-sql-engine",
 
 # Streams
 futures = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

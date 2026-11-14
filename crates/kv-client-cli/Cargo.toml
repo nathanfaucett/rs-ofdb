@@ -34,3 +34,6 @@ ofdb-kv = { version = "0.1", package = "ofdb-kv", path = "../kv", default-featur
 [[test]]
 name = "cli"
 required-features = ["remote", "redb"]
+
+[lints]
+workspace = true

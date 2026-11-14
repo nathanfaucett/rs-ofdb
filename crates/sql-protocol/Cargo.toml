@@ -20,3 +20,6 @@ uuid = { version = "1.0", default-features = false, features = [] }
 
 [features]
 default = []
+
+[lints]
+workspace = true

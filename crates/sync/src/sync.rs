@@ -162,7 +162,7 @@ where
 
     // Main bidirectional loop
     let mut outbound_exhausted = false;
-    let mut inbound_closed = false;
+    let inbound_closed = false;
 
     loop {
         tokio::select! {

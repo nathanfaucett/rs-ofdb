@@ -22,3 +22,6 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 [features]
 default = []
 unix = []
+
+[lints]
+workspace = true

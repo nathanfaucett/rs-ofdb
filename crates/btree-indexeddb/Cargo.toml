@@ -23,3 +23,6 @@ futures = { version = "0.3", default-features = false, features = [
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+
+[lints]
+workspace = true

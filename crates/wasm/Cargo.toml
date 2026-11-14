@@ -47,3 +47,6 @@ wasm-bindgen-test = { version = "0.3", default-features = false }
 
 [profile.release]
 panic = "unwind"
+
+[lints]
+workspace = true

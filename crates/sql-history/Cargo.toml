@@ -98,3 +98,6 @@ path = "../btree"
 default-features = false
 features = ["std"]
 optional = true
+
+[lints]
+workspace = true

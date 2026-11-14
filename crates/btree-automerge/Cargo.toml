@@ -44,7 +44,6 @@ serde = { version = "1.0", default-features = false, features = [
     "std",
     "derive",
 ] }
-base64 = { version = "0.21", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
@@ -55,3 +54,6 @@ btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-fe
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # Browser actor randomness
 automerge = { version = "0.10", default-features = false, features = ["wasm"] }
+
+[lints]
+workspace = true

@@ -21,7 +21,6 @@ default = []
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
     "changes",
 ] }
-value = { version = "0.1", path = "../value", package = "ofdb-value", default-features = false }
 
 # External dependencies
 async-lock = { version = "3.4", default-features = false, features = ["std"] }
@@ -43,3 +42,6 @@ uuid = { version = "1.29", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

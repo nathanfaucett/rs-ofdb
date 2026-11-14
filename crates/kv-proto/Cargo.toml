@@ -22,7 +22,6 @@ uuid = { version = "1.29", default-features = false, features = [] }
 
 # gRPC
 prost = { version = "0.14", default-features = false, features = ["derive"] }
-prost-types = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false, features = ["codegen"] }
 tonic-prost = { version = "0.14", default-features = false }
 
@@ -35,3 +34,6 @@ ignored = ["prost", "tonic-prost"]
 [features]
 default = ["file-descriptor-set"]
 file-descriptor-set = []
+
+[lints]
+workspace = true

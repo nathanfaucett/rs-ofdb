@@ -31,3 +31,6 @@ async-stream = { version = "0.3", default-features = false, features = [] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 redb = { version = "4.3", default-features = false, features = ["uuid"] }
 uuid = { version = "1.29", default-features = false, features = ["v7"] }
+
+[lints]
+workspace = true

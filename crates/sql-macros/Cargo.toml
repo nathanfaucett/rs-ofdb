@@ -27,3 +27,6 @@ uuid = { version = "1.29", default-features = false, features = [] }
 ofdb_sql = { version = "0.1", package = "ofdb-sql", path = "../sql", default-features = false, features = [
     "macros",
 ] }
+
+[lints]
+workspace = true
