@@ -8,14 +8,13 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # Storage contracts
 btree = { version = "0.1", path = "../btree", package = "ofdb-btree", default-features = false, features = [
     "std",
     "changes",
 ] }
 
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # Browser platform
 futures = { version = "0.3", default-features = false, features = [
     "async-await",

@@ -2984,6 +2984,7 @@ mod tests {
         PROTOCOL_VERSION, SyncChangeId, SyncHello, SyncKey, SyncManifest, SyncMessage,
         SyncRowInventory, SyncSnapshotRequest, SyncStateUnit, SyncTransport,
     };
+    use crate::SyncIncrementalChange;
     use engine::{
         DocumentSummary, Engine, EngineResult, InMemoryKernel, Kernel, KernelTransaction,
     };
@@ -3160,7 +3161,8 @@ mod tests {
                 &[history(vec![SyncChangeId(vec![0; MAX_MESSAGE_BYTES])])],
                 &SyncManifest::default()
             )
-            .expect("oversized row uses snapshot"), [] as [protocol::SyncRowInventory; 0]
+            .expect("oversized row uses snapshot"),
+            [] as [SyncRowInventory; 0]
         );
     }
 
@@ -3208,7 +3210,7 @@ mod tests {
             )
             .await
             .expect("export history");
-            assert_eq!(outbound.snapshots, [] as [state::SyncStateUnit; 0]);
+            assert_eq!(outbound.snapshots, [] as [SyncStateUnit; 0]);
             assert_eq!(
                 outbound
                     .changes
@@ -3265,7 +3267,7 @@ mod tests {
                 )
                 .await
                 .expect("snapshot fallback");
-                assert_eq!(outbound.changes, [] as [protocol::SyncIncrementalChange; 0]);
+                assert_eq!(outbound.changes, [] as [SyncIncrementalChange; 0]);
                 assert_eq!(outbound.snapshots.len(), 1);
                 assert_eq!(outbound.snapshots[0].state, state);
             }
@@ -3304,8 +3306,8 @@ mod tests {
             )
             .await
             .expect("compare shared history");
-            assert_eq!(outbound.changes, [] as [protocol::SyncIncrementalChange; 0]);
-            assert_eq!(outbound.snapshots, [] as [state::SyncStateUnit; 0]);
+            assert_eq!(outbound.changes, [] as [SyncIncrementalChange; 0]);
+            assert_eq!(outbound.snapshots, [] as [SyncStateUnit; 0]);
             assert_eq!(reads.load(Ordering::Relaxed), 0);
         });
     }

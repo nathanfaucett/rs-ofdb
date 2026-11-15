@@ -374,7 +374,7 @@ fn bulk_schema_discovery_omits_dropped_indices_but_retains_raw_tombstones() {
             .observe_schema(&["items"], None)
             .await
             .expect("discovery excludes dropped index");
-        assert_eq!(indices, [] as [schema::schema::IndexSchema; 0]);
+        assert_eq!(indices, [] as [schema::IndexSchema; 0]);
         assert!(rows.iter().any(|(storage, _, row)| {
             *storage == engine::ENGINE_INDICES_STORAGE
                 && row.values.first().and_then(Value::to_text).as_deref() == Some("items_value")
@@ -439,7 +439,7 @@ fn bulk_schema_discovery_filters_by_winning_index_table_not_losing_definition() 
             .observe_schema(&["items"], None)
             .await
             .expect("discovery filters by winner table");
-        assert_eq!(indices, [] as [schema::schema::IndexSchema; 0]);
+        assert_eq!(indices, [] as [schema::IndexSchema; 0]);
         assert_eq!(
             rows.iter()
                 .filter(|(storage, _, row)| {

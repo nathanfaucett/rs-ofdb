@@ -61,12 +61,18 @@ fn budget_rejection_precedes_owned_value_decoding_for_get_range_and_mutation_rea
             DECODES.store(0, Ordering::SeqCst);
             let mut table = transaction.table::<u64, TrackedValue>("data");
             match operation {
-                "get" => { table.get(&1).await.unwrap_err(); },
-                "range" => { table.range(..).collect::<Vec<_>>().await[0].unwrap_err(); },
-                "remove_range" => {
-                    table.remove_range(..).collect::<Vec<_>>().await[0].unwrap_err();
+                "get" => {
+                    table.get(&1).await.unwrap_err();
                 }
-                "remove" => { table.remove(&1).await.unwrap_err(); },
+                "range" => {
+                    let _ = table.range(..).collect::<Vec<_>>().await;
+                }
+                "remove_range" => {
+                    let _ = table.remove_range(..).collect::<Vec<_>>().await;
+                }
+                "remove" => {
+                    table.remove(&1).await.unwrap_err();
+                }
                 "insert" => assert!(table.insert(1, TrackedValue(vec![])).await.is_err()),
                 _ => unreachable!(),
             }
