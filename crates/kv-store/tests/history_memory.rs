@@ -11,7 +11,7 @@ const KEYS: usize = 160;
 const CHANGES: usize = 24;
 const VALUE_BYTES: usize = 8192;
 
-fn timestamp() -> uuid::Timestamp {
+const fn timestamp() -> uuid::Timestamp {
     uuid::Timestamp::from_unix_time(1_700_000_000, 0, 0, 0)
 }
 

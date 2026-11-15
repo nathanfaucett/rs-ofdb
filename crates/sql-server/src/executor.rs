@@ -8,7 +8,8 @@ use value::{Row, Value};
 pub struct EngineExecutor<K, R>(pub Engine<K, R>);
 
 impl<K, R> EngineExecutor<K, R> {
-    pub fn new(engine: Engine<K, R>) -> Self {
+    #[must_use]
+    pub const fn new(engine: Engine<K, R>) -> Self {
         Self(engine)
     }
 }

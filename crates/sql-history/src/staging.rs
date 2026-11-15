@@ -35,6 +35,7 @@ pub struct MemorySyncStageFactory {
 }
 
 impl MemorySyncStageFactory {
+    #[must_use]
     pub const fn new(max_bytes: usize) -> Self {
         Self { max_bytes }
     }

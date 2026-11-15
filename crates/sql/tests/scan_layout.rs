@@ -54,12 +54,11 @@ async fn native_conflict_checks_reuse_raw_table_catalog_within_budget() {
     )]);
     let started = Instant::now();
     for _ in 0..512 {
-        assert!(
+        assert_eq!(
             client
                 .row_conflicts("items", &key)
                 .await
-                .expect("public conflict inspection")
-                .is_empty()
+                .expect("public conflict inspection"), [] as [std::string::String; 0]
         );
     }
     let elapsed = started.elapsed();
@@ -90,12 +89,11 @@ async fn native_conflict_checks_with_many_tables_keep_fixed_budget() {
     )]);
     let started = Instant::now();
     for _ in 0..512 {
-        assert!(
+        assert_eq!(
             client
                 .row_conflicts("items", &key)
                 .await
-                .expect("public conflict inspection")
-                .is_empty()
+                .expect("public conflict inspection"), [] as [std::string::String; 0]
         );
     }
     let elapsed = started.elapsed();
@@ -128,12 +126,11 @@ async fn native_conflict_checks_with_large_catalog_keep_fixed_budget() {
     )]);
     let started = Instant::now();
     for _ in 0..512 {
-        assert!(
+        assert_eq!(
             client
                 .row_conflicts("items", &key)
                 .await
-                .expect("public conflict inspection")
-                .is_empty()
+                .expect("public conflict inspection"), [] as [std::string::String; 0]
         );
     }
     let elapsed = started.elapsed();
@@ -243,12 +240,11 @@ async fn native_scans_observe_catalog_changes_defaults_and_tombstones_per_operat
     let key = Row::new(vec![Value::Uuid(
         Uuid::parse_str("018f0f8e-7b6d-7c4a-8f12-123456789abc").expect("retained row"),
     )]);
-    assert!(
+    assert_eq!(
         transaction
             .row_conflicts("items", &key)
             .await
-            .expect("current snapshot conflicts")
-            .is_empty()
+            .expect("current snapshot conflicts"), [] as [std::string::String; 0]
     );
     transaction.commit().await.expect("persist current catalog");
     drop(client);
@@ -265,13 +261,12 @@ async fn native_scans_observe_catalog_changes_defaults_and_tombstones_per_operat
         expected
     );
     client.execute_sql("DROP TABLE items; CREATE TABLE items (id UUID PRIMARY KEY, enabled BOOLEAN DEFAULT TRUE)", None).await.expect("replace catalog");
-    assert!(
+    assert_eq!(
         client
             .execute_sql("SELECT enabled FROM items", None)
             .await
             .expect("empty recreated table")[0]
-            .rows
-            .is_empty()
+            .rows, [] as [ofdb_sql::Row; 0]
     );
     client
         .execute_sql(

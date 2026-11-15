@@ -603,7 +603,7 @@ impl Client {
         feature = "in-memory",
         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
     ))]
-    pub(crate) fn embedded(database: crate::Database) -> Self {
+    pub(crate) const fn embedded(database: crate::Database) -> Self {
         Self {
             backend: Backend::Embedded(database),
             request_deadline: None,
@@ -617,8 +617,9 @@ impl Client {
     /// Browser Wasm uses browser timers without Tokio; native timed queries require
     /// a Tokio runtime with time enabled. Timeout or cancellation does not prove rollback,
     /// undo a completed write or guarantee interruption of computation. An issued
-    /// IndexedDB commit remains observed independently of the caller.
-    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+    /// `IndexedDB` commit remains observed independently of the caller.
+    #[must_use]
+    pub const fn with_deadline(mut self, deadline: Duration) -> Self {
         self.request_deadline = Some(deadline);
         self
     }

@@ -45,7 +45,7 @@ impl autosurgeon::Reconcile for JsonValue {
             }
             Self::Number(value) => {
                 map.put("type", "number")?;
-                map.put("value", value.clone())?;
+                map.put("value", *value)?;
             }
             Self::String(value) => {
                 map.put("type", "string")?;
@@ -179,9 +179,7 @@ mod conversion_tests {
             serde_json::Value::try_from(JsonValue::from(value.clone())).expect("JSON value"),
             value
         );
-        assert!(
-            serde_json::Value::try_from(JsonValue::Number(JsonNumber::F64(f64::INFINITY))).is_err()
-        );
+        serde_json::Value::try_from(JsonValue::Number(JsonNumber::F64(f64::INFINITY))).unwrap_err();
     }
 }
 

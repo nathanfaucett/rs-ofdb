@@ -41,6 +41,7 @@ impl<E> Server<E> {
         }
     }
 
+    #[must_use]
     pub fn tls_identity(mut self, certificate: Vec<u8>, private_key: Vec<u8>) -> Self {
         self.tls_identity = Some(tonic::transport::Identity::from_pem(
             certificate,
@@ -49,11 +50,13 @@ impl<E> Server<E> {
         self
     }
 
+    #[must_use]
     pub fn tls_client_ca(mut self, ca_certificate: Vec<u8>) -> Self {
         self.tls_client_ca = Some(tonic::transport::Certificate::from_pem(ca_certificate));
         self
     }
 
+    #[must_use]
     pub fn max_decoding_message_size(mut self, size: usize) -> Self {
         self.service = self.service.max_decoding_message_size(size);
         self

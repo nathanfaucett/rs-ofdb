@@ -104,7 +104,7 @@ impl NativeWriteTransaction {
         }
         match &self.backend {
             WriteBackend::Shared(transaction) => {
-                transaction.put::<K, V>(name, &key, value.as_ref())?
+                transaction.put::<K, V>(name, &key, value.as_ref())?;
             }
             WriteBackend::Native { .. } => {
                 let mut table = self.open_table::<K, V>(name)?;
@@ -260,7 +260,7 @@ impl NativeWriteTransaction {
         match self.backend {
             WriteBackend::Native { inner, .. } => (*inner).commit().map_err(BTreeError::custom)?,
             WriteBackend::Shared(transaction) => transaction.commit()?,
-        };
+        }
         // Build events from mutations for push-based sync
         let events = self.mutations.take_events();
         let change_events: Vec<ChangeEvent> = events

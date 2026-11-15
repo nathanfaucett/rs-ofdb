@@ -19,7 +19,7 @@ pub const ENGINE_TABLE_FIELDS_STORAGE: &str = "table_fields";
 pub const ENGINE_INDICES_STORAGE: &str = "indices";
 pub const ENGINE_INDEX_FIELDS_STORAGE: &str = "index_fields";
 
-/// Validates RFC UUIDv5/v7 user identities; catalog generations remain UUIDv7.
+/// Validates RFC UUIDv5/v7 user identities; catalog generations remain `UUIDv7`.
 pub fn validate_row_id(table: &str, id: &Uuid) -> EngineResult<()> {
     let bytes = id.as_bytes();
     let version = bytes[6] >> 4;
@@ -65,12 +65,12 @@ mod identity_tests {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableRow {
+pub struct TableRow {
     pub name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TableFieldRow {
+pub struct TableFieldRow {
     pub table_id: Uuid,
     pub table: String,
     pub name: String,
@@ -81,7 +81,7 @@ pub(crate) struct TableFieldRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IndexRow {
+pub struct IndexRow {
     pub name: String,
     pub table: String,
     pub unique: bool,
@@ -89,7 +89,7 @@ pub(crate) struct IndexRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IndexFieldRow {
+pub struct IndexFieldRow {
     pub index_id: Uuid,
     pub position: i64,
     pub column: String,
@@ -209,6 +209,7 @@ pub enum CatalogTable {
 }
 
 impl CatalogTable {
+    #[must_use]
     pub const fn columns(self) -> &'static [&'static str] {
         match self {
             Self::Tables => &["name"],
@@ -248,6 +249,7 @@ impl CatalogTable {
         }
     }
 
+    #[must_use]
     pub const fn storage(self) -> &'static str {
         match self {
             Self::Tables => ENGINE_TABLES_STORAGE,
@@ -258,6 +260,7 @@ impl CatalogTable {
     }
 }
 
+#[must_use]
 pub fn catalog_table_for_storage(storage: &str) -> Option<CatalogTable> {
     [
         CatalogTable::Tables,
@@ -269,7 +272,7 @@ pub fn catalog_table_for_storage(storage: &str) -> Option<CatalogTable> {
     .find(|table| table.storage() == storage)
 }
 
-pub(crate) async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn reconcile_schema_names<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
 ) -> EngineResult<()> {
@@ -534,7 +537,7 @@ async fn delete_index_dependents<T: KernelTransaction, R: RowCodec<T>>(
     drop_inactive_index_storage(transaction, codec, name).await
 }
 
-pub(crate) async fn drop_inactive_index_storage<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn drop_inactive_index_storage<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     name: &str,
@@ -576,7 +579,7 @@ async fn validate_storage_namespace<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) async fn largest_schema_name_claim<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn largest_schema_name_claim<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     storage: &str,
@@ -599,7 +602,7 @@ pub(crate) async fn largest_schema_name_claim<T: KernelTransaction, R: RowCodec<
     Ok(largest)
 }
 
-pub(crate) async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
 ) -> EngineResult<()> {
@@ -614,11 +617,11 @@ pub(crate) async fn ensure<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) fn index_storage(name: &str) -> &str {
+pub const fn index_storage(name: &str) -> &str {
     name
 }
 
-pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -626,14 +629,14 @@ pub(crate) async fn lookup_table_id<T: KernelTransaction, R: RowCodec<T>>(
     read_table_id(transaction, codec, name, |_, _| {}).await
 }
 
-pub(crate) async fn lookup_table_id_with_rows<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn lookup_table_id_with_rows<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
 ) -> EngineResult<(Uuid, Vec<(Uuid, Row)>)> {
     let mut rows = Vec::new();
     let id = read_table_id(transaction, codec, name, |id, row| {
-        rows.push((id, row.clone()))
+        rows.push((id, row.clone()));
     })
     .await?;
     Ok((id, rows))
@@ -669,7 +672,7 @@ async fn read_table_id<T: KernelTransaction, R: RowCodec<T>>(
         .ok_or(EngineError::InvalidQuery("Table not found"))
 }
 
-pub(crate) async fn active_user_row<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn active_user_row<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -718,7 +721,7 @@ async fn active_index<T: KernelTransaction, R: RowCodec<T>>(
     Ok(Some((id, value)))
 }
 
-pub(crate) async fn lookup_table_name<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn lookup_table_name<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -729,7 +732,7 @@ pub(crate) async fn lookup_table_name<T: KernelTransaction, R: RowCodec<T>>(
     Ok(name.to_string())
 }
 
-pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -738,7 +741,7 @@ pub(crate) async fn columns<T: KernelTransaction, R: RowCodec<T>>(
     read_columns(transaction, codec, table, table_id, |_| {}).await
 }
 
-pub(crate) async fn observe_schema<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn observe_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     names: &[&str],
@@ -879,7 +882,7 @@ pub(crate) async fn observe_schema<T: KernelTransaction, R: RowCodec<T>>(
     ))
 }
 
-pub(crate) struct CatalogSnapshot {
+pub struct CatalogSnapshot {
     pub tables: Vec<(Uuid, Row)>,
     pub fields: Vec<Row>,
 }
@@ -921,7 +924,7 @@ impl CatalogSnapshot {
     }
 }
 
-pub(crate) async fn cached_table_schema<'a, T: KernelTransaction, R: RowCodec<T>>(
+pub async fn cached_table_schema<'a, T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -987,7 +990,7 @@ fn columns_from_fields(
         .collect()
 }
 
-pub(crate) async fn column_id<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn column_id<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -1013,7 +1016,7 @@ pub(crate) async fn column_id<T: KernelTransaction, R: RowCodec<T>>(
     selected.ok_or(EngineError::InvalidQuery("Index column not found"))
 }
 
-pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -1021,7 +1024,7 @@ pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
     table_schema_for(transaction, codec, name, name.to_string()).await
 }
 
-pub(crate) async fn table_schema_with_fields<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn table_schema_with_fields<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -1029,7 +1032,7 @@ pub(crate) async fn table_schema_with_fields<T: KernelTransaction, R: RowCodec<T
 ) -> EngineResult<(TableSchema, Vec<Row>)> {
     let mut fields = Vec::new();
     let columns = read_columns(transaction, codec, name, table_id, |row| {
-        fields.push(row.clone())
+        fields.push(row.clone());
     })
     .await?;
     Ok((
@@ -1041,7 +1044,7 @@ pub(crate) async fn table_schema_with_fields<T: KernelTransaction, R: RowCodec<T
     ))
 }
 
-pub(crate) async fn table_schema_for<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn table_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -1077,7 +1080,7 @@ async fn column_reference_is_active<T: KernelTransaction, R: RowCodec<T>>(
     Ok(field.table == table && field.name == name)
 }
 
-pub(crate) async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn index_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -1158,7 +1161,7 @@ async fn index_schema_for<T: KernelTransaction, R: RowCodec<T>>(
     })
 }
 
-pub(crate) async fn active_table_names<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn active_table_names<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
 ) -> EngineResult<Vec<String>> {

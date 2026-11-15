@@ -23,13 +23,10 @@ pub type Shutdown = oneshot::Sender<()>;
 pub type ServerTask = tokio::task::JoinHandle<()>;
 
 pub async fn stop_server(mut server: ServerTask) {
-    match tokio::time::timeout(Duration::from_secs(3), &mut server).await {
-        Ok(result) => result.expect("KV server task should complete"),
-        Err(_) => {
-            server.abort();
-            let _ = server.await;
-            panic!("KV server task did not stop before the timeout");
-        }
+    if let Ok(result) = tokio::time::timeout(Duration::from_secs(3), &mut server).await { result.expect("KV server task should complete") } else {
+        server.abort();
+        let _ = server.await;
+        panic!("KV server task did not stop before the timeout");
     }
 }
 

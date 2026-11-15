@@ -165,7 +165,7 @@ mod tests {
         let error = load_identity(Some(PathBuf::from("cert.pem")), None)
             .expect_err("certificate without key must fail");
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        assert!(load_identity(None, Some(PathBuf::from("key.pem"))).is_err());
+        load_identity(None, Some(PathBuf::from("key.pem"))).unwrap_err();
         assert!(
             load_identity(None, None)
                 .expect("no TLS files means plaintext transport")
@@ -195,9 +195,9 @@ mod tests {
         let key1 = SecretKey::generate().public();
         let key2 = SecretKey::generate().public();
         let mut f = std::fs::File::create(&file).unwrap();
-        writeln!(f, "{}", key1).unwrap();
+        writeln!(f, "{key1}").unwrap();
         writeln!(f, "# comment").unwrap();
-        writeln!(f, "{}", key2).unwrap();
+        writeln!(f, "{key2}").unwrap();
         writeln!(f).unwrap();
         let peers = merge_sync_peers(vec![], Some(file)).unwrap();
         assert_eq!(peers.len(), 2);
@@ -216,7 +216,7 @@ mod tests {
         let key2 = SecretKey::generate().public();
         let key3 = SecretKey::generate().public();
         let mut f = std::fs::File::create(&file).unwrap();
-        writeln!(f, "{}", key2).unwrap();
+        writeln!(f, "{key2}").unwrap();
         let peers = merge_sync_peers(vec![key1, key3], Some(file)).unwrap();
         assert_eq!(peers.len(), 3);
         assert!(peers.contains(&key1));

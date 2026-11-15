@@ -177,7 +177,7 @@ pub fn decode_message<E>(bytes: &[u8], config: &Config) -> Result<Message, E> {
 }
 
 /// Create a Hello message for initiating a session.
-pub fn make_hello(manifest_digest: [u8; 32], config: Config) -> Message {
+pub const fn make_hello(manifest_digest: [u8; 32], config: Config) -> Message {
     Message::Hello(HelloConfig {
         protocol_version: PROTOCOL_VERSION,
         manifest_digest,
@@ -185,8 +185,8 @@ pub fn make_hello(manifest_digest: [u8; 32], config: Config) -> Message {
     })
 }
 
-/// Create a HelloAck message.
-pub fn make_hello_ack(accepted: bool) -> Message {
+/// Create a `HelloAck` message.
+pub const fn make_hello_ack(accepted: bool) -> Message {
     Message::HelloAck {
         protocol_version: PROTOCOL_VERSION,
         accepted,
@@ -194,17 +194,17 @@ pub fn make_hello_ack(accepted: bool) -> Message {
 }
 
 /// Create an Ack message.
-pub fn make_ack(acknowledgments: HashMap<StorageKey, u64>) -> Message {
+pub const fn make_ack(acknowledgments: HashMap<StorageKey, u64>) -> Message {
     Message::Ack { acknowledgments }
 }
 
 /// Create a Done message.
-pub fn make_done(final_generations: HashMap<StorageKey, u64>) -> Message {
+pub const fn make_done(final_generations: HashMap<StorageKey, u64>) -> Message {
     Message::Done { final_generations }
 }
 
-/// Create a SnapshotRequest message.
-pub fn make_snapshot_request(key: StorageKey, min_generation: u64) -> Message {
+/// Create a `SnapshotRequest` message.
+pub const fn make_snapshot_request(key: StorageKey, min_generation: u64) -> Message {
     Message::SnapshotRequest {
         key,
         min_generation,
@@ -212,7 +212,7 @@ pub fn make_snapshot_request(key: StorageKey, min_generation: u64) -> Message {
 }
 
 /// Create a Snapshot message.
-pub fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> Message {
+pub const fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> Message {
     Message::Snapshot {
         key,
         blob,
@@ -221,7 +221,7 @@ pub fn make_snapshot(key: StorageKey, blob: Vec<u8>, generation: u64) -> Message
 }
 
 /// Create a Close message.
-pub fn make_close() -> Message {
+pub const fn make_close() -> Message {
     Message::Close
 }
 
@@ -260,7 +260,7 @@ mod tests {
             blob: vec![1, 2, 3],
             generation: 1,
         };
-        let message = Message::ChangeEvent(event.clone());
+        let message = Message::ChangeEvent(event);
         let encoded = encode_message(&message, &config).unwrap();
         let decoded = decode_message::<()>(&encoded, &config).unwrap();
         assert_eq!(decoded, message);

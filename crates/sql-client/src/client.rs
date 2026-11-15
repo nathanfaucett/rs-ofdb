@@ -189,14 +189,14 @@ impl Client {
     }
 }
 
-pub(crate) fn conflict_request(table: &str, keys: &[Row]) -> proto::ConflictRequest {
+pub fn conflict_request(table: &str, keys: &[Row]) -> proto::ConflictRequest {
     proto::ConflictRequest {
         table: table.into(),
         keys: keys.iter().cloned().map(row_to_proto).collect(),
     }
 }
 
-pub(crate) fn decode_conflict_values(
+pub fn decode_conflict_values(
     response: proto::ConflictValuesResponse,
 ) -> Result<Vec<(String, Vec<Value>)>, QueryError> {
     response
@@ -217,7 +217,7 @@ pub(crate) fn decode_conflict_values(
         .collect()
 }
 
-pub(crate) fn status_error(status: tonic::Status) -> QueryError {
+pub fn status_error(status: tonic::Status) -> QueryError {
     if let Some((kind, message)) = decode_error_detail(status.details()) {
         return QueryError::new(kind, message);
     }

@@ -88,6 +88,7 @@ pub fn parse_value(value: &Json) -> Result<Value, String> {
     }
 }
 
+#[must_use]
 pub fn encode_value(value: Value) -> Json {
     let (tag, payload) = match value {
         Value::Null => ("null", Json::Null),
@@ -227,7 +228,7 @@ mod tests {
             )),
         ];
         for value in values {
-            let encoded = encode_value(value.clone());
+            let encoded = encode_value(value);
             let bytes = serde_json::to_vec(&encoded).expect("encode tagged JSON");
             let json = serde_json::from_slice(&bytes).expect("read tagged JSON");
             assert_eq!(
@@ -246,7 +247,7 @@ mod tests {
             serde_json::json!({"type":"null","value":"ignored"}),
             serde_json::json!({"type":"blob","value":"!"}),
         ] {
-            assert!(parse_value(&json).is_err());
+            parse_value(&json).unwrap_err();
         }
     }
 }

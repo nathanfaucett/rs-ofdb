@@ -9,6 +9,7 @@ use value::{JsonNumber as DomainJsonNumber, JsonValue as DomainJsonValue, Value 
 
 use crate::QueryServiceError;
 
+#[must_use]
 pub fn value_to_proto(value: DomainValue) -> ProtoValue {
     let kind = match value {
         DomainValue::Null => proto_value::Kind::Null(()),
@@ -31,7 +32,7 @@ pub fn value_from_proto(value: ProtoValue) -> Result<DomainValue, QueryServiceEr
         .kind
         .ok_or_else(|| QueryServiceError::Invalid("missing Value kind".into()))?;
     match kind {
-        proto_value::Kind::Null(_) => Ok(DomainValue::Null),
+        proto_value::Kind::Null(()) => Ok(DomainValue::Null),
         proto_value::Kind::Type(value_type) => {
             let value_type = ProtoValueType::try_from(value_type)
                 .map_err(|_| QueryServiceError::Invalid("unknown ValueType".into()))?;
@@ -51,7 +52,7 @@ pub fn value_from_proto(value: ProtoValue) -> Result<DomainValue, QueryServiceEr
     }
 }
 
-fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
+const fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     match value_type {
         value::ValueType::Null => ProtoValueType::Null,
         value::ValueType::Type => ProtoValueType::Type,
@@ -65,7 +66,7 @@ fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     }
 }
 
-fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
+const fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
     match value_type {
         ProtoValueType::Null => Some(value::ValueType::Null),
         ProtoValueType::Type => Some(value::ValueType::Type),
@@ -80,7 +81,7 @@ fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType>
     }
 }
 
-fn json_number_to_proto(number: DomainJsonNumber) -> ProtoJsonNumber {
+const fn json_number_to_proto(number: DomainJsonNumber) -> ProtoJsonNumber {
     let kind = match number {
         DomainJsonNumber::I64(value) => json_number::Kind::I64(value),
         DomainJsonNumber::U64(value) => json_number::Kind::U64(value),
@@ -127,7 +128,7 @@ fn json_from_proto(value: ProtoJsonValue) -> Result<DomainJsonValue, QueryServic
         .kind
         .ok_or_else(|| QueryServiceError::Invalid("missing JsonValue kind".into()))?
     {
-        json_value::Kind::Null(_) => Ok(DomainJsonValue::Null),
+        json_value::Kind::Null(()) => Ok(DomainJsonValue::Null),
         json_value::Kind::BoolValue(value) => Ok(DomainJsonValue::Bool(value)),
         json_value::Kind::Number(value) => {
             json_number_from_proto(value).map(DomainJsonValue::Number)

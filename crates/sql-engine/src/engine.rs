@@ -303,6 +303,7 @@ where
     R: RowCodec<K::Transaction> + MaybeSend + MaybeSync,
 {
     #[cfg(feature = "std")]
+    #[must_use]
     pub fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {
         self.kernel.subscribe_changes()
     }

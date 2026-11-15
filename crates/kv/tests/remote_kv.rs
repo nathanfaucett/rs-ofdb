@@ -97,19 +97,17 @@ async fn remote_client_supports_kv_operations_and_preserves_empty_values() {
         client.get("expired".into()).await.expect("get expired key"),
         None
     );
-    assert!(
+    assert_eq!(
         client
             .scan_prefix("expired".into())
             .await
-            .expect("scan expired prefix")
-            .is_empty()
+            .expect("scan expired prefix"), [] as [(std::string::String, value::Value); 0]
     );
-    assert!(
+    assert_eq!(
         client
             .scan("expired".into(), "expiredx".into())
             .await
-            .expect("scan expired range")
-            .is_empty()
+            .expect("scan expired range"), [] as [(std::string::String, value::Value); 0]
     );
     assert_eq!(
         client.get("future".into()).await.expect("get future key"),
@@ -272,12 +270,9 @@ async fn remote_expiry_transition_and_stopped_server_fail_within_bounds() {
         .await
         .expect("server shutdown should finish")
         .expect("server task should complete");
-    assert!(
-        tokio::time::timeout(Duration::from_secs(3), client.get("short-lived".into()))
+    tokio::time::timeout(Duration::from_secs(3), client.get("short-lived".into()))
             .await
-            .expect("client failure should be bounded")
-            .is_err()
-    );
+            .expect("client failure should be bounded").unwrap_err();
 }
 
 #[tokio::test]

@@ -37,13 +37,12 @@ fn embedded_client_owns_shared_storage_without_tokio() {
                 ("other".into(), Value::Blob(vec![]))
             ]
         );
-        assert!(
+        assert_eq!(
             client
                 .scan_prefix("by")
                 .await
                 .expect("literal prefix")
-                .len()
-                == 1
+                .len(), 1
         );
         assert_eq!(
             client
@@ -92,12 +91,11 @@ fn client_transaction_commits_and_rolls_back_multiple_operations() {
             ]
         );
         transaction.rollback().await.expect("rollback transaction");
-        assert!(
+        assert_eq!(
             client
                 .scan_all()
                 .await
-                .expect("scan after rollback")
-                .is_empty()
+                .expect("scan after rollback"), [] as [(std::string::String, ofdb_kv::Value); 0]
         );
 
         let mut transaction = client

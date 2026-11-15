@@ -37,7 +37,7 @@ pub struct TableScope<'a> {
     pub keys: BTreeSet<SyncKey>,
 }
 
-fn rejected() -> EngineError {
+const fn rejected() -> EngineError {
     EngineError::InvalidQuery("History is outside fixed table scope or local schema")
 }
 fn text(row: &Row, index: usize) -> EngineResult<String> {

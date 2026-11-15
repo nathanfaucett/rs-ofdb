@@ -44,6 +44,7 @@ impl NativeStageTracker {
         }
     }
 
+    #[must_use]
     pub fn retire(&self) -> Vec<OwnedFile> {
         let mut state = self.0.lock().expect("stage tracker lock");
         state.retired = true;

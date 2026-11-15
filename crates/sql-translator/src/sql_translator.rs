@@ -43,7 +43,7 @@ struct ParameterBindings<'a> {
 }
 
 impl<'a> ParameterBindings<'a> {
-    fn new(params: Option<&'a QueryParams>) -> Self {
+    const fn new(params: Option<&'a QueryParams>) -> Self {
         Self {
             params,
             positional: 0,
@@ -265,8 +265,7 @@ fn table_name_to_string(name: &TableObject) -> TranslateResult<String> {
             }
         }
         _ => Err(TranslateError::custom(format!(
-            "Unsupported table object: {:?}",
-            name
+            "Unsupported table object: {name:?}"
         ))),
     }
 }
@@ -312,8 +311,7 @@ fn translate_stmt(
         ast::Statement::CreateIndex(create_index) => translate_create_index(create_index),
         ast::Statement::AlterIndex { name, operation } => translate_alter_index(name, operation),
         _ => Err(TranslateError::custom(format!(
-            "Unsupported SQL statement: {:?}",
-            stmt
+            "Unsupported SQL statement: {stmt:?}"
         ))),
     }
 }
@@ -391,34 +389,31 @@ fn translate_query(
     } else {
         let mut projection = Vec::with_capacity(select.projection.len());
         for item in &select.projection {
-            match item {
-                SelectItem::ExprWithAlias { expr, alias } => {
-                    if let Expr::BinaryOp {
-                        left,
-                        op: ast::BinaryOperator::StringConcat,
-                        right,
-                    } = expr
-                    {
-                        let (column, literal) = translate_text_concat(&aliases, left, right)?;
-                        projection.push(column.clone());
-                        text_concats.push(Some(QueryTextConcat {
-                            column,
-                            literal,
-                            alias: alias.value.clone(),
-                        }));
-                    } else {
-                        projection.push(translate_projection_expr(&aliases, expr)?);
-                        text_concats.push(None);
-                    }
-                }
-                _ => {
-                    projection.push(match item {
-                        SelectItem::UnnamedExpr(expr) => translate_projection_expr(&aliases, expr)?,
-                        SelectItem::Wildcard(_) => QueryColumn::new(String::new(), "*".into()),
-                        _ => return Err(TranslateError::custom("Unsupported projection item")),
-                    });
+            if let SelectItem::ExprWithAlias { expr, alias } = item {
+                if let Expr::BinaryOp {
+                    left,
+                    op: ast::BinaryOperator::StringConcat,
+                    right,
+                } = expr
+                {
+                    let (column, literal) = translate_text_concat(&aliases, left, right)?;
+                    projection.push(column.clone());
+                    text_concats.push(Some(QueryTextConcat {
+                        column,
+                        literal,
+                        alias: alias.value.clone(),
+                    }));
+                } else {
+                    projection.push(translate_projection_expr(&aliases, expr)?);
                     text_concats.push(None);
                 }
+            } else {
+                projection.push(match item {
+                    SelectItem::UnnamedExpr(expr) => translate_projection_expr(&aliases, expr)?,
+                    SelectItem::Wildcard(_) => QueryColumn::new(String::new(), "*".into()),
+                    _ => return Err(TranslateError::custom("Unsupported projection item")),
+                });
+                text_concats.push(None);
             }
         }
         (projection, vec![])
@@ -676,7 +671,7 @@ fn translate_projection(
             SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
                 translate_projection_expr(aliases, expr)
             }
-            SelectItem::Wildcard(_) => Ok(QueryColumn::new("".to_string(), "*".to_string())),
+            SelectItem::Wildcard(_) => Ok(QueryColumn::new(String::new(), "*".to_string())),
             _ => Err(TranslateError::custom("Unsupported projection item")),
         })
         .collect()
@@ -709,7 +704,7 @@ fn translate_projection_expr(
     expr: &Expr,
 ) -> TranslateResult<QueryColumn> {
     match expr {
-        Expr::Identifier(ident) => Ok(QueryColumn::new("".to_string(), ident.value.clone())),
+        Expr::Identifier(ident) => Ok(QueryColumn::new(String::new(), ident.value.clone())),
         Expr::CompoundIdentifier(idents) if idents.len() == 2 => Ok(QueryColumn::new(
             aliases
                 .get(&idents[0].value)
@@ -732,7 +727,7 @@ fn translate_expr(
         Expr::BinaryOp { left, op, right } => {
             translate_binary_expr(aliases, *left, op, *right, bindings)
         }
-        Expr::Identifier(ident) => Ok(column_expr("".into(), ident.value)),
+        Expr::Identifier(ident) => Ok(column_expr(String::new(), ident.value)),
         Expr::CompoundIdentifier(idents) if idents.len() == 2 => Ok(column_expr(
             aliases
                 .get(&idents[0].value)
@@ -833,13 +828,12 @@ fn translate_expr(
         }
         Expr::Cast { .. } => Err(TranslateError::custom("Unsupported cast")),
         _ => Err(TranslateError::custom(format!(
-            "Unsupported expression: {:?}",
-            expr
+            "Unsupported expression: {expr:?}"
         ))),
     }
 }
 
-fn column_expr(table: String, column: String) -> QueryExpr {
+const fn column_expr(table: String, column: String) -> QueryExpr {
     QueryExpr::Value(QueryExprValue::Column(QueryColumn::new(table, column)))
 }
 
@@ -863,8 +857,7 @@ fn translate_binary_expr(
         ast::BinaryOperator::And => Ok(QueryExpr::And(left, right)),
         ast::BinaryOperator::Or => Ok(QueryExpr::Or(left, right)),
         _ => Err(TranslateError::custom(format!(
-            "Unsupported binary operator: {:?}",
-            op
+            "Unsupported binary operator: {op:?}"
         ))),
     }
 }
@@ -874,11 +867,11 @@ fn translate_value(value: ast::Value) -> TranslateResult<Value> {
         ast::Value::Number(number, _) if number.contains('.') => number
             .parse()
             .map(Value::Float)
-            .map_err(|_| TranslateError::custom(format!("Invalid float literal: {}", number))),
+            .map_err(|_| TranslateError::custom(format!("Invalid float literal: {number}"))),
         ast::Value::Number(number, _) => number
             .parse()
             .map(Value::Integer)
-            .map_err(|_| TranslateError::custom(format!("Invalid integer literal: {}", number))),
+            .map_err(|_| TranslateError::custom(format!("Invalid integer literal: {number}"))),
         ast::Value::SingleQuotedString(value) => Ok(Value::Text(value)),
         ast::Value::HexStringLiteral(value) if value.len() % 2 == 0 => value
             .as_bytes()
@@ -896,7 +889,7 @@ fn translate_value(value: ast::Value) -> TranslateResult<Value> {
         ast::Value::HexStringLiteral(_) => Err(TranslateError::custom("Invalid BLOB literal")),
         ast::Value::Boolean(value) => Ok(Value::Bool(value)),
         ast::Value::Null => Ok(Value::Null),
-        value => Ok(Value::Text(format!("{:?}", value))),
+        value => Ok(Value::Text(format!("{value:?}"))),
     }
 }
 
@@ -1019,11 +1012,10 @@ fn translate_returning_item(item: SelectItem) -> TranslateResult<String> {
             Ok(idents[0].value.clone())
         }
         SelectItem::UnnamedExpr(Expr::CompoundIdentifier(idents)) => Err(TranslateError::custom(
-            format!("Unsupported RETURNING identifier: {:?}", idents),
+            format!("Unsupported RETURNING identifier: {idents:?}"),
         )),
         SelectItem::UnnamedExpr(expr) => Err(TranslateError::custom(format!(
-            "Unsupported RETURNING expression: {:?}",
-            expr
+            "Unsupported RETURNING expression: {expr:?}"
         ))),
         SelectItem::Wildcard(_) => Ok("*".to_string()),
         _ => Err(TranslateError::custom("Unsupported RETURNING item")),
@@ -1150,8 +1142,7 @@ fn translate_column_data_type(data_type: &ast::DataType) -> TranslateResult<Valu
         ast::DataType::Uuid => Ok(ValueType::Uuid),
         ast::DataType::JSON | ast::DataType::JSONB => Ok(ValueType::Json),
         _ => Err(TranslateError::custom(format!(
-            "Unsupported column data type: {:?}",
-            data_type
+            "Unsupported column data type: {data_type:?}"
         ))),
     }
 }
@@ -1282,9 +1273,7 @@ fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Sta
             };
             let columns = vec![column.name.value.clone()];
             indexes.push(schema::IndexSchema {
-                name: name
-                    .map(|name| name.value.clone())
-                    .unwrap_or_else(|| unique_index_name(&schema.name, &columns, ordinal)),
+                name: name.map_or_else(|| unique_index_name(&schema.name, &columns, ordinal), |name| name.value.clone()),
                 table_name: schema.name.clone(),
                 column_indices: vec![ordinal as u32],
                 unique: true,
@@ -1307,9 +1296,7 @@ fn translate_create_table(create_table: ast::CreateTable) -> TranslateResult<Sta
         };
         let names = unique_columns(columns)?;
         indexes.push(schema::IndexSchema {
-            name: name
-                .map(|name| name.value.clone())
-                .unwrap_or_else(|| unique_index_name(&schema.name, &names, ordinal)),
+            name: name.map_or_else(|| unique_index_name(&schema.name, &names, ordinal), |name| name.value.clone()),
             table_name: schema.name.clone(),
             column_indices: names
                 .iter()
@@ -1362,8 +1349,7 @@ fn translate_drop(
             if_exists,
         })),
         _ => Err(TranslateError::custom(format!(
-            "DROP {:?} not supported",
-            object_type
+            "DROP {object_type:?} not supported"
         ))),
     }
 }

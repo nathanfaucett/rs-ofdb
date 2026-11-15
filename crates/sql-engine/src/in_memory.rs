@@ -32,10 +32,12 @@ pub struct InMemoryKernel {
 
 impl InMemoryKernel {
     #[cfg(feature = "std")]
+    #[must_use]
     pub fn subscribe_changes(&self) -> btree::ChangeSubscription {
         self.changes.subscribe()
     }
 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]
@@ -69,7 +71,7 @@ impl Kernel for InMemoryKernel {
 
     #[cfg(feature = "std")]
     fn subscribe_changes(&self) -> Option<btree::ChangeSubscription> {
-        Some(InMemoryKernel::subscribe_changes(self))
+        Some(Self::subscribe_changes(self))
     }
 
     async fn transaction(&self) -> EngineResult<Self::Transaction> {
@@ -161,7 +163,7 @@ impl KernelTransaction for InMemoryKernelTransaction {
     }
 
     async fn commit(self) -> EngineResult<()> {
-        let InMemoryKernelTransaction {
+        let Self {
             state,
             revision,
             tables,

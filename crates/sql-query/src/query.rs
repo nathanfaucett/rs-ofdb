@@ -14,7 +14,8 @@ pub struct QueryColumn {
 }
 
 impl QueryColumn {
-    pub fn new(table: String, column: String) -> Self {
+    #[must_use]
+    pub const fn new(table: String, column: String) -> Self {
         Self { table, column }
     }
 }
@@ -62,32 +63,32 @@ pub enum QueryExprValue {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum QueryExpr {
     Value(QueryExprValue),
-    Not(Box<QueryExpr>),
-    Exists(Box<QueryExpr>),
-    IsNull(Box<QueryExpr>),
-    IsNotNull(Box<QueryExpr>),
-    Equals(Box<QueryExpr>, Box<QueryExpr>),
-    NotEquals(Box<QueryExpr>, Box<QueryExpr>),
-    LessThan(Box<QueryExpr>, Box<QueryExpr>),
-    LessThanOrEquals(Box<QueryExpr>, Box<QueryExpr>),
-    GreaterThan(Box<QueryExpr>, Box<QueryExpr>),
-    GreaterThanOrEquals(Box<QueryExpr>, Box<QueryExpr>),
+    Not(Box<Self>),
+    Exists(Box<Self>),
+    IsNull(Box<Self>),
+    IsNotNull(Box<Self>),
+    Equals(Box<Self>, Box<Self>),
+    NotEquals(Box<Self>, Box<Self>),
+    LessThan(Box<Self>, Box<Self>),
+    LessThanOrEquals(Box<Self>, Box<Self>),
+    GreaterThan(Box<Self>, Box<Self>),
+    GreaterThanOrEquals(Box<Self>, Box<Self>),
     InList {
-        expr: Box<QueryExpr>,
-        list: Vec<QueryExpr>,
+        expr: Box<Self>,
+        list: Vec<Self>,
         negated: bool,
     },
     InSubquery {
-        expr: Box<QueryExpr>,
+        expr: Box<Self>,
         subquery: Box<QuerySelect>,
         negated: bool,
     },
     Like {
-        expr: Box<QueryExpr>,
-        pattern: Box<QueryExpr>,
+        expr: Box<Self>,
+        pattern: Box<Self>,
     },
-    And(Box<QueryExpr>, Box<QueryExpr>),
-    Or(Box<QueryExpr>, Box<QueryExpr>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -142,14 +143,16 @@ pub struct QueryResult {
 }
 
 impl QueryResult {
-    pub fn new(rows: Vec<Row>) -> Self {
+    #[must_use]
+    pub const fn new(rows: Vec<Row>) -> Self {
         Self {
             rows,
             columns: Vec::new(),
         }
     }
 
-    pub fn new_with_columns(rows: Vec<Row>, columns: Vec<QueryResultColumn>) -> Self {
+    #[must_use]
+    pub const fn new_with_columns(rows: Vec<Row>, columns: Vec<QueryResultColumn>) -> Self {
         Self { rows, columns }
     }
 }
@@ -313,17 +316,19 @@ pub enum Statement {
 }
 
 impl Statement {
+    #[must_use]
     pub fn into_query(self) -> Option<Query> {
         match self {
-            Statement::Query(query) => Some(query),
-            Statement::DataDefinition(_) => None,
+            Self::Query(query) => Some(query),
+            Self::DataDefinition(_) => None,
         }
     }
 
+    #[must_use]
     pub fn into_data_definition(self) -> Option<DataDefinition> {
         match self {
-            Statement::Query(_) => None,
-            Statement::DataDefinition(def) => Some(def),
+            Self::Query(_) => None,
+            Self::DataDefinition(def) => Some(def),
         }
     }
 }

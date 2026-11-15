@@ -23,6 +23,7 @@ pub enum ExpectedError {
 }
 
 impl ExpectedError {
+    #[must_use]
     pub fn matches(&self, error: &engine::EngineError) -> bool {
         let message = error.to_string().to_lowercase();
         match self {
@@ -159,10 +160,12 @@ pub struct TestCase {
 }
 
 impl TestCase {
-    pub fn builder(name: &'static str) -> TestCaseBuilder {
+    #[must_use]
+    pub const fn builder(name: &'static str) -> TestCaseBuilder {
         TestCaseBuilder::new(name)
     }
 
+    #[must_use]
     pub fn required_nodes(&self) -> usize {
         let mut nodes = BTreeSet::new();
         nodes.insert(NodeId(0));
@@ -187,7 +190,8 @@ pub struct TestCaseBuilder {
 }
 
 impl TestCaseBuilder {
-    pub fn new(name: &'static str) -> Self {
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
         Self {
             name,
             setup: Vec::new(),
@@ -257,6 +261,7 @@ impl TestCaseBuilder {
         self
     }
 
+    #[must_use]
     pub fn build(self) -> TestCase {
         TestCase {
             name: self.name,
@@ -274,7 +279,8 @@ pub struct TestSuite {
 }
 
 impl TestSuite {
-    pub fn new(name: &'static str) -> Self {
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
         Self {
             name,
             cases: Vec::new(),
@@ -286,6 +292,7 @@ impl TestSuite {
         self
     }
 
+    #[must_use]
     pub fn with_case(mut self, case: TestCase) -> Self {
         self.cases.push(case);
         self

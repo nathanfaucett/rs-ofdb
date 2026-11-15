@@ -4,7 +4,7 @@ use std::any::type_name;
 pub struct Value<K>(K);
 
 impl<K> Value<K> {
-    pub fn new(value: K) -> Self {
+    pub const fn new(value: K) -> Self {
         Self(value)
     }
 
@@ -35,7 +35,7 @@ where
     where
         Self: 'a,
     {
-        Value(K::from_bytes(data))
+        Self(K::from_bytes(data))
     }
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>

@@ -11,7 +11,7 @@ impl From<Vec<u8>> for Bytes {
 
 impl redb::Value for Bytes {
     type SelfType<'a>
-        = Bytes
+        = Self
     where
         Self: 'a;
     type AsBytes<'a>

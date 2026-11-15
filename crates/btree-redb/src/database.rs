@@ -20,6 +20,7 @@ pub struct RedbDatabase {
 }
 
 impl RedbDatabase {
+    #[must_use]
     pub fn new(inner: Arc<Database>) -> Self {
         Self {
             inner,
@@ -39,6 +40,7 @@ impl RedbDatabase {
     }
 
     /// Subscribes to successfully committed storage changes.
+    #[must_use]
     pub fn subscribe_changes(&self) -> ChangeSubscription {
         self.changes.subscribe()
     }
@@ -69,7 +71,7 @@ pub struct RedbDatabaseTransaction {
 
 impl RedbDatabaseTransaction {
     /// Sets one cumulative native read budget; repeated configuration is rejected.
-    pub fn set_read_limits(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
+    pub const fn set_read_limits(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
         self.inner.read_budget.set(entries, bytes)
     }
 

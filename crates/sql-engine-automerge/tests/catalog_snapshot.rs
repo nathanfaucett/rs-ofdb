@@ -365,8 +365,8 @@ fn catalog_snapshot_preserves_largest_identity_defaults_and_stored_fallback() {
             assert_eq!(row_id, key);
             assert_eq!(row.values.len(), 3);
             assert_eq!(row.values[2], Value::from("fresh-default"));
-            assert!(rows.next().await.is_none());
-        }
+            assert!(rows.next().await.is_none())
+        };
         codec
             .remove_row(&mut transaction, engine::ENGINE_TABLES_STORAGE, &id(99))
             .await
@@ -387,7 +387,7 @@ fn catalog_snapshot_preserves_largest_identity_defaults_and_stored_fallback() {
             )
             .await
             .expect("read batch preserves winning schema, defaults and conflicted rows");
-        assert!(results[0].rows.is_empty());
+        assert_eq!(results[0].rows, [] as [value::Row; 0]);
         assert_eq!(results[1].rows.len(), 1);
         assert_eq!(results[1].rows[0].values.len(), 3);
         assert_eq!(results[1].rows[0].values[0], Value::Uuid(key));
@@ -498,7 +498,7 @@ fn catalog_snapshot_limit_zero_preserves_aggregate_validation_and_metadata() {
             )
             .await
             .expect("grouped aggregate LIMIT 0");
-        assert!(grouped[0].rows.is_empty());
+        assert_eq!(grouped[0].rows, [] as [value::Row; 0]);
         assert_eq!(
             grouped[0].columns,
             vec![
@@ -552,7 +552,7 @@ fn catalog_snapshot_read_batches_keep_table_schemas_and_observe_writes() {
             .await
             .expect("read-only batch shares catalog but not table schema");
         assert_eq!(results.len(), 3);
-        assert!(results[0].rows.is_empty());
+        assert_eq!(results[0].rows, [] as [value::Row; 0]);
         assert_eq!(results[0].columns[0].name, "value");
         assert_eq!(results[1].rows, vec![Row::new(vec![Value::Integer(42)])]);
         assert_eq!(results[2].rows, vec![Row::from(["good"])]);
@@ -576,7 +576,7 @@ fn catalog_snapshot_read_batches_keep_table_schemas_and_observe_writes() {
             )
             .await
             .expect("read-only batch sees earlier writes in the same transaction");
-        assert!(results[0].rows.is_empty());
+        assert_eq!(results[0].rows, [] as [value::Row; 0]);
         assert_eq!(results[1].rows, vec![Row::from(["changed"])]);
         transaction.commit().await.expect("commit current schema");
         let results = database
@@ -589,7 +589,7 @@ fn catalog_snapshot_read_batches_keep_table_schemas_and_observe_writes() {
             .await
             .expect("later batch and table recreation use current catalog");
         assert_eq!(results[0].rows, vec![Row::from(["changed"])]);
-        assert!(results[3].rows.is_empty());
+        assert_eq!(results[3].rows, [] as [value::Row; 0]);
         assert_eq!(results[3].columns[0].name, "replacement");
     });
 }
@@ -656,8 +656,8 @@ fn catalog_snapshot_select_decodes_malformed_nonmatching_rows() {
             documents
                 .insert(id(2).as_bytes().to_vec(), malformed)
                 .await
-                .expect("persist nonmatching malformed document through public raw store");
-        }
+                .expect("persist nonmatching malformed document through public raw store")
+        };
         transaction
             .commit()
             .await
@@ -691,7 +691,7 @@ fn catalog_snapshot_select_decodes_malformed_nonmatching_rows() {
                 .translate_and_execute(sql, &sql_translator::SqlTranslator)
                 .await
                 .expect("LIMIT 0 validates metadata without decoding malformed user rows");
-            assert!(results[0].rows.is_empty());
+            assert_eq!(results[0].rows, [] as [value::Row; 0]);
             assert_eq!(results[0].columns, expected_columns);
         }
         for (sql, expected_error) in [

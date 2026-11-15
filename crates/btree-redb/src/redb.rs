@@ -29,7 +29,8 @@ where
 {
 }
 
-pub fn table_definition<'a, 'b: 'a, K, V>(
+#[must_use]
+pub const fn table_definition<'a, 'b: 'a, K, V>(
     name: &'b str,
 ) -> redb::TableDefinition<'a, Key<K>, Value<V>>
 where

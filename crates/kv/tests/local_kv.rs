@@ -97,17 +97,15 @@ where
             ("prefix|get|5".into(), Value::Blob(vec![3])),
         ]
     );
-    assert!(
+    assert_eq!(
         tx.scan("test~".into().."test~".into(), 0)
             .await
-            .expect("empty range")
-            .is_empty()
+            .expect("empty range"), [] as [(std::string::String, value::Value); 0]
     );
-    assert!(
+    assert_eq!(
         tx.scan("z".into().."z~".into(), 0)
             .await
-            .expect("absent prefix range")
-            .is_empty()
+            .expect("absent prefix range"), [] as [(std::string::String, value::Value); 0]
     );
     assert_eq!(
         tx.scan_prefix("test:", 0).await.expect("scan test prefix"),
@@ -139,11 +137,10 @@ where
         tx.scan_prefix("", 0).await.expect("scan empty prefix"),
         tx.scan_all(0).await.expect("scan all")
     );
-    assert!(
+    assert_eq!(
         tx.scan_prefix("not-found", 0)
             .await
-            .expect("scan absent prefix")
-            .is_empty()
+            .expect("scan absent prefix"), [] as [(std::string::String, value::Value); 0]
     );
 
     tx.rollback().await.expect("roll back transaction");

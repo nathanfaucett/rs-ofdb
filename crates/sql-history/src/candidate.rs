@@ -13,6 +13,7 @@ pub enum SyncValidationDirection {
 }
 
 /// Read-only selected-table evidence from one owner transaction.
+///
 /// Incoming candidates have all merged before this view is built, but are not
 /// committed yet. Outgoing candidates are actual source rows at export time.
 /// This is not a session-wide snapshot or an authenticated mutation ledger.

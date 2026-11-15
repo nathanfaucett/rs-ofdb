@@ -41,7 +41,7 @@ where
         }
     }
 
-    pub fn max_decoding_message_size(mut self, size: usize) -> Self {
+    pub const fn max_decoding_message_size(mut self, size: usize) -> Self {
         self.max_decoding_message_size = Some(size);
         self
     }
@@ -301,7 +301,7 @@ where
     }
 }
 
-pub(crate) fn current_time_millis() -> Result<i64, Status> {
+pub fn current_time_millis() -> Result<i64, Status> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(status_from_error)?
@@ -309,7 +309,7 @@ pub(crate) fn current_time_millis() -> Result<i64, Status> {
     i64::try_from(millis).map_err(status_from_error)
 }
 
-pub(crate) fn status_from_error(error: impl std::error::Error + 'static) -> Status {
+pub fn status_from_error(error: impl std::error::Error + 'static) -> Status {
     let kind = if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<BTreeError>()
     {
         match error {

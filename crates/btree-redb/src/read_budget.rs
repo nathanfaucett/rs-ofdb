@@ -6,7 +6,7 @@ use btree::{BTreeError, BTreeResult};
 pub struct ReadBudget(Option<Mutex<(usize, usize, bool)>>);
 
 impl ReadBudget {
-    pub fn set(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
+    pub const fn set(&mut self, entries: usize, bytes: usize) -> BTreeResult<()> {
         if self.0.is_some() {
             return Err(BTreeError::UnsupportedOperation);
         }

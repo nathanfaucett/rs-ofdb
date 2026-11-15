@@ -25,6 +25,7 @@ pub struct RedbBTree<K, V> {
 
 impl<K, V> RedbBTree<K, V> {
     /// Subscribes to successfully committed storage changes.
+    #[must_use]
     pub fn subscribe_changes(&self) -> ChangeSubscription {
         self.changes.subscribe()
     }
@@ -149,7 +150,7 @@ mod test {
     fn tmp_path() -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         let name = format!("test-{}", uuid::Uuid::now_v7());
-        path.push(format!("db-redb-{}.db", name));
+        path.push(format!("db-redb-{name}.db"));
         path
     }
 
@@ -236,7 +237,7 @@ mod test {
                     .await
                     .expect("get failed")
                     .expect("key missing");
-                assert_eq!(value, format!("{}", key), "wrong value for key {}", key);
+                assert_eq!(value, format!("{key}"), "wrong value for key {}", key);
             }
         });
     }
@@ -262,7 +263,7 @@ mod test {
             // Insert keys 1-5
             let mut tx = tree.transaction().await.expect("fail transaction");
             for i in 1..=5 {
-                tx.insert(i, format!("value_{}", i).to_string())
+                tx.insert(i, format!("value_{i}").to_string())
                     .await
                     .expect("insert failed");
             }
@@ -273,7 +274,7 @@ mod test {
             for result in results {
                 let (k, v) = result.expect("range error");
                 assert_eq!(k, count + 2); // Should be in order: 2, 3, 4
-                assert_eq!(v, format!("value_{}", k));
+                assert_eq!(v, format!("value_{k}"));
                 count += 1;
             }
             assert_eq!(count, 3, "should have retrieved 3 items");

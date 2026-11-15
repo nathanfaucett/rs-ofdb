@@ -42,7 +42,7 @@ fn warmed_catalog_rejects_changed_bytes_even_under_the_same_storage_key() {
             .expect("replace bytes under unchanged key");
         let states = codec.scan_row_states(&transaction, "tables");
         pin_mut!(states);
-        assert!(states.next().await.expect("catalog decode result").is_err());
+        states.next().await.expect("catalog decode result").unwrap_err();
     });
 }
 
@@ -98,12 +98,9 @@ fn warmed_catalog_observes_metadata_changes_and_rejects_malformed_metadata() {
             .expect("malformed metadata");
         let states = codec.scan_row_states(&transaction, "tables");
         pin_mut!(states);
-        assert!(
-            states
+        states
                 .next()
                 .await
-                .expect("metadata decode result")
-                .is_err()
-        );
+                .expect("metadata decode result").unwrap_err();
     });
 }

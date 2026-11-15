@@ -31,7 +31,7 @@ pub enum SynchronizeError<E> {
 
 impl<E> From<Error<E>> for SynchronizeError<E> {
     fn from(e: Error<E>) -> Self {
-        SynchronizeError::Protocol(e)
+        Self::Protocol(e)
     }
 }
 
@@ -65,19 +65,19 @@ impl Default for SynchronizeConfig {
 ///
 /// This function implements the sync protocol:
 /// 1. Handshake (Hello/HelloAck)
-/// 2. Bidirectional streaming of ChangeEvent
+/// 2. Bidirectional streaming of `ChangeEvent`
 /// 3. Snapshot fallback for missing dependencies
 /// 4. Acknowledgment of received events
 /// 5. Graceful close (Done/Close)
 ///
 /// # Type Parameters
 /// - `T`: Transport implementing `SyncTransport`
-/// - `F`: Callback to apply inbound ChangeEvent to local storage
+/// - `F`: Callback to apply inbound `ChangeEvent` to local storage
 ///
 /// # Arguments
 /// - `transport`: Bidirectional transport
-/// - `outbound`: Stream of local ChangeEvent to push to peer
-/// - `apply_inbound`: Function to apply received ChangeEvent to local storage
+/// - `outbound`: Stream of local `ChangeEvent` to push to peer
+/// - `apply_inbound`: Function to apply received `ChangeEvent` to local storage
 /// - `config`: Synchronization configuration
 ///
 /// # Returns
@@ -175,29 +175,26 @@ where
                     outbound.next().await
                 }
             }, if !outbound_exhausted => {
-                match event {
-                    Some(event) => {
-                        // Track local generation
-                        let generation = event.generation;
-                        local_generations.insert(event.key.clone(), generation);
-                        outstanding.insert(event.key.clone(), generation);
+                if let Some(event) = event {
+                    // Track local generation
+                    let generation = event.generation;
+                    local_generations.insert(event.key.clone(), generation);
+                    outstanding.insert(event.key.clone(), generation);
 
-                        let msg = Message::ChangeEvent(event);
-                        transport.send(msg).await
+                    let msg = Message::ChangeEvent(event);
+                    transport.send(msg).await
+                        .map_err(SynchronizeError::Transport)?;
+                    result.events_sent += 1;
+                    result.bytes_sent += 1; // approximate
+                } else {
+                    outbound_exhausted = true;
+                    if config.send_done_on_exhaust && !sent_done {
+                        let done = Message::Done {
+                            final_generations: local_generations.clone(),
+                        };
+                        transport.send(done).await
                             .map_err(SynchronizeError::Transport)?;
-                        result.events_sent += 1;
-                        result.bytes_sent += 1; // approximate
-                    }
-                    None => {
-                        outbound_exhausted = true;
-                        if config.send_done_on_exhaust && !sent_done {
-                            let done = Message::Done {
-                                final_generations: local_generations.clone(),
-                            };
-                            transport.send(done).await
-                                .map_err(SynchronizeError::Transport)?;
-                            sent_done = true;
-                        }
+                        sent_done = true;
                     }
                 }
             }
@@ -279,7 +276,7 @@ where
                 }
             }
             // Check termination conditions
-            _ = async {}, if outbound_exhausted && outstanding.is_empty() && (_received_done || inbound_closed) => {
+            () = async {}, if outbound_exhausted && outstanding.is_empty() && (_received_done || inbound_closed) => {
                 break;
             }
         }

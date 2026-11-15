@@ -58,16 +58,19 @@ impl SyncTransport for InMemoryTransport {
     }
 }
 
+#[must_use]
 pub fn in_memory_transport_pair() -> (InMemoryTransport, InMemoryTransport) {
     in_memory_transport_pair_failing_at(None)
 }
 
+#[must_use]
 pub fn in_memory_transport_pair_failing_at(
     fail_at: Option<usize>,
 ) -> (InMemoryTransport, InMemoryTransport) {
     in_memory_transport_pair_failing(None, fail_at)
 }
 
+#[must_use]
 pub fn in_memory_transport_pair_failing(
     direction: Option<TransportDirection>,
     fail_at: Option<usize>,

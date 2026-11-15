@@ -17,7 +17,8 @@ pub struct IrohTransport {
 }
 
 impl IrohTransport {
-    pub fn new(send: SendStream, recv: RecvStream) -> Self {
+    #[must_use]
+    pub const fn new(send: SendStream, recv: RecvStream) -> Self {
         Self { send, recv }
     }
 }

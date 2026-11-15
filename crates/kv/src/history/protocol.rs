@@ -84,14 +84,14 @@ pub enum Error<E> {
 impl<E: core::fmt::Display> core::fmt::Display for Error<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            Error::PreApply(s) => write!(f, "pre-apply check failed: {}", s),
-            Error::Transport(e) => write!(f, "transport error: {}", e),
-            Error::Codec(s) => write!(f, "codec error: {}", s),
-            Error::InvalidFrame => write!(f, "invalid frame"),
-            Error::FrameTooLarge => write!(f, "frame too large"),
-            Error::UnsupportedVersion(v) => write!(f, "unsupported version: {}", v),
-            Error::UnexpectedMessage => write!(f, "unexpected message"),
-            Error::Storage(s) => write!(f, "storage error: {}", s),
+            Self::PreApply(s) => write!(f, "pre-apply check failed: {s}"),
+            Self::Transport(e) => write!(f, "transport error: {e}"),
+            Self::Codec(s) => write!(f, "codec error: {s}"),
+            Self::InvalidFrame => write!(f, "invalid frame"),
+            Self::FrameTooLarge => write!(f, "frame too large"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
+            Self::UnexpectedMessage => write!(f, "unexpected message"),
+            Self::Storage(s) => write!(f, "storage error: {s}"),
         }
     }
 }
@@ -200,7 +200,7 @@ mod tests {
             key: DocumentChangeKey::new_snapshot(id, [7; 32]),
             payload: vec![1, 2, 3],
         };
-        let message = Message::Snapshots(vec![snapshot.clone()]);
+        let message = Message::Snapshots(vec![snapshot]);
         let frame = encode_frame(&message, Config::default()).unwrap();
         assert_eq!(decode_frame::<()>(&frame, Config::default()), Ok(message));
 

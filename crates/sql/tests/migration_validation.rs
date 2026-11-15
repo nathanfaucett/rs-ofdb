@@ -137,13 +137,12 @@ async fn rejects_invalid_plans(client: &Client) {
             .collect();
         reject(client, &plan, MigrationPhase::Plan, Some(rejected)).await;
     }
-    assert!(
+    assert_eq!(
         execute(
             client,
             "SELECT name FROM tables WHERE name = '_ofdb_migrations'"
         )
-        .await
-        .is_empty()
+        .await, [] as [ofdb_sql::Row; 0]
     );
     // Existing application schema does not imply migration completion.
     let before = snapshot(client).await;
@@ -159,13 +158,12 @@ async fn rejects_invalid_plans(client: &Client) {
     assert_eq!(error.source.kind, ErrorKind::Rejected);
     assert_eq!(error.version, Some(1));
     assert_eq!(snapshot(client).await, before);
-    assert!(
+    assert_eq!(
         execute(
             client,
             "SELECT name FROM tables WHERE name = '_ofdb_migrations'"
         )
-        .await
-        .is_empty()
+        .await, [] as [ofdb_sql::Row; 0]
     );
     execute(client, "DROP TABLE items").await;
 }
@@ -200,7 +198,7 @@ async fn rejects_changed_and_newer_history(client: &Client) {
         .migrate(&plan)
         .await
         .expect("original exact SQL remains valid");
-    assert!(repeated.applied_versions.is_empty());
+    assert_eq!(repeated.applied_versions, [] as [u32; 0]);
     execute(client, "DROP TABLE _ofdb_migrations; DROP TABLE items").await;
 }
 
@@ -299,13 +297,12 @@ async fn rejects_history_changes_with_active_version(client: &Client) {
             Some(2),
         )
         .await;
-        assert!(
+        assert_eq!(
             client
                 .migrate(&[first])
                 .await
                 .expect("original history survives")
-                .applied_versions
-                .is_empty()
+                .applied_versions, [] as [u32; 0]
         );
         execute(client, "DROP TABLE _ofdb_migrations; DROP TABLE items").await;
     }

@@ -204,7 +204,7 @@ async fn failed_write_batch_does_not_commit_earlier_statements() {
         .await
         .expect_err("second statement should fail the batch");
     assert_eq!(error.kind, QueryErrorKind::Rejected);
-    assert!(engine.table_schema("atomic_batch").await.is_err());
+    engine.table_schema("atomic_batch").await.unwrap_err();
 
     shutdown.send(()).expect("server is awaiting shutdown");
     server.await.expect("server task should complete");
@@ -247,9 +247,9 @@ async fn remote_transaction_commits_across_calls_and_rolls_back_on_drop() {
         )])
         .await
         .expect("execute in transaction");
-    assert!(engine.table_schema("remote_commit").await.is_err());
+    engine.table_schema("remote_commit").await.unwrap_err();
     transaction.commit().await.expect("commit transaction");
-    assert!(engine.table_schema("remote_commit").await.is_ok());
+    engine.table_schema("remote_commit").await.unwrap();
 
     let mut transaction = client
         .transaction()
@@ -274,7 +274,7 @@ async fn remote_transaction_commits_across_calls_and_rolls_back_on_drop() {
         .expect("execute in transaction");
     drop(transaction);
     tokio::time::sleep(Duration::from_millis(10)).await;
-    assert!(engine.table_schema("remote_rollback").await.is_err());
+    engine.table_schema("remote_rollback").await.unwrap_err();
 
     shutdown.send(()).expect("server is awaiting shutdown");
     server.await.expect("server task should complete");

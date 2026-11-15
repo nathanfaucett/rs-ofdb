@@ -46,6 +46,7 @@ impl SharedDatabase {
     }
 
     /// Process-local identity for caches; never a persistent resource identity.
+    #[must_use]
     pub fn instance_id(&self) -> usize {
         Arc::as_ptr(&self.database) as usize
     }
@@ -73,14 +74,17 @@ pub struct SharedNamespace {
 }
 
 impl SharedNamespace {
+    #[must_use]
     pub fn table(&self, name: &str) -> String {
         format!("{}{name}", self.prefix)
     }
 
+    #[must_use]
     pub fn database(&self) -> RedbDatabase {
         RedbDatabase::with_admission(self.host.database.clone(), self.host.admission.clone())
     }
 
+    #[must_use]
     pub fn tree(&self, name: &str) -> RedbByteBTree {
         RedbByteBTree::with_admission(
             self.host.database.clone(),

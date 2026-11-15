@@ -52,7 +52,7 @@ where
         }
     }
 
-    pub fn change_signal(&self) -> &ChangeSignal {
+    pub const fn change_signal(&self) -> &ChangeSignal {
         &self.change_signal
     }
 
@@ -165,7 +165,7 @@ where
             .into_iter()
             .try_fold(Vec::new(), |mut visible, (key, (_, document))| {
                 let state = read_document(&document)?;
-                if !state.tombstone && !state.expires_at.is_some_and(|expiry| now >= expiry) {
+                if !state.tombstone && state.expires_at.is_none_or(|expiry| now < expiry) {
                     visible.push((key, state.value.ok_or(BTreeError::InvalidDocument)?));
                 }
                 Ok(visible)
@@ -185,7 +185,7 @@ where
             .into_iter()
             .try_fold(Vec::new(), |mut visible, (key, (_, document))| {
                 let state = read_document(&document)?;
-                if !state.tombstone && !state.expires_at.is_some_and(|expiry| now >= expiry) {
+                if !state.tombstone && state.expires_at.is_none_or(|expiry| now < expiry) {
                     visible.push((key, state.value.ok_or(BTreeError::InvalidDocument)?));
                 }
                 Ok(visible)
@@ -199,32 +199,29 @@ where
         expires_at: Option<i64>,
     ) -> BTreeResult<()> {
         let latest = self.latest(key).await?;
-        let id = match latest {
-            Some((id, document)) => {
-                let state = read_document(&document)?;
-                if !state.tombstone {
-                    self.modified_keys.insert(id.clone());
-                    self.inner
-                        .update(id, move |doc| write_live(doc, value, expires_at))
-                        .await?;
-                    return Ok(());
-                }
-                let next = Uuid::new_v7((self.timestamp_provider)());
-                validate_generation(next)?;
-                let (_, previous) = decode_document_id(&id)?;
-                if next <= previous {
-                    return Err(BTreeError::custom(
-                        "Generated UUIDv7 does not exceed the current generation",
-                    ));
-                }
-                self.remove_key_generations(key).await?;
-                next
+        let id = if let Some((id, document)) = latest {
+            let state = read_document(&document)?;
+            if !state.tombstone {
+                self.modified_keys.insert(id.clone());
+                self.inner
+                    .update(id, move |doc| write_live(doc, value, expires_at))
+                    .await?;
+                return Ok(());
             }
-            None => {
-                let next = Uuid::new_v7((self.timestamp_provider)());
-                validate_generation(next)?;
-                next
+            let next = Uuid::new_v7((self.timestamp_provider)());
+            validate_generation(next)?;
+            let (_, previous) = decode_document_id(&id)?;
+            if next <= previous {
+                return Err(BTreeError::custom(
+                    "Generated UUIDv7 does not exceed the current generation",
+                ));
             }
+            self.remove_key_generations(key).await?;
+            next
+        } else {
+            let next = Uuid::new_v7((self.timestamp_provider)());
+            validate_generation(next)?;
+            next
         };
         self.inner
             .insert(
@@ -347,11 +344,10 @@ where
             Ok(ChangeApply::Applied)
         }
         .await;
-        if result.is_ok() && self.history(&logical_key).await? != before {
-            if let Some(after) = self.history(&logical_key).await? {
+        if result.is_ok() && self.history(&logical_key).await? != before
+            && let Some(after) = self.history(&logical_key).await? {
                 self.modified_keys.insert(after.id);
             }
-        }
         result
     }
 
@@ -423,11 +419,10 @@ where
             self.inner.insert(key.id, incoming).await
         }
         .await;
-        if result.is_ok() && self.history(&logical_key).await? != before {
-            if let Some(after) = self.history(&logical_key).await? {
+        if result.is_ok() && self.history(&logical_key).await? != before
+            && let Some(after) = self.history(&logical_key).await? {
                 self.modified_keys.insert(after.id);
             }
-        }
         result
     }
 

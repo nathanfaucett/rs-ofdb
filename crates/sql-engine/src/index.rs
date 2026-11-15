@@ -14,7 +14,7 @@ use crate::{
     schema::{ENGINE_INDICES_STORAGE, index_schema, index_storage, table_schema_for},
 };
 
-pub(crate) async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn indexes_for_table<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     table: &str,
@@ -65,7 +65,7 @@ fn record_key(schema: &IndexSchema, row_id: uuid::Uuid, row: &Row) -> EngineResu
     Ok(Row::new(values))
 }
 
-pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     codec: &R,
     name: &str,
@@ -99,7 +99,7 @@ pub(crate) async fn lookup<T: KernelTransaction, R: RowCodec<T>>(
     }
 }
 
-pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     table: &str,
@@ -208,7 +208,7 @@ pub(crate) async fn rebuild_table<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn update_row<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     table: &str,

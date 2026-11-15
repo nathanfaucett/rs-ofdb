@@ -65,6 +65,7 @@ impl Database {
 
     /// Creates an owned query-only handle that shares this database's storage.
     /// The client remains usable after this handle is dropped.
+    #[must_use]
     pub fn client(&self) -> crate::Client {
         crate::Client::embedded(self.clone_shared())
     }
@@ -73,7 +74,7 @@ impl Database {
     /// `ChangeSubscription::events` returns a stream of committed changes.
     /// Merge with a SQL subscription to reconcile both stores in one callback.
     /// Dropping the stream cancels its in-flight work. Returns Unsupported for memory.
-    /// IndexedDB subscriptions observe this opened backend and its shared clients,
+    /// `IndexedDB` subscriptions observe this opened backend and its shared clients,
     /// not other tabs/opens. External-write gaps require broad recovery.
     #[cfg(feature = "sync")]
     pub fn sync_changes(&self) -> std::io::Result<sync::ChangeSubscription> {

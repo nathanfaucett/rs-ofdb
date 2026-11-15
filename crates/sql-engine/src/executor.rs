@@ -17,7 +17,7 @@ use value::{Row, Value, ValueType};
 
 // Construct large execution futures outside dispatcher poll frames, not just on the heap.
 #[inline(never)]
-pub(crate) fn execution_stage<'a, T: 'a, F>(
+pub fn execution_stage<'a, T: 'a, F>(
     make: impl FnOnce() -> F,
 ) -> platform::BoxFuture<'a, EngineResult<T>>
 where
@@ -87,7 +87,7 @@ where
     }
 }
 
-pub(crate) async fn execute_in_transaction<K, R>(
+pub async fn execute_in_transaction<K, R>(
     engine: &Engine<K, R>,
     transaction: &mut K::Transaction,
     statements: Vec<query::Statement>,
@@ -1436,7 +1436,7 @@ where
     }
 }
 
-pub(crate) async fn row_conflicts<T, R>(
+pub async fn row_conflicts<T, R>(
     transaction: &T,
     reconciler: &R,
     table_name: &str,
@@ -1459,7 +1459,7 @@ where
     .expect("one key produces one conflict result"))
 }
 
-pub(crate) async fn row_conflicts_batch<T, R>(
+pub async fn row_conflicts_batch<T, R>(
     transaction: &T,
     reconciler: &R,
     table_name: &str,
@@ -1508,7 +1508,7 @@ where
     Ok(results)
 }
 
-pub(crate) async fn row_conflict_values<T, R>(
+pub async fn row_conflict_values<T, R>(
     transaction: &T,
     reconciler: &R,
     table_name: &str,
@@ -1540,7 +1540,7 @@ where
         .collect()
 }
 
-pub(crate) async fn resolve_row<T, R>(
+pub async fn resolve_row<T, R>(
     transaction: &mut T,
     reconciler: &R,
     timestamp_provider: TimestampProvider,
@@ -2382,7 +2382,7 @@ fn compare_expr(
     ))
 }
 
-pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &T,
     reconciler: &R,
     name: &str,
@@ -2390,7 +2390,7 @@ pub(crate) async fn table_schema<T: KernelTransaction, R: RowCodec<T>>(
     schema_table_schema(transaction, reconciler, name).await
 }
 
-pub(crate) fn materialize_defaults(schema: &TableSchema, mut row: Row) -> Row {
+pub fn materialize_defaults(schema: &TableSchema, mut row: Row) -> Row {
     row.values.extend(
         schema.columns[row.values.len()..]
             .iter()
@@ -2426,7 +2426,7 @@ fn materialize_insert(
     Ok(row)
 }
 
-pub(crate) fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) -> bool {
+pub fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) -> bool {
     let primary_columns: Vec<_> = schema
         .columns
         .iter()
@@ -2434,16 +2434,16 @@ pub(crate) fn is_primary_key_index(schema: &TableSchema, index: &IndexSchema) ->
         .filter_map(|(index, column)| column.primary_key.then_some(index as u32))
         .collect();
     let mut columns = index.column_indices.clone();
-    columns.sort();
+    columns.sort_unstable();
     index.unique && index.table_name == schema.name && columns == primary_columns
 }
 
 /// Single-column UUID primary key index. When present, the UUID value serves
 /// directly as the row identity (no separate internal UUID is generated) and
-/// omitted UUID primary keys are auto-filled with UUIDv7 on insert. Prefer
+/// omitted UUID primary keys are auto-filled with `UUIDv7` on insert. Prefer
 /// `id UUID PRIMARY KEY` for new tables unless a natural or composite key is
 /// required.
-pub(crate) fn uuid_primary_key(schema: &TableSchema) -> Option<usize> {
+pub fn uuid_primary_key(schema: &TableSchema) -> Option<usize> {
     let mut keys = schema
         .columns
         .iter()
@@ -2453,7 +2453,7 @@ pub(crate) fn uuid_primary_key(schema: &TableSchema) -> Option<usize> {
     (keys.next().is_none() && column.r#type == ValueType::Uuid).then_some(index)
 }
 
-pub(crate) fn validate_row(schema: &TableSchema, row: &Row) -> EngineResult<()> {
+pub fn validate_row(schema: &TableSchema, row: &Row) -> EngineResult<()> {
     if row.values.len() != schema.columns.len() {
         return Err(EngineError::InvalidQuery("Row has the wrong column count"));
     }

@@ -19,6 +19,7 @@ pub struct SyncStateUnit {
 }
 
 impl SyncStateUnit {
+    #[must_use]
     pub fn new(key: SyncKey, state: Vec<u8>, metadata: Vec<u8>) -> Self {
         let digest = Self::digest_parts(&state, &metadata);
         Self {
@@ -29,10 +30,12 @@ impl SyncStateUnit {
         }
     }
 
+    #[must_use]
     pub fn verify_digest(&self) -> bool {
         Self::digest_parts(&self.state, &self.metadata) == self.digest
     }
 
+    #[must_use]
     pub fn digest_parts(state: &[u8], metadata: &[u8]) -> StateDigest {
         StateDigest::from_parts(state, metadata)
     }
@@ -68,12 +71,14 @@ pub struct SyncManifest {
 }
 
 impl SyncManifest {
+    #[must_use]
     pub fn new(mut entries: Vec<(SyncKey, StateDigest)>) -> Self {
         entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         entries.dedup_by(|left, right| left.0 == right.0);
         Self { entries }
     }
 
+    #[must_use]
     pub fn contains(&self, key: &SyncKey, digest: StateDigest) -> bool {
         self.entries
             .binary_search_by(|(candidate, _)| candidate.cmp(key))

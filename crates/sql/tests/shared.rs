@@ -58,12 +58,9 @@ async fn shared_schema_indexes_and_rollbacks_use_one_atomic_snapshot() {
         .await
         .expect("uncommitted schema");
     transaction.rollback().await.expect("schema rollback");
-    assert!(
-        client
+    client
             .execute_sql("SELECT * FROM abandoned", None)
-            .await
-            .is_err()
-    );
+            .await.unwrap_err();
     client.execute_sql("CREATE TABLE notes (name TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO notes VALUES ('one', 'saved')", None).await.expect("natural primary-key index");
     let mut transaction = client.transaction().await.expect("data transaction");
     transaction
@@ -99,13 +96,12 @@ async fn shared_schema_indexes_and_rollbacks_use_one_atomic_snapshot() {
         )
         .await
         .expect("drop and recreate");
-    assert!(
+    assert_eq!(
         client
             .execute_sql("SELECT * FROM notes", None)
             .await
             .expect("fresh table")[0]
-            .rows
-            .is_empty()
+            .rows, [] as [ofdb_sql::Row; 0]
     );
 }
 
@@ -122,13 +118,10 @@ async fn shared_namespaces_isolate_restart_and_retire_without_removing_the_host(
         .await
         .expect("private schema");
     resource.client().execute_sql("CREATE TABLE notes (id UUID PRIMARY KEY, value TEXT); INSERT INTO notes (value) VALUES ('saved')", None).await.expect("resource data");
-    assert!(
-        resource
+    resource
             .client()
             .execute_sql("SELECT * FROM private_keys", None)
-            .await
-            .is_err()
-    );
+            .await.unwrap_err();
     let issued = Database::open_shared(&host, "resource")
         .expect("second resource owner")
         .client();
@@ -158,12 +151,9 @@ async fn shared_namespaces_isolate_restart_and_retire_without_removing_the_host(
         .retire_and_remove()
         .await
         .expect("retire namespace");
-    assert!(
-        issued
+    issued
             .execute_sql("SELECT * FROM notes", None)
-            .await
-            .is_err()
-    );
+            .await.unwrap_err();
     assert!(idle.commit().await.is_err());
     assert!(Database::open_shared(&host, "resource").is_err());
     let control = Database::open_shared(&host, "control").expect("control survives");

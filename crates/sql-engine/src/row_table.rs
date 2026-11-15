@@ -197,7 +197,7 @@ mod tests {
     fn value_round_trip_and_malformed_bytes() {
         let row = Row::new(vec![Value::Text(String::from("value"))]);
         assert_eq!(decode_value(encode_value(&row)).unwrap(), row);
-        assert!(decode_value(vec![255]).is_err());
-        assert!(decode_key(&[0]).is_err());
+        decode_value(vec![255]).unwrap_err();
+        decode_key(&[0]).unwrap_err();
     }
 }

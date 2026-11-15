@@ -10,6 +10,7 @@ pub enum QueryServiceError {
     Internal(String),
 }
 
+#[must_use]
 pub fn encode_error_detail(kind: QueryErrorKind, message: &str) -> Vec<u8> {
     let mut detail = Vec::with_capacity(message.len() + 1);
     detail.push(kind as u8);
@@ -17,6 +18,7 @@ pub fn encode_error_detail(kind: QueryErrorKind, message: &str) -> Vec<u8> {
     detail
 }
 
+#[must_use]
 pub fn decode_error_detail(detail: &[u8]) -> Option<(QueryErrorKind, String)> {
     let (&kind, message) = detail.split_first()?;
     let kind = QueryErrorKind::from_wire(kind)?;

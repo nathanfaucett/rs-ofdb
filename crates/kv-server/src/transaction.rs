@@ -10,9 +10,9 @@ use tonic::{Status, Streaming};
 
 use crate::server::{current_time_millis, status_from_error};
 
-pub(crate) type TransactionStream = ReceiverStream<Result<TransactionResponse, Status>>;
+pub type TransactionStream = ReceiverStream<Result<TransactionResponse, Status>>;
 
-pub(crate) fn stream<T>(
+pub fn stream<T>(
     mut transaction: KvTransaction<T>,
     mut requests: Streaming<TransactionRequest>,
 ) -> TransactionStream
@@ -33,14 +33,14 @@ where
         }
         loop {
             let request = tokio::select! {
-                _ = sender.closed() => break,
+                () = sender.closed() => break,
                 request = requests.message() => match request {
                     Ok(Some(request)) => request,
                     _ => break,
                 },
             };
             let outcome = match request.command {
-                Some(Command::Commit(())) | Some(Command::Rollback(())) => {
+                Some(Command::Commit(()) | Command::Rollback(())) => {
                     let result = if matches!(request.command, Some(Command::Commit(()))) {
                         transaction.commit().await
                     } else {
@@ -59,7 +59,7 @@ where
                 }
                 Some(command) => {
                     let result = tokio::select! {
-                        _ = sender.closed() => break,
+                        () = sender.closed() => break,
                         result = execute(&mut transaction, command) => result,
                     };
                     result.unwrap_or_else(error_outcome)

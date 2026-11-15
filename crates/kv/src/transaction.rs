@@ -320,7 +320,7 @@ impl RemoteTransaction {
             sender: Some(sender),
             responses: response.into_inner(),
         };
-        if !matches!(transaction.response().await?, Outcome::Ready(_)) {
+        if !matches!(transaction.response().await?, Outcome::Ready(())) {
             return Err(protocol_error("expected transaction ready response"));
         }
         Ok(transaction)

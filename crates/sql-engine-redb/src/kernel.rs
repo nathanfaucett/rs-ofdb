@@ -14,6 +14,7 @@ pub struct RedbKernel {
 }
 
 impl RedbKernel {
+    #[must_use]
     pub fn new(database: Arc<redb::Database>) -> Self {
         Self {
             database: RedbDatabase::new(database),
@@ -21,6 +22,7 @@ impl RedbKernel {
         }
     }
 
+    #[must_use]
     pub fn namespaced(namespace: btree_redb::SharedNamespace) -> Self {
         Self {
             database: namespace.database(),
@@ -28,7 +30,8 @@ impl RedbKernel {
         }
     }
 
-    pub fn from_database(database: RedbDatabase) -> Self {
+    #[must_use]
+    pub const fn from_database(database: RedbDatabase) -> Self {
         Self {
             database,
             namespace: None,

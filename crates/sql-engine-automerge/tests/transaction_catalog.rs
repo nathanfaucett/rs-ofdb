@@ -299,12 +299,11 @@ fn cached_catalog_stays_with_its_kernel_snapshot_and_next_transaction_is_fresh()
         assert_eq!(reads.take(), (0, 0, 1));
         old.rollback().await.expect("finish old snapshot");
         let mut fresh = engine.transaction().await.expect("new snapshot");
-        assert!(
+        assert_eq!(
             fresh
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("fresh resolution")
-                .is_empty()
+                .expect("fresh resolution"), [] as [std::string::String; 0]
         );
         let current = fresh
             .translate_and_execute("SELECT label, extra FROM items", &SqlTranslator)
@@ -343,12 +342,11 @@ fn dml_ddl_and_mixed_batches_invalidate_before_reusing_catalogs() {
             .await
             .expect("read own write");
         assert_eq!(results[0].rows, vec![Row::from(["written"])]);
-        assert!(
+        assert_eq!(
             transaction
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("DML conflict inspection")
-                .is_empty()
+                .expect("DML conflict inspection"), [] as [std::string::String; 0]
         );
         assert_eq!(
             reads.take(),
@@ -363,12 +361,11 @@ fn dml_ddl_and_mixed_batches_invalidate_before_reusing_catalogs() {
             .await
             .expect("DDL");
         reads.take();
-        assert!(
+        assert_eq!(
             transaction
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("conflict-first after DDL")
-                .is_empty()
+                .expect("conflict-first after DDL"), [] as [std::string::String; 0]
         );
         let results = transaction
             .translate_and_execute("SELECT label, extra FROM items", &SqlTranslator)
@@ -381,12 +378,11 @@ fn dml_ddl_and_mixed_batches_invalidate_before_reusing_catalogs() {
         assert_eq!(results[2].columns.len(), 4);
         assert_eq!(results[2].rows[0].values[3], Value::Integer(7));
         reads.take();
-        assert!(
+        assert_eq!(
             transaction
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("after mixed final write")
-                .is_empty()
+                .expect("after mixed final write"), [] as [std::string::String; 0]
         );
         assert_eq!(reads.take(), (1, 1, 1));
         transaction
@@ -466,12 +462,11 @@ fn cancelled_writes_discard_catalog_before_schema_ensure_and_after_actual_mutati
                 .is_none()
         );
         reads.take();
-        assert!(
+        assert_eq!(
             transaction
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("inspect after cancelled ensure")
-                .is_empty()
+                .expect("inspect after cancelled ensure"), [] as [std::string::String; 0]
         );
         assert_eq!(
             reads.take(),
@@ -491,12 +486,11 @@ fn cancelled_writes_discard_catalog_before_schema_ensure_and_after_actual_mutati
             .await
             .expect("partially staged actual write is read afresh");
         assert_eq!(results[0].rows, vec![Row::from(["cancelled"])]);
-        assert!(
+        assert_eq!(
             transaction
                 .row_conflicts("items", &key(1))
                 .await
-                .expect("inspect actual changed row")
-                .is_empty()
+                .expect("inspect actual changed row"), [] as [std::string::String; 0]
         );
         assert_eq!(reads.take(), (1, 1, 1));
         transaction
@@ -606,7 +600,7 @@ fn cached_reads_preserve_defaults_row_tombstones_and_deleted_catalog_filtering()
             .await
             .expect("defaults and deleted rows");
         assert_eq!(results[0].rows, vec![Row::from(["default"])]);
-        assert!(results[1].rows.is_empty());
+        assert_eq!(results[1].rows, [] as [value::Row; 0]);
         assert_eq!(
             transaction
                 .row_conflicts("other", &key(2))
@@ -633,8 +627,8 @@ fn cached_schema_does_not_skip_malformed_nonmatching_row_decoding() {
             documents
                 .insert(id(99).as_bytes().to_vec(), malformed)
                 .await
-                .expect("raw malformed user row");
-        }
+                .expect("raw malformed user row")
+        };
         raw.commit().await.expect("commit malformed row");
         reads.take();
         let mut transaction = engine.transaction().await.expect("snapshot");

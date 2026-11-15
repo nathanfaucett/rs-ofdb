@@ -40,7 +40,7 @@ async fn shared_kv_is_durable_isolated_and_retirement_preserves_other_namespaces
         .retire_and_remove()
         .await
         .expect("retire one namespace");
-    assert!(issued.get("same").await.is_err());
+    issued.get("same").await.unwrap_err();
     assert!(transaction.commit().await.is_err());
     assert!(Database::open_shared(&host, "first").is_err());
     assert_eq!(

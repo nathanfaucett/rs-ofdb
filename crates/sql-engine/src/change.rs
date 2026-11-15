@@ -17,7 +17,8 @@ pub struct Change {
 }
 
 impl Change {
-    pub fn row(id: Uuid, table: String, row: Uuid, value: Option<Vec<u8>>) -> Self {
+    #[must_use]
+    pub const fn row(id: Uuid, table: String, row: Uuid, value: Option<Vec<u8>>) -> Self {
         Self {
             id,
             key: ChangeKey::Row { table, row },
@@ -31,7 +32,7 @@ pub enum ChangeKey {
     Row { table: String, row: Uuid },
 }
 
-pub(crate) async fn apply_local_change<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn apply_local_change<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     changes: &mut Vec<Change>,
@@ -42,7 +43,7 @@ pub(crate) async fn apply_local_change<T: KernelTransaction, R: RowCodec<T>>(
     Ok(())
 }
 
-pub(crate) async fn materialize_change<T: KernelTransaction, R: RowCodec<T>>(
+pub async fn materialize_change<T: KernelTransaction, R: RowCodec<T>>(
     transaction: &mut T,
     codec: &R,
     change: &Change,
@@ -53,39 +54,36 @@ pub(crate) async fn materialize_change<T: KernelTransaction, R: RowCodec<T>>(
     if !catalog && columns(transaction, codec, table).await.is_err() {
         return Ok(true);
     }
-    match &change.value {
-        Some(value) => {
-            let old = codec.get_row(transaction, table, row).await?;
-            let Some(value) = codec.merge_row(transaction, table, *row, value).await? else {
-                return Ok(true);
-            };
-            if !catalog && active_user_row(transaction, codec, table, row).await? {
-                update_row(
-                    transaction,
-                    codec,
-                    table,
-                    *row,
-                    old.as_ref(),
-                    Some(&value),
-                    enforce_unique,
-                )
-                .await?;
-            }
+    if let Some(value) = &change.value {
+        let old = codec.get_row(transaction, table, row).await?;
+        let Some(value) = codec.merge_row(transaction, table, *row, value).await? else {
+            return Ok(true);
+        };
+        if !catalog && active_user_row(transaction, codec, table, row).await? {
+            update_row(
+                transaction,
+                codec,
+                table,
+                *row,
+                old.as_ref(),
+                Some(&value),
+                enforce_unique,
+            )
+            .await?;
         }
-        None => {
-            let old = codec.remove_row(transaction, table, row).await?;
-            if !catalog && active_user_row(transaction, codec, table, row).await? {
-                update_row(
-                    transaction,
-                    codec,
-                    table,
-                    *row,
-                    old.as_ref(),
-                    None,
-                    enforce_unique,
-                )
-                .await?;
-            }
+    } else {
+        let old = codec.remove_row(transaction, table, row).await?;
+        if !catalog && active_user_row(transaction, codec, table, row).await? {
+            update_row(
+                transaction,
+                codec,
+                table,
+                *row,
+                old.as_ref(),
+                None,
+                enforce_unique,
+            )
+            .await?;
         }
     }
     Ok(false)

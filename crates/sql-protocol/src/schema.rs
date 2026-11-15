@@ -6,6 +6,7 @@ use schema::{ColumnSchema, IndexSchema, TableSchema};
 
 use crate::{QueryServiceError, value_from_proto, value_to_proto};
 
+#[must_use]
 pub fn column_to_proto(column: ColumnSchema) -> ProtoColumnSchema {
     ProtoColumnSchema {
         name: column.name,
@@ -31,6 +32,7 @@ pub fn column_from_proto(column: ProtoColumnSchema) -> Result<ColumnSchema, Quer
     })
 }
 
+#[must_use]
 pub fn index_to_proto(index: IndexSchema) -> ProtoIndexSchema {
     ProtoIndexSchema {
         name: index.name,
@@ -40,6 +42,7 @@ pub fn index_to_proto(index: IndexSchema) -> ProtoIndexSchema {
     }
 }
 
+#[must_use]
 pub fn index_from_proto(index: ProtoIndexSchema) -> IndexSchema {
     IndexSchema {
         name: index.name,
@@ -67,7 +70,7 @@ pub fn table_from_proto(table: ProtoTableSchema) -> Result<TableSchema, QuerySer
     })
 }
 
-fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
+const fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     match value_type {
         value::ValueType::Null => ProtoValueType::Null,
         value::ValueType::Type => ProtoValueType::Type,
@@ -81,7 +84,7 @@ fn value_type_to_proto(value_type: value::ValueType) -> ProtoValueType {
     }
 }
 
-fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
+const fn value_type_from_proto(value_type: ProtoValueType) -> Option<value::ValueType> {
     match value_type {
         ProtoValueType::Null => Some(value::ValueType::Null),
         ProtoValueType::Type => Some(value::ValueType::Type),

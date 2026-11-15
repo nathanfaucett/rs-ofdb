@@ -1,6 +1,7 @@
 use btree::BTreeError;
 use uuid::Uuid;
 
+#[must_use]
 pub fn encode_document_id(key: &str, generation: Uuid) -> Vec<u8> {
     let mut id = Vec::with_capacity(key.len() + 18);
     for byte in key.bytes() {
@@ -28,7 +29,7 @@ pub fn decode_document_id(id: &[u8]) -> Result<(String, Uuid), BTreeError> {
                 key.push(0);
                 index += 2;
             }
-            (Some(0), _) | (None, _) => return Err(BTreeError::InvalidDocument),
+            (Some(0) | None, _) => return Err(BTreeError::InvalidDocument),
             (Some(byte), _) => {
                 key.push(*byte);
                 index += 1;
@@ -81,12 +82,12 @@ mod tests {
     #[test]
     fn rejects_malformed_document_ids() {
         let good = encode_document_id("key", uuid(1));
-        assert!(decode_document_id(&good[..good.len() - 1]).is_err());
-        assert!(decode_document_id(&[b'k', 0, 4]).is_err());
-        assert!(decode_document_id(&[0, 255, 0, 0, 1]).is_err());
-        assert!(decode_document_id(&encode_document_id("key", Uuid::nil())).is_err());
+        decode_document_id(&good[..good.len() - 1]).unwrap_err();
+        decode_document_id(&[b'k', 0, 4]).unwrap_err();
+        decode_document_id(&[0, 255, 0, 0, 1]).unwrap_err();
+        decode_document_id(&encode_document_id("key", Uuid::nil())).unwrap_err();
         let mut trailing = good;
         trailing.push(0);
-        assert!(decode_document_id(&trailing).is_err());
+        decode_document_id(&trailing).unwrap_err();
     }
 }

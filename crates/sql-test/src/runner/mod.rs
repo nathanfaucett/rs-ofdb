@@ -22,6 +22,7 @@ impl Default for VerificationPolicy {
 }
 
 impl VerificationPolicy {
+    #[must_use]
     pub const fn new(io_correctness: bool, convergence: bool, state_consistency: bool) -> Self {
         Self {
             io_correctness,
@@ -30,6 +31,7 @@ impl VerificationPolicy {
         }
     }
 
+    #[must_use]
     pub const fn strict() -> Self {
         Self {
             io_correctness: true,

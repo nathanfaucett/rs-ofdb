@@ -77,7 +77,7 @@ fn overflow_handles_large_keys() {
         tx.commit().expect("commit");
 
         let event = changes.events().next().await.expect("overflow event");
-        assert!(!event.blob.is_empty());
+        assert_ne!(event.blob, [] as [u8; 0]);
     });
 }
 
@@ -143,7 +143,7 @@ fn oversized_batch_invalidations() {
             .next()
             .await
             .expect("oversized batch event");
-        assert!(!event.blob.is_empty());
+        assert_ne!(event.blob, [] as [u8; 0]);
     });
 }
 

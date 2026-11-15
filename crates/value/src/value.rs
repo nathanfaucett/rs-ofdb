@@ -235,9 +235,8 @@ impl Value {
     pub fn as_integer(&self) -> Option<i64> {
         match self {
             Self::Integer(i) => Some(*i),
-            Self::Float(f) => {
-                (f.is_finite() && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64)).then_some(*f as i64)
-            }
+            Self::Float(f) => (f.is_finite() && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64))
+                .then_some(*f as i64),
             _ => None,
         }
     }

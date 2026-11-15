@@ -145,7 +145,7 @@ impl Client {
         feature = "redb",
         all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown")
     ))]
-    pub(crate) fn embedded(database: crate::Database) -> Self {
+    pub(crate) const fn embedded(database: crate::Database) -> Self {
         Self {
             backend: Backend::Embedded(database),
             request_deadline: None,
@@ -158,9 +158,10 @@ impl Client {
     /// Browser Wasm uses browser timers without Tokio; native timed queries require
     /// a Tokio runtime with time enabled. Untimed embedded queries require neither.
     /// Timeout or cancellation does not prove rollback, undo a completed write or
-    /// guarantee interruption of computation. An issued IndexedDB commit is observed
+    /// guarantee interruption of computation. An issued `IndexedDB` commit is observed
     /// independently of the caller and may still persist and publish invalidations.
-    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+    #[must_use]
+    pub const fn with_deadline(mut self, deadline: Duration) -> Self {
         self.request_deadline = Some(deadline);
         self
     }
@@ -403,7 +404,7 @@ impl Client {
 }
 
 #[cfg(feature = "remote")]
-pub(crate) fn map_status(status: tonic::Status) -> Error {
+pub fn map_status(status: tonic::Status) -> Error {
     if let Some((kind, message)) = kv_proto::decode_error_details(status.details()) {
         return Error::Query {
             kind: kind.into(),

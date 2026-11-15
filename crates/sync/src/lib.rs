@@ -32,5 +32,5 @@ pub use wasm_sync::{
 pub use iroh_transport::IrohTransport;
 
 pub use btree::ChangeEvent;
-/// Re-export ChangeSubscription from btree for convenience.
+/// Re-export `ChangeSubscription` from btree for convenience.
 pub use btree::ChangeSubscription;

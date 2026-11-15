@@ -1146,7 +1146,7 @@ where
         .map_err(ApplyError::from)
 }
 
-fn sync_state_unit_estimate(unit: &SyncStateUnit) -> usize {
+const fn sync_state_unit_estimate(unit: &SyncStateUnit) -> usize {
     let SyncKey::Row { table, row } = &unit.key;
     core::mem::size_of::<SyncStateUnit>()
         .saturating_add(table.len())
@@ -1155,7 +1155,7 @@ fn sync_state_unit_estimate(unit: &SyncStateUnit) -> usize {
         .saturating_add(unit.metadata.len())
 }
 
-fn sync_incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
+const fn sync_incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
     core::mem::size_of::<SyncIncrementalChange>()
         .saturating_add(change.table.len())
         .saturating_add(row_identity_estimate(&change.row))
@@ -1163,7 +1163,7 @@ fn sync_incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
         .saturating_add(change.payload.len())
 }
 
-fn row_identity_estimate(_: &Uuid) -> usize {
+const fn row_identity_estimate(_: &Uuid) -> usize {
     16
 }
 
@@ -1191,8 +1191,7 @@ where
     };
     if new.is_none() && !codec.row_is_deleted(transaction, table, row).await? {
         return Err(EngineError::custom(format!(
-            "MaybeSync state for {} row {} produced no row",
-            table, row
+            "MaybeSync state for {table} row {row} produced no row"
         )));
     }
     Ok(())
@@ -1247,8 +1246,7 @@ where
                 && !codec.row_is_deleted(transaction, table, row).await?
             {
                 return Err(EngineError::custom(format!(
-                    "Incomplete catalog: missing {} row {} advertised in manifest",
-                    table, row
+                    "Incomplete catalog: missing {table} row {row} advertised in manifest"
                 )));
             }
         }
@@ -1296,8 +1294,7 @@ where
             };
             if !valid {
                 return Err(EngineError::custom(format!(
-                    "Invalid catalog row {} in {}",
-                    id, table
+                    "Invalid catalog row {id} in {table}"
                 )));
             }
             match table {
@@ -1392,14 +1389,12 @@ where
             .and_then(|names| names.get(name));
         let Some(has_primary_key) = has_primary_key else {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: table {} has no fields",
-                name
+                "Incomplete catalog: table {name} has no fields"
             )));
         };
         if !has_primary_key {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: table {} has no primary key",
-                name
+                "Incomplete catalog: table {name} has no primary key"
             )));
         }
     }
@@ -1412,8 +1407,7 @@ where
                 .is_empty()
         {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: data table {} has no definition",
-                table
+                "Incomplete catalog: data table {table} has no definition"
             )));
         }
     }
@@ -1438,22 +1432,19 @@ where
         }
         if !table_names.contains(name) {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: index {} references missing table {}",
-                id, name
+                "Incomplete catalog: index {id} references missing table {name}"
             )));
         }
         let Some(columns) = index_columns.get(&id) else {
             return Err(EngineError::custom(format!(
-                "Incomplete catalog: index {} has no fields",
-                id
+                "Incomplete catalog: index {id} has no fields"
             )));
         };
         let available_columns = table_columns.get(name);
         for column in columns {
             if !available_columns.is_some_and(|columns| columns.contains(column)) {
                 return Err(EngineError::custom(format!(
-                    "Incomplete catalog: index {} references missing column {}",
-                    id, column
+                    "Incomplete catalog: index {id} references missing column {column}"
                 )));
             }
         }
@@ -1507,8 +1498,7 @@ fn consume_recovery_snapshot(
     };
     if !remaining.remove(&request) {
         return Err(EngineError::custom(format!(
-            "Unexpected or duplicate recovery snapshot for {} row {}",
-            table, row
+            "Unexpected or duplicate recovery snapshot for {table} row {row}"
         )));
     }
     Ok(())
@@ -2056,7 +2046,7 @@ where
                     if let Err(error) = consume_recovery_snapshot(&mut remaining, &snapshot) {
                         let _ = send_message(
                             transport,
-                            &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
+                            &SyncMessage::Abort(format!("{error} (recovery snapshot batch)")),
                         )
                         .now_or_never();
                         return Err(error.into());
@@ -2079,7 +2069,7 @@ where
     if let Err(error) = validate_recovery_complete(&remaining) {
         let _ = send_message(
             transport,
-            &SyncMessage::Abort(format!("{} (recovery snapshot batch)", error)),
+            &SyncMessage::Abort(format!("{error} (recovery snapshot batch)")),
         )
         .now_or_never();
         return Err(error.into());
@@ -2113,7 +2103,7 @@ where
         ))
         .await
         {
-            let reason = format!("{} (recovery snapshot batch)", error);
+            let reason = format!("{error} (recovery snapshot batch)");
             let _ = send_message(transport, &SyncMessage::Abort(reason)).now_or_never();
             return Err(error.into());
         }
@@ -2736,7 +2726,7 @@ where
     T: SyncTransport,
     T::Error: core::fmt::Display,
 {
-    let reason = format!("{} ({})", error, context);
+    let reason = format!("{error} ({context})");
     let _ = send_message(transport, &SyncMessage::Abort(reason)).now_or_never();
     Err(error.into())
 }
@@ -2830,7 +2820,7 @@ where
     }
 }
 
-fn incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
+const fn incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
     let identity_bytes = change.row.as_bytes().len();
     core::mem::size_of::<SyncIncrementalChange>()
         .saturating_add(change.table.len())
@@ -2839,7 +2829,7 @@ fn incremental_change_estimate(change: &SyncIncrementalChange) -> usize {
         .saturating_add(change.payload.len())
 }
 
-fn state_unit_payload_size(unit: &SyncStateUnit) -> usize {
+const fn state_unit_payload_size(unit: &SyncStateUnit) -> usize {
     let SyncKey::Row { table, row } = &unit.key;
     unit.state
         .len()
@@ -3165,13 +3155,12 @@ mod tests {
                 .len()
                 <= MAX_MESSAGE_BYTES
         );
-        assert!(
+        assert_eq!(
             inventory_for(
                 &[history(vec![SyncChangeId(vec![0; MAX_MESSAGE_BYTES])])],
                 &SyncManifest::default()
             )
-            .expect("oversized row uses snapshot")
-            .is_empty()
+            .expect("oversized row uses snapshot"), [] as [protocol::SyncRowInventory; 0]
         );
     }
 
@@ -3219,7 +3208,7 @@ mod tests {
             )
             .await
             .expect("export history");
-            assert!(outbound.snapshots.is_empty());
+            assert_eq!(outbound.snapshots, [] as [state::SyncStateUnit; 0]);
             assert_eq!(
                 outbound
                     .changes
@@ -3276,7 +3265,7 @@ mod tests {
                 )
                 .await
                 .expect("snapshot fallback");
-                assert!(outbound.changes.is_empty());
+                assert_eq!(outbound.changes, [] as [protocol::SyncIncrementalChange; 0]);
                 assert_eq!(outbound.snapshots.len(), 1);
                 assert_eq!(outbound.snapshots[0].state, state);
             }
@@ -3315,8 +3304,8 @@ mod tests {
             )
             .await
             .expect("compare shared history");
-            assert!(outbound.changes.is_empty());
-            assert!(outbound.snapshots.is_empty());
+            assert_eq!(outbound.changes, [] as [protocol::SyncIncrementalChange; 0]);
+            assert_eq!(outbound.snapshots, [] as [state::SyncStateUnit; 0]);
             assert_eq!(reads.load(Ordering::Relaxed), 0);
         });
     }
@@ -3400,16 +3389,16 @@ mod tests {
 
         let remaining = || requests.iter().cloned().collect::<BTreeSet<_>>();
         let mut received = remaining();
-        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
+        consume_recovery_snapshot(&mut received, &snapshot(1)).unwrap();
         assert!(validate_recovery_complete(&received).is_err());
 
         let mut received = remaining();
-        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
-        assert!(consume_recovery_snapshot(&mut received, &snapshot(2)).is_ok());
-        assert!(validate_recovery_complete(&received).is_ok());
+        consume_recovery_snapshot(&mut received, &snapshot(1)).unwrap();
+        consume_recovery_snapshot(&mut received, &snapshot(2)).unwrap();
+        validate_recovery_complete(&received).unwrap();
 
         let mut received = remaining();
-        assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_ok());
+        consume_recovery_snapshot(&mut received, &snapshot(1)).unwrap();
         assert!(consume_recovery_snapshot(&mut received, &snapshot(1)).is_err());
 
         let mut received = remaining();
@@ -3423,7 +3412,7 @@ mod tests {
             row: Uuid::from_bytes([1; 16]),
         };
         let unit = SyncStateUnit::new(key, vec![3], vec![4]);
-        assert!(validate_state_batch(core::slice::from_ref(&unit)).is_ok());
+        validate_state_batch(core::slice::from_ref(&unit)).unwrap();
         let mut corrupted = unit;
         corrupted.state.push(5);
         assert!(validate_state_batch(&[corrupted]).is_err());

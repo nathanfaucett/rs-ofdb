@@ -6,7 +6,7 @@ pub use query::{QueryError as Error, QueryErrorKind as ErrorKind};
     all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"),
     feature = "sync"
 ))]
-pub(crate) fn from_engine(error: engine::EngineError) -> Error {
+pub fn from_engine(error: engine::EngineError) -> Error {
     use engine::EngineError;
     use query::QueryErrorKind;
 

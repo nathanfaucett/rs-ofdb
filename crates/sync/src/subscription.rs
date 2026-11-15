@@ -40,14 +40,14 @@ impl ChangeSubscription {
     }
 
     /// Wait for coalesced admission invalidation, not synchronization scheduling.
-    /// Returns BrokenPipe after all backends close and pending changes are consumed.
+    /// Returns `BrokenPipe` after all backends close and pending changes are consumed.
     #[deprecated(since = "0.1.0", note = "Use events() stream instead")]
     pub async fn changed(&mut self) -> io::Result<()> {
         #[allow(deprecated)]
         self.changes.changed().await
     }
 
-    /// Internal helper to avoid deprecated warning in run()
+    /// Internal helper to avoid deprecated warning in `run()`
     #[allow(deprecated)]
     async fn changed_internal(&mut self) -> io::Result<()> {
         self.changes.changed().await

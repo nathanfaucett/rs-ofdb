@@ -49,8 +49,9 @@ use engine_indexeddb::IndexedDbKernel;
 use engine_redb::RedbKernel;
 
 /// An application-facing database using the Automerge row codec.
-/// Explicit user-row keys accept RFC UUIDv5 or UUIDv7; generated and catalog
-/// identities remain UUIDv7. Keys are immutable and tombstoned keys cannot revive.
+///
+/// Explicit user-row keys accept RFC `UUIDv5` or `UUIDv7`; generated and catalog
+/// identities remain `UUIDv7`. Keys are immutable and tombstoned keys cannot revive.
 #[derive(Clone)]
 pub struct Database {
     backend: DatabaseBackend,
@@ -68,7 +69,7 @@ enum DatabaseBackend {
     InMemory(Engine<InMemoryKernel, AutomergeRowCodec>),
 }
 
-pub(crate) enum EmbeddedTransaction {
+pub enum EmbeddedTransaction {
     #[cfg(all(feature = "indexeddb", target_arch = "wasm32", target_os = "unknown"))]
     IndexedDb(EngineTransaction<IndexedDbKernel, AutomergeRowCodec>),
     #[cfg(feature = "redb")]
@@ -364,6 +365,7 @@ impl Database {
         })
     }
 
+    #[must_use]
     pub fn client(&self) -> crate::Client {
         crate::Client::embedded(self.clone())
     }
@@ -382,7 +384,7 @@ impl Database {
         .map_err(native_error)?;
         #[cfg(feature = "sync")]
         let changes = resource
-            .inspect(|engine| engine.subscribe_changes())
+            .inspect(engine::Engine::subscribe_changes)
             .map_err(native_error)?;
         Ok(Self {
             #[cfg(feature = "sync")]
@@ -426,6 +428,7 @@ impl Database {
     }
 
     #[cfg(feature = "in-memory")]
+    #[must_use]
     pub fn in_memory() -> Self {
         let kernel = InMemoryKernel::new();
         #[cfg(feature = "sync")]
@@ -704,14 +707,14 @@ impl Database {
         let apply_inbound = move |event: sync::ChangeEvent| {
             let table = event.key.table.clone();
             let key_bytes = event.key.key.clone();
-            let blob = event.blob.clone();
+            let blob = event.blob;
 
             let backend = backend.clone();
             async move {
                 let row_uuid = uuid::Uuid::from_slice(&key_bytes)
-                    .map_err(|e| format!("Invalid row UUID: {}", e))?;
+                    .map_err(|e| format!("Invalid row UUID: {e}"))?;
                 let change = automerge::Change::from_bytes(blob.clone())
-                    .map_err(|e| format!("Invalid change: {}", e))?;
+                    .map_err(|e| format!("Invalid change: {e}"))?;
                 let change_hash = change.hash();
                 let change_id = engine::DocumentChangeId(change_hash.0.to_vec());
 
@@ -766,7 +769,7 @@ impl Database {
 }
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncKey API.
+/// Placeholder for deprecated `SyncKey` API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncKey {
     pub table: String,
@@ -774,7 +777,7 @@ pub struct SyncKey {
 }
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncSelection API.
+/// Placeholder for deprecated `SyncSelection` API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncSelection {
     All,
@@ -785,32 +788,32 @@ pub enum SyncSelection {
 }
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncStageFactory API.
+/// Placeholder for deprecated `SyncStageFactory` API.
 pub struct SyncStageFactory;
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncCandidateView API.
+/// Placeholder for deprecated `SyncCandidateView` API.
 pub type SyncCandidateView = ();
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncManifest API.
+/// Placeholder for deprecated `SyncManifest` API.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncManifest;
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncStateUnit API.
+/// Placeholder for deprecated `SyncStateUnit` API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncStateUnit;
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SessionConfig API.
+/// Placeholder for deprecated `SessionConfig` API.
 #[derive(Clone, Debug, Default)]
 pub struct SessionConfig {
     pub max_session_bytes: usize,
 }
 
 #[cfg(feature = "sync")]
-/// Placeholder for deprecated SyncRole API.
+/// Placeholder for deprecated `SyncRole` API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncRole {
     Leader,
@@ -893,8 +896,8 @@ mod tests {
                         &crate::SqlTranslator,
                     )
                     .await
-                    .unwrap();
-            }
+                    .unwrap()
+            };
 
             let database = Database::open(&database_path).unwrap();
             database

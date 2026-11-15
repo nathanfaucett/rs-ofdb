@@ -39,7 +39,7 @@ async fn assert_applied_once(client: &Client) {
         .await
         .expect("explicit follow-up reads history");
     assert_eq!(repeated.current_version, 2);
-    assert!(repeated.applied_versions.is_empty());
+    assert_eq!(repeated.applied_versions, [] as [u32; 0]);
 }
 
 async fn concurrent_calls(client: &Client) {

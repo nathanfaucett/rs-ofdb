@@ -208,12 +208,12 @@ mod tests {
         old.put(ROOT, "value", vec![1_u8]).expect("write old bytes");
         old.put(ROOT, "tombstone", false)
             .expect("write old metadata");
-        assert!(read_document(&old).is_err());
+        read_document(&old).unwrap_err();
         let mut invalid = new_document(Value::Null, None).expect("create document");
         invalid
             .put(ROOT, "expires_at", "invalid")
             .expect("corrupt timestamp");
-        assert!(read_document(&invalid).is_err());
-        assert!(read_document(&AutoCommit::new()).is_err());
+        read_document(&invalid).unwrap_err();
+        read_document(&AutoCommit::new()).unwrap_err();
     }
 }

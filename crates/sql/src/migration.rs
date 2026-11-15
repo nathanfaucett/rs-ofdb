@@ -89,7 +89,7 @@ pub struct MigrationError {
 }
 
 impl MigrationError {
-    fn new(version: Option<u32>, phase: MigrationPhase, source: Error) -> Self {
+    const fn new(version: Option<u32>, phase: MigrationPhase, source: Error) -> Self {
         Self {
             version,
             phase,
@@ -105,6 +105,7 @@ impl MigrationError {
         )
     }
 
+    #[must_use]
     pub fn commit_outcome_unknown(&self) -> bool {
         self.phase == MigrationPhase::Commit
     }

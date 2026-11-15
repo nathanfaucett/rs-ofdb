@@ -17,6 +17,7 @@ pub struct DocumentChangeId(pub Vec<u8>);
 pub struct DocumentDigest(pub [u8; 32]);
 
 impl DocumentDigest {
+    #[must_use]
     pub fn from_parts(state: &[u8], metadata: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update((state.len() as u64).to_le_bytes());

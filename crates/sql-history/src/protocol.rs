@@ -49,6 +49,7 @@ pub enum SyncMessage {
 }
 
 impl SyncRowInventory {
+    #[must_use]
     pub fn key(&self) -> SyncKey {
         SyncKey::Row {
             table: self.table.clone(),

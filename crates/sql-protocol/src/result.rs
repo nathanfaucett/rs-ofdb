@@ -20,6 +20,7 @@ pub fn row_from_proto(row: ProtoRow) -> Result<Row, QueryServiceError> {
         .map(Row::new)
 }
 
+#[must_use]
 pub fn result_column_to_proto(column: QueryResultColumn) -> ProtoQueryResultColumn {
     ProtoQueryResultColumn {
         name: column.name,
@@ -28,6 +29,7 @@ pub fn result_column_to_proto(column: QueryResultColumn) -> ProtoQueryResultColu
     }
 }
 
+#[must_use]
 pub fn result_column_from_proto(column: ProtoQueryResultColumn) -> QueryResultColumn {
     QueryResultColumn {
         name: column.name,

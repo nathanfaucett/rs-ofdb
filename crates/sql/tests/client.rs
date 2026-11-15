@@ -25,7 +25,7 @@ fn embedded_client_owns_shared_storage_without_tokio() {
         assert_eq!(rows.len(), 1);
 
         let clone = client.clone();
-        assert!(clone.execute(Vec::new()).await.is_err());
+        clone.execute(Vec::new()).await.unwrap_err();
     });
 }
 

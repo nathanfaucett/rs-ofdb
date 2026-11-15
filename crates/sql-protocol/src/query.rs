@@ -23,6 +23,7 @@ use crate::{
     table_from_proto, table_to_proto, value_from_proto, value_to_proto,
 };
 
+#[must_use]
 pub fn query_column_to_proto(column: QueryColumn) -> ProtoQueryColumn {
     ProtoQueryColumn {
         table: column.table,
@@ -30,6 +31,7 @@ pub fn query_column_to_proto(column: QueryColumn) -> ProtoQueryColumn {
     }
 }
 
+#[must_use]
 pub fn query_column_from_proto(column: ProtoQueryColumn) -> QueryColumn {
     QueryColumn {
         table: column.table,
@@ -37,6 +39,7 @@ pub fn query_column_from_proto(column: ProtoQueryColumn) -> QueryColumn {
     }
 }
 
+#[must_use]
 pub fn query_expr_value_to_proto(value: QueryExprValue) -> ProtoQueryExprValue {
     let kind = match value {
         QueryExprValue::Column(column) => {
@@ -438,7 +441,7 @@ fn count_target_from_proto(
         },
     )
 }
-fn having_to_proto(value: QueryHavingCount) -> ProtoHaving {
+const fn having_to_proto(value: QueryHavingCount) -> ProtoHaving {
     ProtoHaving {
         operator: match value.operator {
             QueryHavingCountOperator::GreaterThan => ProtoHavingOperator::GreaterThan as i32,
@@ -482,6 +485,7 @@ fn text_concat_from_proto(value: ProtoTextConcat) -> Result<QueryTextConcat, Que
         alias: value.alias,
     })
 }
+#[must_use]
 pub fn query_update_assignment_to_proto(
     value: QueryUpdateAssignment,
 ) -> proto::QueryUpdateAssignment {
@@ -508,6 +512,7 @@ pub fn query_update_assignment_from_proto(
     })
 }
 
+#[must_use]
 pub fn query_to_proto(query: Query) -> proto::Query {
     use proto::query::Kind as K;
     proto::Query {
@@ -687,6 +692,7 @@ fn query_delete_from_proto(value: proto::QueryDelete) -> Result<QueryDelete, Que
     })
 }
 
+#[must_use]
 pub fn statement_to_proto(value: Statement) -> proto::Statement {
     use proto::statement::Kind as K;
     proto::Statement {

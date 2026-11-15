@@ -15,6 +15,7 @@ pub enum QueryErrorKind {
 }
 
 impl QueryErrorKind {
+    #[must_use]
     pub const fn from_wire(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::Validation),

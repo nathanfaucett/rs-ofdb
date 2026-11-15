@@ -46,6 +46,7 @@ pub struct AutomergeRowCodec {
 }
 
 impl AutomergeRowCodec {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             actor: ActorId::from(uuid::Uuid::now_v7().as_bytes().to_vec()),
@@ -658,7 +659,7 @@ impl AutomergeRowCodec {
                 .keys(ROOT)
                 .filter(|key| key != DOCUMENT_COLUMNS)
                 .map(|id| Column {
-                    id: id.to_string(),
+                    id,
                     default: Value::Null,
                 })
                 .collect(),
@@ -1023,12 +1024,7 @@ where
         let row = Self::decode_row(&document, &columns)?;
 
         let mut changes = AutomergeChangeStore::new(BytesTableTransaction::new(transaction, table));
-        let (key, bytes) = if !was_existing {
-            (
-                DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads())),
-                document.save(),
-            )
-        } else {
+        let (key, bytes) = if was_existing {
             let changes = document.get_changes(&previous_heads);
             let Some(change) = changes.last() else {
                 if incremental.is_empty() {
@@ -1039,6 +1035,11 @@ where
             (
                 DocumentChangeKey::new_incremental(id, change.hash().0),
                 incremental.to_vec(),
+            )
+        } else {
+            (
+                DocumentChangeKey::new_snapshot(id, hash_heads(document.get_heads())),
+                document.save(),
             )
         };
         if changes
@@ -1546,8 +1547,7 @@ where
             deleted: incoming.deleted || existing.as_ref().is_some_and(|value| value.deleted),
             drop_events: existing
                 .as_ref()
-                .map(|value| value.drop_events.clone())
-                .unwrap_or_default()
+                .map_or_default(|value| value.drop_events.clone())
                 .into_iter()
                 .chain(incoming.drop_events)
                 .collect::<std::collections::BTreeSet<_>>()
@@ -1555,8 +1555,7 @@ where
                 .collect(),
             observed_drops: existing
                 .as_ref()
-                .map(|value| value.observed_drops.clone())
-                .unwrap_or_default()
+                .map_or_default(|value| value.observed_drops.clone())
                 .into_iter()
                 .chain(incoming.observed_drops)
                 .collect::<std::collections::BTreeSet<_>>()
@@ -1589,14 +1588,13 @@ where
             .map_or([0; 32], |document| hash_heads(document.get_heads()));
         let changes: Vec<_> = document
             .as_mut()
-            .map(|document| {
+            .map_or_default(|document| {
                 document
                     .get_changes(&[])
                     .into_iter()
                     .map(|change| DocumentChangeId(change.hash().0.to_vec()))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         if metadata
             .len()
             .saturating_add(changes.len().saturating_mul(160))

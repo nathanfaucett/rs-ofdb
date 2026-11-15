@@ -423,23 +423,17 @@ mod tests {
 
     #[test]
     fn cli_requires_one_target_and_one_input() {
-        assert!(Args::try_parse_from(["sql-cli", "--memory", "--query", "SELECT 1"]).is_ok());
-        assert!(Args::try_parse_from(["sql-cli", "--query", "SELECT 1"]).is_err());
-        assert!(
-            Args::try_parse_from([
+        Args::try_parse_from(["sql-cli", "--memory", "--query", "SELECT 1"]).unwrap();
+        Args::try_parse_from(["sql-cli", "--query", "SELECT 1"]).unwrap_err();
+        Args::try_parse_from([
                 "sql-cli",
                 "--memory",
                 "--endpoint",
                 "http://localhost",
                 "--query",
                 "SELECT 1"
-            ])
-            .is_err()
-        );
-        assert!(
-            Args::try_parse_from(["sql-cli", "--memory", "--query", "SELECT 1", "--file", "-"])
-                .is_err()
-        );
+            ]).unwrap_err();
+        Args::try_parse_from(["sql-cli", "--memory", "--query", "SELECT 1", "--file", "-"]).unwrap_err();
     }
 
     #[test]
@@ -477,6 +471,6 @@ mod tests {
             parse_json(&encode_json(value.clone())).expect("decode JSON value"),
             value
         );
-        assert!(parse_json(&json!(1.5)).is_err());
+        parse_json(&json!(1.5)).unwrap_err();
     }
 }

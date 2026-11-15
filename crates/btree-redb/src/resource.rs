@@ -197,7 +197,7 @@ fn read_record(path: &Path) -> io::Result<(String, Vec<OwnedFile>)> {
                 "stage pathname must be absolute",
             ));
         }
-        stages.push(OwnedFile { identity, path });
+        stages.push(OwnedFile { path, identity });
     }
     Ok((header.to_owned(), stages))
 }
@@ -251,6 +251,7 @@ impl<R: Clone> NativeResource<R> {
         })
     }
 
+    #[must_use]
     pub fn shared_namespace(&self) -> Option<crate::SharedNamespace> {
         match &self.inner.location {
             Location::Shared(namespace) => Some(namespace.clone()),
@@ -267,6 +268,7 @@ impl<R: Clone> NativeResource<R> {
         backend.as_ref().map(read).ok_or_else(retired_error)
     }
 
+    #[must_use]
     pub fn stage_tracker(&self) -> NativeStageTracker {
         self.inner.stages.clone()
     }
@@ -323,7 +325,7 @@ impl<R: Clone> NativeResource<R> {
                 return Err(retired_error());
             }
             state.hosted = true;
-        }
+        };
         Ok(operation.await)
     }
 
@@ -341,7 +343,7 @@ impl<R: Clone> NativeResource<R> {
             }
             state.sessions.retain(|session| session.strong_count() != 0);
             state.sessions.push(Arc::downgrade(&handle));
-        }
+        };
         let result = Abortable::new(operation, registration)
             .await
             .map_err(|_| retired_error());

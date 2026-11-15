@@ -16,6 +16,7 @@ pub enum SyncSelection {
 }
 
 impl SyncSelection {
+    #[must_use]
     pub fn union(self, other: Self) -> Self {
         match (self, other) {
             (

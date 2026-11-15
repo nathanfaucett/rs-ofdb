@@ -9,7 +9,7 @@ const UPGRADE: &str = "ALTER TABLE items ADD COLUMN note TEXT DEFAULT 'kept'; UP
 async fn initialize_and_upgrade(client: &Client) {
     let empty = client.migrate(&[]).await.expect("empty plan");
     assert_eq!(empty.current_version, 0);
-    assert!(empty.applied_versions.is_empty());
+    assert_eq!(empty.applied_versions, [] as [u32; 0]);
     let tables = client
         .execute_sql(
             "SELECT name FROM tables WHERE name = '_ofdb_migrations'",
@@ -17,7 +17,7 @@ async fn initialize_and_upgrade(client: &Client) {
         )
         .await
         .expect("inspect metadata absence");
-    assert!(tables[0].rows.is_empty());
+    assert_eq!(tables[0].rows, [] as [ofdb_sql::Row; 0]);
 
     let plan = [
         Migration::new(1, "m1", INITIAL),
@@ -35,7 +35,7 @@ async fn initialize_and_upgrade(client: &Client) {
         .expect("application changes after upgrade");
     let repeated = client.migrate(&plan).await.expect("skip applied work");
     assert_eq!(repeated.current_version, 2);
-    assert!(repeated.applied_versions.is_empty());
+    assert_eq!(repeated.applied_versions, [] as [u32; 0]);
     let rows = client
         .execute_sql("SELECT amount, note FROM items", None)
         .await
@@ -79,18 +79,12 @@ async fn failure_rolls_back_and_stops(client: &Client) {
         .await
         .expect("earlier migration survives");
     assert_eq!(rows[0].rows, vec![Row::from([10_i64])]);
-    assert!(
-        client
+    client
             .execute_sql("SELECT discarded FROM items", None)
-            .await
-            .is_err()
-    );
-    assert!(
-        client
+            .await.unwrap_err();
+    client
             .execute_sql("SELECT id FROM later", None)
-            .await
-            .is_err()
-    );
+            .await.unwrap_err();
     let history = client
         .execute_sql("SELECT version FROM _ofdb_migrations", None)
         .await
@@ -134,7 +128,7 @@ fn failed_first_migration_does_not_create_metadata() {
             )
             .await
             .expect("no partial schema");
-        assert!(result[0].rows.is_empty());
+        assert_eq!(result[0].rows, [] as [ofdb_sql::Row; 0]);
         assert_eq!(
             client
                 .migrate(&[Migration::new(1, "m1", INITIAL)])
@@ -198,8 +192,8 @@ fn history_and_upgrades_survive_reopening() {
         let path = directory.path().join("migrations.redb");
         {
             let database = Database::open(&path).expect("open database");
-            initialize_and_upgrade(&database.client()).await;
-        }
+            initialize_and_upgrade(&database.client()).await
+        };
         let database = Database::open(&path).expect("reopen database");
         let client = database.client();
         let result = client
@@ -209,7 +203,7 @@ fn history_and_upgrades_survive_reopening() {
             ])
             .await
             .expect("persisted history");
-        assert!(result.applied_versions.is_empty());
+        assert_eq!(result.applied_versions, [] as [u32; 0]);
         assert_eq!(result.current_version, 2);
         let rows = client
             .execute_sql("SELECT amount, note FROM items", None)

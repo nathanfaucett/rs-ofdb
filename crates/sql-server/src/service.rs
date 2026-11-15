@@ -37,11 +37,13 @@ impl<E> QueryService<E> {
         }
     }
 
-    pub fn max_decoding_message_size(mut self, size: usize) -> Self {
+    #[must_use]
+    pub const fn max_decoding_message_size(mut self, size: usize) -> Self {
         self.max_decoding_message_size = Some(size);
         self
     }
 
+    #[must_use]
     pub fn into_tonic_service(self) -> proto::query_service_server::QueryServiceServer<Self> {
         let max_decoding_message_size = self.max_decoding_message_size;
         let service = proto::query_service_server::QueryServiceServer::new(self);
@@ -81,7 +83,7 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
             }
             loop {
                 let request = tokio::select! {
-                    _ = sender.closed() => break,
+                    () = sender.closed() => break,
                     request = requests.message() => match request {
                         Ok(Some(request)) => request,
                         _ => break,
@@ -94,7 +96,7 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
                         } else {
                             match decode_statements(request) {
                                 Ok(statements) => tokio::select! {
-                                    _ = sender.closed() => break,
+                                    () = sender.closed() => break,
                                     result = transaction.execute(statements) => result,
                                 },
                                 Err(error) => Err(error),
@@ -152,7 +154,7 @@ impl<E: QueryExecutor + 'static> QueryServiceTrait for QueryService<E> {
                             }
                         }
                     }
-                    Some(Command::Commit(())) | Some(Command::Rollback(())) => {
+                    Some(Command::Commit(()) | Command::Rollback(())) => {
                         let result =
                             if matches!(request.command, Some(Command::Commit(()))) && !failed {
                                 transaction.commit().await

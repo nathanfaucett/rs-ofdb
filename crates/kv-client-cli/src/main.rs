@@ -271,16 +271,11 @@ mod tests {
 
     #[test]
     fn cli_requires_one_target_and_set_input() {
-        assert!(
-            Args::try_parse_from(["kv-cli", "--memory", "set", "key", "--value", "text"]).is_ok()
-        );
-        assert!(Args::try_parse_from(["kv-cli", "set", "key", "--value", "text"]).is_err());
-        assert!(
-            Args::try_parse_from([
+        Args::try_parse_from(["kv-cli", "--memory", "set", "key", "--value", "text"]).unwrap();
+        Args::try_parse_from(["kv-cli", "set", "key", "--value", "text"]).unwrap_err();
+        Args::try_parse_from([
                 "kv-cli", "--memory", "set", "key", "--value", "text", "--file", "-"
-            ])
-            .is_err()
-        );
+            ]).unwrap_err();
     }
 
     #[test]

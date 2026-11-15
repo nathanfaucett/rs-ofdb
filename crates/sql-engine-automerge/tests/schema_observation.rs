@@ -10,12 +10,11 @@ fn table_names_preserve_live_identities_order_and_fresh_transactions() {
         let kernel = InMemoryKernel::new();
         let codec = AutomergeRowCodec::new();
         let database = Engine::new(kernel.clone(), AutomergeRowCodec::new());
-        assert!(
+        assert_eq!(
             database
                 .table_names()
                 .await
-                .expect("empty catalog")
-                .is_empty()
+                .expect("empty catalog"), [] as [std::string::String; 0]
         );
 
         let ids = [
@@ -207,12 +206,9 @@ fn bulk_schema_observation_preserves_order_defaults_indices_and_current_visibili
             .drop_table("items")
             .await
             .expect("drop observed table");
-        assert!(
-            database
+        database
                 .observe_schema(&["items"], Some(&[]))
-                .await
-                .is_err()
-        );
+                .await.unwrap_err();
     });
 }
 
@@ -378,7 +374,7 @@ fn bulk_schema_discovery_omits_dropped_indices_but_retains_raw_tombstones() {
             .observe_schema(&["items"], None)
             .await
             .expect("discovery excludes dropped index");
-        assert!(indices.is_empty());
+        assert_eq!(indices, [] as [schema::schema::IndexSchema; 0]);
         assert!(rows.iter().any(|(storage, _, row)| {
             *storage == engine::ENGINE_INDICES_STORAGE
                 && row.values.first().and_then(Value::to_text).as_deref() == Some("items_value")
@@ -443,7 +439,7 @@ fn bulk_schema_discovery_filters_by_winning_index_table_not_losing_definition() 
             .observe_schema(&["items"], None)
             .await
             .expect("discovery filters by winner table");
-        assert!(indices.is_empty());
+        assert_eq!(indices, [] as [schema::schema::IndexSchema; 0]);
         assert_eq!(
             rows.iter()
                 .filter(|(storage, _, row)| {

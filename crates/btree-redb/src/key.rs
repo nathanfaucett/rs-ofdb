@@ -8,7 +8,7 @@ use std::{
 pub struct Key<K>(K);
 
 impl<K> Key<K> {
-    pub fn new(key: K) -> Self {
+    pub const fn new(key: K) -> Self {
         Self(key)
     }
 
@@ -21,19 +21,19 @@ impl<K> Key<K>
 where
     K: Clone,
 {
-    pub fn range<R>(range: R) -> impl RangeBounds<Key<K>>
+    pub fn range<R>(range: R) -> impl RangeBounds<Self>
     where
         R: RangeBounds<K>,
     {
         let start = match range.start_bound() {
-            Bound::Included(k) => Bound::Included(Key(k.clone())),
-            Bound::Excluded(k) => Bound::Excluded(Key(k.clone())),
+            Bound::Included(k) => Bound::Included(Self(k.clone())),
+            Bound::Excluded(k) => Bound::Excluded(Self(k.clone())),
             Bound::Unbounded => Bound::Unbounded,
         };
 
         let end = match range.end_bound() {
-            Bound::Included(k) => Bound::Included(Key(k.clone())),
-            Bound::Excluded(k) => Bound::Excluded(Key(k.clone())),
+            Bound::Included(k) => Bound::Included(Self(k.clone())),
+            Bound::Excluded(k) => Bound::Excluded(Self(k.clone())),
             Bound::Unbounded => Bound::Unbounded,
         };
 
@@ -106,7 +106,7 @@ where
     where
         Self: 'a,
     {
-        Key(K::from_bytes(data))
+        Self(K::from_bytes(data))
     }
 
     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>

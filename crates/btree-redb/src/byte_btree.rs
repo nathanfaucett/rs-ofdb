@@ -15,6 +15,7 @@ pub struct RedbByteBTree(RedbBTree<Bytes, Vec<u8>>);
 
 impl RedbByteBTree {
     /// Subscribes to successfully committed storage changes.
+    #[must_use]
     pub fn subscribe_changes(&self) -> btree::ChangeSubscription {
         self.0.subscribe_changes()
     }
