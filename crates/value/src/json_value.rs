@@ -12,15 +12,12 @@ use std::collections::BTreeMap;
 
 use core::{fmt, hash::Hash};
 
-use crate::JsonNumber;
+use crate::json_number::JsonNumber;
 
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
-#[cfg_attr(
-    feature = "automerge",
-    derive(autosurgeon::Hydrate, autosurgeon::Reconcile)
-)]
+#[cfg_attr(feature = "automerge", derive(autosurgeon::Hydrate))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum JsonValue {
     Null,
@@ -29,6 +26,42 @@ pub enum JsonValue {
     String(String),
     Array(Vec<Self>),
     Object(BTreeMap<String, Self>),
+}
+
+#[cfg(feature = "automerge")]
+impl autosurgeon::Reconcile for JsonValue {
+    type Key<'a> = autosurgeon::reconcile::NoKey;
+
+    fn reconcile<R: autosurgeon::Reconciler>(&self, mut reconciler: R) -> Result<(), R::Error> {
+        use autosurgeon::reconcile::MapReconciler;
+        let mut map = reconciler.map()?;
+        match self {
+            Self::Null => {
+                map.put("type", "null")?;
+            }
+            Self::Bool(value) => {
+                map.put("type", "bool")?;
+                map.put("value", *value)?;
+            }
+            Self::Number(value) => {
+                map.put("type", "number")?;
+                map.put("value", value.clone())?;
+            }
+            Self::String(value) => {
+                map.put("type", "string")?;
+                map.put("value", value.as_str())?;
+            }
+            Self::Array(values) => {
+                map.put("type", "array")?;
+                map.put("value", values.clone())?;
+            }
+            Self::Object(entries) => {
+                map.put("type", "object")?;
+                map.put("value", entries.clone())?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl From<()> for JsonValue {
@@ -95,14 +128,10 @@ impl From<serde_json::Value> for JsonValue {
             serde_json::Value::Bool(b) => Self::Bool(b),
             serde_json::Value::Number(n) => Self::Number(n.into()),
             serde_json::Value::String(s) => Self::String(s),
-            serde_json::Value::Array(arr) => {
-                Self::Array(arr.into_iter().map(Self::from).collect())
+            serde_json::Value::Array(arr) => Self::Array(arr.into_iter().map(Self::from).collect()),
+            serde_json::Value::Object(obj) => {
+                Self::Object(obj.into_iter().map(|(k, v)| (k, Self::from(v))).collect())
             }
-            serde_json::Value::Object(obj) => Self::Object(
-                obj.into_iter()
-                    .map(|(k, v)| (k, Self::from(v)))
-                    .collect(),
-            ),
         }
     }
 }
@@ -140,7 +169,7 @@ impl TryFrom<JsonValue> for serde_json::Value {
 #[cfg(all(test, feature = "serde_json"))]
 mod conversion_tests {
     use super::JsonValue;
-    use crate::JsonNumber;
+    use crate::json_number::JsonNumber;
 
     #[test]
     fn serde_json_roundtrip_preserves_nested_values_and_rejects_nonfinite_numbers() {
@@ -166,7 +195,7 @@ impl fmt::Display for JsonValue {
             Self::Array(arr) => {
                 let items = arr
                     .iter()
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "[{items}]")
